@@ -1,0 +1,135 @@
+[
+  {
+    "sequence": 1,
+    "method": "thread/started",
+    "params": {
+      "thread": {
+        "id": "thread-1",
+        "name": "Fixture thread",
+        "preview": "Build the deck",
+        "status": "idle",
+        "createdAt": 1,
+        "updatedAt": 1,
+        "turns": []
+      }
+    }
+  },
+  {
+    "sequence": 2,
+    "method": "turn/started",
+    "params": {
+      "threadId": "thread-1",
+      "turn": { "id": "turn-1", "status": "running", "items": [] }
+    }
+  },
+  {
+    "sequence": 3,
+    "method": "item/agentMessage/delta",
+    "params": { "threadId": "thread-1", "turnId": "turn-1", "itemId": "message-1", "delta": "Hello" }
+  },
+  {
+    "sequence": 4,
+    "method": "item/started",
+    "params": { "threadId": "thread-1", "turnId": "turn-1", "item": { "id": "message-1", "type": "agentMessage", "status": "running" } }
+  },
+  {
+    "sequence": 5,
+    "method": "item/plan/delta",
+    "params": { "threadId": "thread-1", "turnId": "turn-1", "itemId": "plan-1", "delta": "Inspect files" }
+  },
+  {
+    "sequence": 6,
+    "method": "item/reasoning/summaryPartAdded",
+    "params": { "threadId": "thread-1", "turnId": "turn-1", "itemId": "reasoning-1", "summaryIndex": 0 }
+  },
+  {
+    "sequence": 7,
+    "method": "item/reasoning/summaryTextDelta",
+    "params": { "threadId": "thread-1", "turnId": "turn-1", "itemId": "reasoning-1", "summaryIndex": 0, "delta": "Checking the deck." }
+  },
+  {
+    "sequence": 8,
+    "method": "item/commandExecution/outputDelta",
+    "params": { "threadId": "thread-1", "turnId": "turn-1", "itemId": "command-1", "delta": "ok\n" }
+  },
+  {
+    "sequence": 9,
+    "method": "item/fileChange/patchUpdated",
+    "params": { "threadId": "thread-1", "turnId": "turn-1", "itemId": "file-1", "patch": "--- a\n+++ b" }
+  },
+  {
+    "sequence": 10,
+    "method": "item/mcpToolCall/progress",
+    "params": { "threadId": "thread-1", "turnId": "turn-1", "itemId": "tool-1", "message": "Reading resource" }
+  },
+  {
+    "sequence": 11,
+    "method": "turn/diff/updated",
+    "params": { "threadId": "thread-1", "turnId": "turn-1", "diff": "diff --git a/deck b/deck" }
+  },
+  {
+    "sequence": 12,
+    "method": "item/completed",
+    "params": { "threadId": "thread-1", "turnId": "turn-1", "item": { "id": "message-1", "type": "agentMessage", "status": "completed", "text": "Hello" } }
+  },
+  {
+    "sequence": 13,
+    "method": "item/started",
+    "params": { "threadId": "thread-1", "turnId": "turn-1", "item": { "id": "future-1", "type": "futureItem", "status": "running" } }
+  },
+  {
+    "sequence": 14,
+    "method": "item/started",
+    "params": { "threadId": "thread-1", "turnId": "turn-1", "item": { "id": "command-1", "type": "commandExecution", "status": "running", "command": "printf ok" } }
+  },
+  {
+    "sequence": 15,
+    "method": "item/completed",
+    "params": { "threadId": "thread-1", "turnId": "turn-1", "item": { "id": "command-1", "type": "commandExecution", "status": "completed", "command": "printf ok", "aggregatedOutput": "ok\n", "exitCode": 0 } }
+  },
+  {
+    "sequence": 16,
+    "method": "item/started",
+    "params": { "threadId": "thread-1", "turnId": "turn-1", "item": { "id": "file-1", "type": "fileChange", "status": "running", "changes": [] } }
+  },
+  {
+    "sequence": 17,
+    "method": "item/completed",
+    "params": { "threadId": "thread-1", "turnId": "turn-1", "item": { "id": "file-1", "type": "fileChange", "status": "completed", "changes": [{ "path": "deck.json", "kind": "update", "diff": "--- a\n+++ b" }] } }
+  },
+  {
+    "sequence": 18,
+    "method": "item/started",
+    "params": { "threadId": "thread-1", "turnId": "turn-1", "item": { "id": "tool-1", "type": "mcpToolCall", "status": "running", "server": "fixture", "tool": "read" } }
+  },
+  {
+    "sequence": 19,
+    "method": "item/completed",
+    "params": { "threadId": "thread-1", "turnId": "turn-1", "item": { "id": "tool-1", "type": "mcpToolCall", "status": "completed", "server": "fixture", "tool": "read", "result": { "ok": true } } }
+  },
+  {
+    "sequence": 20,
+    "method": "item/started",
+    "params": { "threadId": "thread-1", "turnId": "turn-1", "item": { "id": "subagent-1", "type": "collabAgentToolCall", "status": "running", "tool": "spawnAgent", "prompt": "Inspect the deck" } }
+  },
+  {
+    "sequence": 21,
+    "method": "item/completed",
+    "params": { "threadId": "thread-1", "turnId": "turn-1", "item": { "id": "subagent-1", "type": "collabAgentToolCall", "status": "completed", "tool": "spawnAgent", "prompt": "Inspect the deck" } }
+  },
+  {
+    "sequence": 22,
+    "method": "item/started",
+    "params": { "threadId": "thread-1", "turnId": "turn-1", "item": { "id": "review-1", "type": "enteredReviewMode", "review": "Check slide quality" } }
+  },
+  {
+    "sequence": 23,
+    "method": "item/completed",
+    "params": { "threadId": "thread-1", "turnId": "turn-1", "item": { "id": "review-1", "type": "enteredReviewMode", "review": "Check slide quality" } }
+  },
+  {
+    "sequence": 24,
+    "method": "turn/completed",
+    "params": { "threadId": "thread-1", "turn": { "id": "turn-1", "status": "completed", "items": [] } }
+  }
+]

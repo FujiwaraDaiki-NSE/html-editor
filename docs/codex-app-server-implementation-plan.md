@@ -17,6 +17,7 @@ WeaveのChat UIを、Codex app-serverのThread、Turn、Item、ストリーミ�
 - app-serverから届く承認、追加質問、OAuth誘導へ安全に応答できる
 - モデル、認証、Skills、Hooks、MCPの状態をWeaveから確認・操作できる
 - app-serverの更新で未知のイベントが追加されてもChat UI全体が壊れない
+- 既存実装との互換レイヤーを残さず、app-serverを正規データ源とする構成へ完全移行する
 
 ## 2. 実装原則
 
@@ -63,7 +64,38 @@ Codex app-server
 - スライド変更履歴: git
 - エディタの現在状態: `.weave/deck.json`
 
-既存の`.weave/chat.json`は移行期間のみ読み取り対象とし、最終的にはapp-server Threadへ一本化する。
+既存の`.weave/chat.json`はインポートしない。新実装への切り替え時に破棄し、app-server Threadへ完全に一本化する。
+
+### 2.5 旧実装を残さず、完全移行する
+
+今回の変更は後方互換を目的とした段階的拡張ではなく、あるべき構成へのクリーンブレーク移行とする。
+
+- 旧データと新データを二重に読み書きしない
+- 旧Chat APIと新Thread APIを併存させない
+- 旧`useState`群と新Reducerを併存させない
+- 旧JSON-RPCクライアントをフォールバックとして残さない
+- 旧イベント形式を新イベント形式へ変換する恒久的な互換層を作らない
+- 旧挙動を維持するためのfeature flagを作らない
+- 新設計へ置き換えた時点で、旧コード、旧テスト、旧エンドポイント、旧データファイルを削除する
+
+各Phaseでは実装途中の短期間だけ旧構成と新構成が同一ブランチに存在し得るが、そのPhaseの完了条件として対象領域の旧実装を削除する。最終リリースに二重経路を持ち込まない。
+
+#### 破棄する既存データ
+
+- `.weave/chat.json`の会話履歴
+- 現行Weave実装が作成したThreadのうち、新しいWeave Threadとして明示的に識別できないもの
+- フロントエンドの一時的なChat状態
+
+既存のCodex CLI／他クライアントが作成したThreadは削除しない。Weave側の一覧対象から除外する。
+
+#### 保持する既存データ
+
+- `.weave/deck.json`
+- `.weave/current-buffer.json`
+- `slides/`以下のHTML
+- スライド変更履歴としてのgitコミットとブランチ
+
+これらはChat／app-server統合とは別ドメインであり、今回の移行対象外とする。
 
 ## 3. 対象外
 
@@ -183,7 +215,7 @@ type CodexUIState = {
 
 実装内容:
 
-- 現在の`CodexAppServer`クラスを独立モジュールへ分離
+- 現在の`CodexAppServer`クラスを新しい通信モジュールで置き換える
 - outbound request／response
 - notification
 - app-serverから届く逆向きrequest
@@ -199,6 +231,8 @@ type CodexUIState = {
 - モックapp-serverと双方向JSON-RPC通信できる
 - responseと逆向きrequestをIDだけで誤判定しない
 - app-server停止時に保留中requestがすべて解放される
+- `server/local-api.mjs`内の旧JSON-RPCクライアント実装が削除されている
+- 旧クライアントへのフォールバック経路が存在しない
 
 ### Phase 2: イベントReducer
 
@@ -210,12 +244,14 @@ type CodexUIState = {
 - 重複イベントの無害化
 - 順序が前後したイベントへの対応
 - 未知のイベント・Itemへのフォールバック
-- `app/page.tsx`内のイベント別`useState`更新をReducerへ移行
+- `app/page.tsx`内のイベント別`useState`更新をReducerで置き換える
 
 完了条件:
 
 - 保存したイベント列を再生すると同じUI状態になる
 - Reactコンポーネントが生のapp-serverイベントを直接処理しない
+- Chat、Agent実行状態、Reasoning、Activityを管理していた旧`useState`と更新関数が削除されている
+- Reducerを通らずChat UI状態を更新する経路が存在しない
 
 ### Phase 3: Agent作業カード
 
@@ -276,6 +312,9 @@ UI:
 - アプリ再起動後も過去Threadを再開できる
 - Threadをフォークしても元の会話が変更されない
 - `.weave/chat.json`がなくてもChat UIが動作する
+- `.weave/chat.json`、`chatPath`、`readChat`、`writeChat`、`appendChat`が削除されている
+- 旧`/api/chat/*`エンドポイントが削除されている
+- 会話履歴をapp-server Thread以外へ永続化する経路が存在しない
 
 ### Phase 5: Turn操作
 
@@ -376,14 +415,25 @@ MCP:
 - 認証状態の変化を再起動なしでUIへ反映する
 - 認証情報をブラウザやWeaveのDBへ永続化しない
 
-### Phase 8: 移行、検証、堅牢化
+### Phase 8: クリーンブレーク移行、検証、堅牢化
 
 移行:
 
-- 既存`.weave/chat.json`の読み取り
-- 既存Threadが存在しない場合の新規作成
-- 現行Chat UIとの表示互換
+- 既存`.weave/chat.json`を削除する
+- `.git/info/exclude`から`.weave/chat.json`用ルールを削除する
+- 旧Weave会話履歴をインポートしない
+- 旧Weave Threadを新しい一覧へ取り込まない
+- 新しい識別情報を持つWeave Threadを新規作成する
+- 現行Chat UIとのデータ互換・表示互換を設けない
+- 旧API、旧状態型、旧イベント変換、旧テストfixtureを削除する
 - 複数提案のgitブランチ機能を維持
+
+移行境界:
+
+- Chat／app-server統合データは破棄する
+- デッキ、スライドHTML、git履歴は保持する
+- 他のCodexクライアントが作成したThreadには変更を加えない
+- データ破棄はリリースノートと起動時メッセージで明示する
 
 テスト:
 
@@ -413,6 +463,9 @@ MCP:
 - 全主要イベントのfixtureを再生できる
 - app-server切断、再起動、未知イベントでUIが壊れない
 - lint、build、単体テスト、E2Eが通る
+- リポジトリ内に旧Chat永続化・旧RPCクライアント・旧状態管理への参照がない
+- 新旧経路を選択する設定、feature flag、フォールバックがない
+- 新規環境と旧データが存在する環境で同じ新アーキテクチャが起動する
 
 ## 7. 推奨PR分割
 
@@ -424,9 +477,11 @@ MCP:
 6. 逆向きrequest
 7. モデルと認証
 8. Skills、Hooks、MCP
-9. 移行とE2E
+9. 旧実装削除、クリーンブレーク切り替え、E2E
 
 各PRは、前段階の公開インターフェースだけに依存させる。実験APIは安定APIのPRへ混在させない。
+
+各PRの対象領域では、置き換えが完了した旧実装を同じPRで削除する。「あとで消す」互換コードを積み残さない。
 
 ## 8. 着手順
 
@@ -442,7 +497,26 @@ MCP:
 
 通信層を分離し、生成型と双方向requestを整備した後でReducerとUIイベントへ進む。
 
-## 9. 仕様更新への対応
+## 9. 完全移行のDefinition of Done
+
+次をすべて満たした時点で移行完了とする。
+
+- app-server Threadだけが会話の正規データ源になっている
+- `.weave/chat.json`が存在しない
+- 旧Chat APIが存在しない
+- 旧JSON-RPCクライアントが存在しない
+- Chat UIの状態更新がReducerへ一本化されている
+- 主要イベントがItemカードへ正規化されている
+- 逆向きrequestが専用routerで処理されている
+- 旧イベント形式への互換コードが存在しない
+- 新旧実装を切り替えるfeature flagが存在しない
+- 旧データを自動インポートするコードが存在しない
+- デッキ、スライドHTML、git履歴が移行前と同じ状態で保持されている
+- 単体テスト、統合テスト、E2Eが新アーキテクチャだけを対象に通る
+
+完了確認では、`rg`による旧シンボル・旧エンドポイントの不在確認もテストへ含める。
+
+## 10. 仕様更新への対応
 
 app-serverはCodex CLIの更新に伴ってAPIが追加・変更される。
 

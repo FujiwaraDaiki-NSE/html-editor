@@ -1,6 +1,13 @@
 "use client";
+/* eslint-disable @typescript-eslint/no-explicit-any -- app-server catalog/request payloads are rendered defensively for forward compatibility. */
 
-import { DragEvent, useEffect, useMemo, useRef, useState } from "react";
+import { DragEvent, useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
+import { actionFromStreamEvent } from "./codex/actions";
+import { EditableText, focusEditableAt } from "./components/EditableText";
+import { ItemCard } from "./codex/components/ItemCard";
+import { ServerRequestCard } from "./codex/components/ServerRequestCard";
+import { codexReducer, initialCodexState } from "./codex/reducer";
+import { selectThreadRunning, selectThreadTurns, selectTurnItems } from "./codex/selectors";
 
 type Block = {
   id: string;
@@ -8,6 +15,8 @@ type Block = {
   label: string;
   text: string;
 };
+
+type SlideNav = "filmstrip" | "rail";
 
 type DeckSlide = {
   id: string;
@@ -33,7 +42,6 @@ type ServerState = {
     slides: DeckSlide[];
   };
   history: HistoryEntry[];
-  chat: ChatMessage[];
   variations: Array<{
     branch: string;
     label: string;
@@ -47,26 +55,49 @@ type ServerState = {
     commit: string;
     clean: boolean;
   };
-  agent: {
+  codex: {
     ready: boolean;
-    account: { type: string; planType?: string } | null;
-    error: string | null;
-    active: boolean;
+    connection: string;
+    version: { compatible: boolean; running: string; generated: string; message: string | null } | null;
+    catalog: {
+      models: any[];
+      skills: any[];
+      hooks: any[];
+      mcpServers: any[];
+      account: Record<string, any> | null;
+      modelProvider: Record<string, any> | null;
+    };
+    activeTurns: Record<string, string>;
+    pendingRequests: Array<{ id: string | number; method: string; params: Record<string, any>; createdAt: number }>;
   };
-};
-
-type ChatMessage = {
-  id: string;
-  role: "agent" | "user";
-  text: string;
-  reasoning?: string[];
-  activity?: string[];
-  status?: string;
+  migrationNotice: string;
 };
 
 const apiBase = "http://127.0.0.1:4317/api";
-const createMessageId = (role: ChatMessage["role"]) =>
-  `${role}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+/* Slide-navigator placement lives in localStorage, read through an external store so the
+   server and the first client render agree on the default before the stored value applies. */
+const slideNavKey = "weave.slideNav";
+const slideNavListeners = new Set<() => void>();
+const slideNavStore = {
+  subscribe(listener: () => void) {
+    slideNavListeners.add(listener);
+    return () => {
+      slideNavListeners.delete(listener);
+    };
+  },
+  read: (): SlideNav => (window.localStorage.getItem(slideNavKey) === "rail" ? "rail" : "filmstrip"),
+  serverRead: (): SlideNav => "filmstrip",
+  write(value: SlideNav) {
+    window.localStorage.setItem(slideNavKey, value);
+    slideNavListeners.forEach((listener) => listener());
+  },
+};
+
+const createMessageId = () =>
+  `weave-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+const displayThreadName = (name: string | null | undefined) =>
+  name?.replace(/^Weave · /, "") || null;
 
 const initialBlocks: Block[] = [
   { id: "eyebrow", kind: "eyebrow", label: "Eyebrow", text: "PRODUCT STRATEGY · 2026" },
@@ -130,30 +161,58 @@ export default function Home() {
   const [showBackgrounds, setShowBackgrounds] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [saved, setSaved] = useState(true);
-  const [chat, setChat] = useState("");
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: "initial-agent-message",
-      role: "agent",
-      text: "I’ve reviewed the current slide. What would you like to shape next?",
-    },
-  ]);
+  const [promptDraft, setPromptDraft] = useState("");
+  const [codexState, dispatchCodex] = useReducer(codexReducer, initialCodexState);
+  const slideNav = useSyncExternalStore(slideNavStore.subscribe, slideNavStore.read, slideNavStore.serverRead);
+  const [threadSearch, setThreadSearch] = useState("");
+  const [showThreads, setShowThreads] = useState(false);
+  const [showArchivedThreads, setShowArchivedThreads] = useState(false);
+  const [showCodexSettings, setShowCodexSettings] = useState(false);
+  const [selectedModel, setSelectedModel] = useState("");
+  const [reasoningEffort, setReasoningEffort] = useState("medium");
+  const [approvalPolicy, setApprovalPolicy] = useState("never");
+  const [apiKeyDraft, setApiKeyDraft] = useState("");
+  const [mcpResult, setMcpResult] = useState("");
+  const [turnSubmitting, setTurnSubmitting] = useState(false);
   const [draggedId, setDraggedId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [project, setProject] = useState<ServerState["project"] | null>(null);
-  const [agentReady, setAgentReady] = useState(false);
-  const [agentRunning, setAgentRunning] = useState(false);
-  const [agentActivity, setAgentActivity] = useState("Connecting to Codex…");
   const [apiError, setApiError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
   const compositionRef = useRef(false);
   const turnInFlightRef = useRef(false);
   const shouldAutoScrollRef = useRef(true);
+  const eventSequenceRef = useRef(0);
 
   const selected = blocks.find((block) => block.id === selectedId) ?? blocks[0];
   const code = useMemo(() => codeFor(blocks), [blocks]);
+  const agentReady = codexState.connection.status === "connected";
+  const agentRunning = selectThreadRunning(codexState, codexState.activeThreadId);
+  const activeTurns = selectThreadTurns(codexState, codexState.activeThreadId);
+  const selectedModelInfo = useMemo(
+    () => codexState.catalog.models.find(
+      (model: any) => (model.id ?? model.model) === selectedModel,
+    ) as any,
+    [codexState.catalog.models, selectedModel],
+  );
+  const availableEfforts = useMemo(
+    () => selectedModelInfo?.supportedReasoningEfforts?.map(
+      (option: any) => option.reasoningEffort,
+    ) ?? ["low", "medium", "high"],
+    [selectedModelInfo],
+  );
+  const agentActivity = !agentReady
+    ? codexState.connection.error ?? "Connecting to Codex…"
+    : agentRunning
+      ? "Codex is working…"
+      : "Ready";
+  const activeThread = codexState.activeThreadId ? codexState.threads[codexState.activeThreadId] : null;
+  const activeThreadName = activeThread
+    ? displayThreadName(activeThread.name) || activeThread.preview || "New conversation"
+    : "No conversation";
 
   const deckPayload = () => {
     const slides = deckSlides.map((slide, index) =>
@@ -169,49 +228,41 @@ export default function Home() {
     };
   };
 
-  const applyServerState = (state: ServerState) => {
+  const applyServerState = useCallback((state: ServerState) => {
     setBlocks(state.deck.blocks);
     setDeckSlides(state.deck.slides ?? initialSlides);
     setActiveSlide(state.deck.activeSlide);
     setBackground(state.deck.background);
     setAccent(state.deck.accent);
     setHistory(state.history);
-    setMessages((current) =>
-      (state.chat ?? []).map((message, index) => {
-        const normalized = {
-          ...message,
-          id: message.id || `${message.role}-server-${index}`,
-        };
-        const existing =
-          current.find((item) => item.id === normalized.id) ??
-          [...current].reverse().find(
-            (item) => item.role === normalized.role && item.text === normalized.text,
-          );
-        return existing
-          ? {
-              ...normalized,
-              reasoning: existing.reasoning,
-              activity: existing.activity,
-              status: existing.status,
-            }
-          : normalized;
-      }),
-    );
     setVariations(state.variations ?? []);
     setProject(state.project);
     setActiveVariation(state.project.branch);
-    setAgentReady(state.agent.ready);
-    setAgentRunning(state.agent.active);
-    setAgentActivity(
-      state.agent.ready
-        ? state.agent.account?.type === "chatgpt"
-          ? "Connected with ChatGPT"
-          : "Connected with API key"
-        : state.agent.error ?? "Codex is unavailable",
-    );
-    setApiError(state.agent.ready ? null : state.agent.error);
+    dispatchCodex({
+      type: "connection",
+      connection: {
+        status: state.codex.ready ? "connected" : state.codex.version?.compatible === false ? "incompatible" : "connecting",
+        error: state.codex.version?.message ?? null,
+        cliVersion: state.codex.version?.running,
+      },
+    });
+    dispatchCodex({ type: "catalog", catalog: state.codex.catalog });
+    dispatchCodex({ type: "pendingRequests", requests: state.codex.pendingRequests });
+    dispatchCodex({ type: "activeTurns", activeTurns: state.codex.activeTurns });
+    setSelectedModel((current) => {
+      if (current) return current;
+      const firstModel = state.codex.catalog.models?.[0];
+      return firstModel?.id ?? firstModel?.model ?? "";
+    });
+    setReasoningEffort((current) => {
+      const firstModel = state.codex.catalog.models?.[0];
+      const supported = firstModel?.supportedReasoningEfforts?.map((option: any) => option.reasoningEffort) ?? [];
+      return supported.length > 0 && !supported.includes(current)
+        ? firstModel.defaultReasoningEffort ?? supported[0]
+        : current;
+    });
     setSaved(state.project.clean);
-  };
+  }, []);
 
   useEffect(() => {
     let canceled = false;
@@ -225,14 +276,13 @@ export default function Home() {
         const state = (await response.json()) as ServerState;
         if (canceled) return;
         applyServerState(state);
-        if ((!state.agent.ready || state.agent.active) && attempts < 10) {
+        if (!state.codex.ready && attempts < 10) {
           attempts += 1;
           timer = setTimeout(() => void loadState(), 600);
         }
       } catch (error) {
         if (canceled) return;
-        setAgentReady(false);
-        setAgentActivity("Local API offline");
+        dispatchCodex({ type: "connection", connection: { status: "disconnected", error: "Local API offline" } });
         setApiError(error instanceof Error ? error.message : String(error));
         if (attempts < 10) {
           attempts += 1;
@@ -245,7 +295,86 @@ export default function Home() {
       canceled = true;
       if (timer) clearTimeout(timer);
     };
-  }, []);
+  }, [applyServerState]);
+
+  useEffect(() => {
+    let canceled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const connect = async () => {
+      try {
+        const response = await fetch(`${apiBase}/codex/events?after=${eventSequenceRef.current}`);
+        if (!response.ok || !response.body) throw new Error("Codex event stream is unavailable.");
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let pending = "";
+        while (!canceled) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          pending += decoder.decode(value, { stream: true });
+          const lines = pending.split("\n");
+          pending = lines.pop() ?? "";
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            const envelope = JSON.parse(line);
+            eventSequenceRef.current = Math.max(eventSequenceRef.current, envelope.sequence ?? 0);
+            if (envelope.type === "weave/project") {
+              const stateResponse = await fetch(`${apiBase}/state`);
+              if (stateResponse.ok) applyServerState(await stateResponse.json());
+              continue;
+            }
+            const action = actionFromStreamEvent(envelope);
+            if (action) dispatchCodex(action);
+          }
+        }
+      } catch (error) {
+        if (!canceled) {
+          dispatchCodex({ type: "connection", connection: { status: "reconnecting", error: error instanceof Error ? error.message : String(error) } });
+        }
+      }
+      if (!canceled) retryTimer = setTimeout(() => void connect(), 800);
+    };
+    void connect();
+    return () => {
+      canceled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+    };
+  }, [applyServerState]);
+
+  useEffect(() => {
+    let canceled = false;
+    const timer = setTimeout(() => {
+      void (async () => {
+        try {
+          const query = new URLSearchParams({
+            archived: String(showArchivedThreads),
+            ...(threadSearch.trim() ? { q: threadSearch.trim() } : {}),
+          });
+          const response = await fetch(`${apiBase}/codex/threads?${query}`);
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error ?? "Could not list threads.");
+          if (canceled) return;
+          dispatchCodex({ type: "threadsLoaded", threads: result.data ?? [], archived: showArchivedThreads });
+          if (!codexState.activeThreadId && result.data?.[0]) {
+            const read = await fetch(`${apiBase}/codex/thread/read`, {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({ threadId: result.data[0].id }),
+            });
+            if (read.ok && !canceled) {
+              const value = await read.json();
+              dispatchCodex({ type: "threadLoaded", thread: value.thread, activate: true });
+            }
+          }
+        } catch (error) {
+          if (!canceled) setApiError(error instanceof Error ? error.message : String(error));
+        }
+      })();
+    }, 180);
+    return () => {
+      canceled = true;
+      clearTimeout(timer);
+    };
+  }, [showArchivedThreads, threadSearch, agentReady, codexState.activeThreadId]);
 
   useEffect(() => {
     if (shouldAutoScrollRef.current) {
@@ -254,7 +383,7 @@ export default function Home() {
         block: "end",
       });
     }
-  }, [messages, agentRunning]);
+  }, [codexState.items, agentRunning]);
 
   const updateSelected = (patch: Partial<Block>) => {
     setBlocks((items) => items.map((item) => (item.id === selected.id ? { ...item, ...patch } : item)));
@@ -264,6 +393,21 @@ export default function Home() {
   const selectBlock = (id: string) => {
     setSelectedId(id);
     setMode("preview");
+  };
+
+  const editBlockText = (id: string, text: string) => {
+    const target = blocks.find((block) => block.id === id);
+    if (!target || target.text === text) return;
+    setBlocks((items) => items.map((item) => (item.id === id ? { ...item, text } : item)));
+    setSaved(false);
+  };
+
+  /* Metric blocks keep "value|caption|value|caption" in one string, so each cell
+     writes back into its own slot. Separators typed by hand would split the row. */
+  const editMetricPart = (block: Block, index: number, part: string) => {
+    const parts = block.text.split("|");
+    parts[index] = part.replace(/[|\n]/g, " ");
+    editBlockText(block.id, parts.join("|"));
   };
 
   const switchSlide = async (slideNumber: number) => {
@@ -402,54 +546,31 @@ export default function Home() {
     const prompt = variationPrompt.trim();
     if (!prompt || turnInFlightRef.current) return;
     turnInFlightRef.current = true;
-    setAgentRunning(true);
-    setAgentActivity("Creating a new direction…");
+    setTurnSubmitting(true);
     setShowVariationPrompt(false);
     setApiError(null);
     try {
       const response = await fetch(`${apiBase}/variations/generate`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ prompt, deck: deckPayload() }),
+        body: JSON.stringify({
+          prompt,
+          deck: deckPayload(),
+          clientUserMessageId: createMessageId(),
+          model: selectedModel || undefined,
+          effort: reasoningEffort,
+          approvalPolicy,
+        }),
       });
-      if (!response.ok || !response.body) {
-        const result = await response.json();
-        throw new Error(result.error ?? "Could not generate direction.");
-      }
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let pending = "";
-      while (true) {
-        const { value: chunk, done } = await reader.read();
-        pending += decoder.decode(chunk ?? new Uint8Array(), { stream: !done });
-        const lines = pending.split("\n");
-        pending = lines.pop() ?? "";
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          const event = JSON.parse(line);
-          if (event.type === "variation") {
-            setActiveVariation(event.branch);
-            setAgentActivity(`${event.label} is generating…`);
-          } else if (event.type === "activity") {
-            setAgentActivity(event.text);
-          } else if (event.type === "done") {
-            applyServerState(event.state as ServerState);
-            setAgentActivity("Direction ready");
-          } else if (event.type === "canceled") {
-            applyServerState(event.state as ServerState);
-            setAgentActivity("Incomplete direction discarded");
-          } else if (event.type === "error") {
-            throw new Error(event.error);
-          }
-        }
-        if (done) break;
-      }
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Could not generate direction.");
+      setActiveVariation(result.branch);
+      dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
     } catch (error) {
       setApiError(error instanceof Error ? error.message : String(error));
-      setAgentActivity("Direction generation failed");
     } finally {
       turnInFlightRef.current = false;
-      setAgentRunning(false);
+      setTurnSubmitting(false);
     }
   };
 
@@ -459,7 +580,6 @@ export default function Home() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Could not use this direction.");
       applyServerState(result as ServerState);
-      setAgentActivity("Direction added to history");
       setApiError(null);
     } catch (error) {
       setApiError(error instanceof Error ? error.message : String(error));
@@ -472,7 +592,6 @@ export default function Home() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Could not archive this direction.");
       applyServerState(result as ServerState);
-      setAgentActivity("Direction moved to history");
       setApiError(null);
     } catch (error) {
       setApiError(error instanceof Error ? error.message : String(error));
@@ -480,192 +599,267 @@ export default function Home() {
   };
 
   const sendMessage = async () => {
-    const value = chat.trim();
+    const value = promptDraft.trim();
     if (!value || turnInFlightRef.current) return;
     turnInFlightRef.current = true;
-    const userMessageId = createMessageId("user");
-    const replyMessageId = createMessageId("agent");
+    setTurnSubmitting(true);
     shouldAutoScrollRef.current = true;
-    setMessages((items) => [
-      ...items,
-      { id: userMessageId, role: "user", text: value },
-      {
-        id: replyMessageId,
-        role: "agent",
-        text: "",
-        activity: ["Starting turn…"],
-        status: "starting",
-      },
-    ]);
-    setChat("");
-    setAgentRunning(true);
-    setAgentActivity("Starting turn…");
     setApiError(null);
-
-    const reasoningDetails: string[] = [];
-    const activityDetails = ["Starting turn…"];
-    let restoreDraftOnError = false;
-    const updateReply = (patch: Partial<ChatMessage>) => {
-      setMessages((items) =>
-        items.map((item) => (item.id === replyMessageId ? { ...item, ...patch } : item)),
-      );
-    };
-    const appendReplyDetail = (field: "reasoning" | "activity", text: string) => {
-      if (!text) return;
-      if (field === "reasoning") reasoningDetails.push(text);
-      else activityDetails.push(text);
-      setMessages((items) =>
-        items.map((item) =>
-          item.id === replyMessageId
-            ? { ...item, [field]: [...(item[field] ?? []), text] }
-            : item,
-        ),
-      );
-    };
-    const appendReplyReasoning = (text: string, summaryIndex?: number) => {
-      if (!text) return;
-      const detailIndex =
-        typeof summaryIndex === "number" && summaryIndex >= 0
-          ? summaryIndex
-          : Math.max(reasoningDetails.length - 1, 0);
-      reasoningDetails[detailIndex] = `${reasoningDetails[detailIndex] ?? ""}${text}`;
-      setMessages((items) =>
-        items.map((item) => {
-          if (item.id !== replyMessageId) return item;
-          const reasoning = [...(item.reasoning ?? [])];
-          reasoning[detailIndex] = `${reasoning[detailIndex] ?? ""}${text}`;
-          return { ...item, reasoning };
-        }),
-      );
-    };
-
     try {
-      const response = await fetch(`${apiBase}/agent/turn`, {
+      let threadId = codexState.activeThreadId;
+      if (!threadId) {
+        const startResponse = await fetch(`${apiBase}/codex/thread/start`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ approvalPolicy, model: selectedModel || undefined }),
+        });
+        const started = await startResponse.json();
+        if (!startResponse.ok) throw new Error(started.error ?? "Could not start a Thread.");
+        threadId = started.thread.id;
+        dispatchCodex({ type: "threadLoaded", thread: started.thread, activate: true });
+      }
+      const endpoint = agentRunning ? "codex/turn/steer" : "codex/turn/start";
+      const response = await fetch(`${apiBase}/${endpoint}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ prompt: value, selectedId, deck: deckPayload() }),
+        body: JSON.stringify({
+          threadId,
+          prompt: value,
+          clientUserMessageId: createMessageId(),
+          selectedId,
+          deck: deckPayload(),
+          model: selectedModel || undefined,
+          effort: reasoningEffort,
+          approvalPolicy,
+        }),
       });
-      if (!response.ok || !response.body) {
-        const result = await response.json().catch(() => null);
-        restoreDraftOnError = true;
-        throw new Error(result?.error ?? "Agent turn failed.");
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let pending = "";
-      let streamed = "";
-      while (true) {
-        const { value: chunk, done } = await reader.read();
-        pending += decoder.decode(chunk ?? new Uint8Array(), { stream: !done });
-        const lines = pending.split("\n");
-        pending = lines.pop() ?? "";
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          const event = JSON.parse(line);
-          if (event.type === "delta") {
-            streamed += event.text;
-            updateReply({ text: streamed });
-          } else if (event.type === "reasoning") {
-            const detail = event.text ?? event.summary ?? event.delta ?? "";
-            if (event.event === "summaryTextDelta") {
-              appendReplyReasoning(detail, event.summaryIndex);
-            } else {
-              appendReplyDetail("reasoning", detail);
-            }
-            setAgentActivity("Reviewing the request…");
-          } else if (event.type === "activity") {
-            setAgentActivity(event.text);
-            appendReplyDetail("activity", event.text);
-          } else if (event.type === "status") {
-            const status =
-              event.status === "running"
-                ? "Editing with Codex…"
-                : event.status === "retrying"
-                  ? "Retrying with Codex…"
-                  : event.status === "stopping"
-                    ? "Stopping Agent…"
-                    : "Preparing context…";
-            setAgentActivity(status);
-            updateReply({ status });
-          } else if (event.type === "done") {
-            updateReply({
-              text: streamed || event.text || "The Agent completed without a text response.",
-              status: "completed",
-            });
-            if (event.state) applyServerState(event.state as ServerState);
-            setAgentActivity("Turn completed");
-          } else if (event.type === "canceled") {
-            if (event.state) applyServerState(event.state as ServerState);
-            setMessages((items) => {
-              const canceledReply = {
-                id: replyMessageId,
-                role: "agent" as const,
-                text: streamed || "Turn stopped.",
-                reasoning: reasoningDetails,
-                activity: activityDetails,
-                status: "interrupted",
-              };
-              return items.some((item) => item.id === replyMessageId)
-                ? items.map((item) =>
-                    item.id === replyMessageId ? { ...item, ...canceledReply } : item,
-                  )
-                : [...items, canceledReply];
-            });
-            setAgentActivity("Turn stopped");
-          } else if (event.type === "error") {
-            throw new Error(event.error);
-          }
-        }
-        if (done) break;
-      }
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Agent turn failed.");
+      setPromptDraft("");
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (restoreDraftOnError) setChat((current) => current || value);
-      setApiError(message);
-      updateReply({
-        text: `Couldn’t complete the turn: ${message}`,
-        status: "failed",
-      });
-      setAgentActivity("Agent turn failed");
+      setApiError(error instanceof Error ? error.message : String(error));
     } finally {
       turnInFlightRef.current = false;
-      setAgentRunning(false);
+      setTurnSubmitting(false);
     }
   };
 
   const interruptAgent = async () => {
     try {
-      const response = await fetch(`${apiBase}/agent/interrupt`, { method: "POST" });
-      if (!response.ok) throw new Error("Could not stop the active turn.");
-      setAgentActivity("Stopping Agent…");
-      if (!turnInFlightRef.current) {
-        for (let attempt = 0; attempt < 6; attempt += 1) {
-          await new Promise((resolve) => setTimeout(resolve, 300));
-          const stateResponse = await fetch(`${apiBase}/state`);
-          if (!stateResponse.ok) continue;
-          const state = (await stateResponse.json()) as ServerState;
-          applyServerState(state);
-          if (!state.agent.active) break;
-        }
-      }
+      const response = await fetch(`${apiBase}/codex/turn/interrupt`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ threadId: codexState.activeThreadId }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Could not stop the active turn.");
     } catch (error) {
       setApiError(error instanceof Error ? error.message : String(error));
     }
   };
 
-  const clearChat = async () => {
-    if (turnInFlightRef.current) return;
+  const newThread = async () => {
     try {
-      const response = await fetch(`${apiBase}/chat/clear`, { method: "POST" });
+      const response = await fetch(`${apiBase}/codex/thread/start`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ approvalPolicy, model: selectedModel || undefined }),
+      });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Could not start a new conversation.");
-      applyServerState(result as ServerState);
+      if (!response.ok) throw new Error(result.error ?? "Could not start a Thread.");
+      dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
       setApiError(null);
     } catch (error) {
       setApiError(error instanceof Error ? error.message : String(error));
     }
   };
+
+  const openThread = async (threadId: string) => {
+    try {
+      const response = await fetch(`${apiBase}/codex/thread/resume`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ threadId }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Could not resume the Thread.");
+      dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const threadAction = async (action: string, params: Record<string, unknown> = {}) => {
+    const threadId = codexState.activeThreadId;
+    if (!threadId) return;
+    try {
+      const response = await fetch(`${apiBase}/codex/thread/action`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action, params: { threadId, ...params } }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Thread action failed.");
+      if (action === "delete") dispatchCodex({ type: "activateThread", threadId: null });
+      else await openThread(threadId);
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const forkThread = async () => {
+    if (!codexState.activeThreadId) return;
+    try {
+      const response = await fetch(`${apiBase}/codex/thread/fork`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ threadId: codexState.activeThreadId }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Could not fork the Thread.");
+      dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const manageGoal = async () => {
+    const threadId = codexState.activeThreadId;
+    if (!threadId) return;
+    try {
+      const response = await fetch(`${apiBase}/codex/thread/action`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ action: "goalGet", params: { threadId } }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Could not read the Thread goal.");
+      const current = result.goal?.objective ?? result.objective ?? "";
+      const objective = window.prompt("Thread goal (leave empty to clear)", current);
+      if (objective === null) return;
+      await threadAction(objective.trim() ? "goalSet" : "goalClear", objective.trim() ? { objective } : {});
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const resolveServerRequest = async (id: string | number, result: Record<string, unknown>) => {
+    try {
+      const response = await fetch(`${apiBase}/codex/request/resolve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id, result }),
+      });
+      const value = await response.json();
+      if (!response.ok) throw new Error(value.error ?? "Could not answer app-server.");
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const rejectServerRequest = async (id: string | number) => {
+    try {
+      const response = await fetch(`${apiBase}/codex/request/reject`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id, message: "Declined in Weave." }),
+      });
+      const value = await response.json();
+      if (!response.ok) throw new Error(value.error ?? "Could not decline app-server.");
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const updateSkill = async (skill: any, enabled: boolean) => {
+    try {
+      const response = await fetch(`${apiBase}/codex/skill/config`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path: skill.path ?? null, name: skill.name ?? null, enabled }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Could not update Skill.");
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const login = async (type: "chatgpt" | "apiKey") => {
+    try {
+      const response = await fetch(`${apiBase}/codex/account/login`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(type === "apiKey" ? { type, apiKey: apiKeyDraft } : { type }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Login could not start.");
+      setApiKeyDraft("");
+      const loginUrl = result.authUrl ?? result.loginUrl ?? result.url;
+      if (loginUrl && window.confirm("Open the secure Codex login page in your browser?")) window.open(loginUrl, "_blank", "noopener,noreferrer");
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const invokeMcp = async (server: any, kind: "resource" | "tool") => {
+    try {
+      let path: string;
+      let body: Record<string, unknown>;
+      if (kind === "resource") {
+        const uri = window.prompt("MCP resource URI", server.resources?.[0]?.uri ?? "");
+        if (!uri) return;
+        path = "resource/read";
+        body = { server: server.name, uri, threadId: codexState.activeThreadId };
+      } else {
+        if (!codexState.activeThreadId) throw new Error("Select a Weave Thread before calling an MCP tool.");
+        const tool = window.prompt("MCP tool name", Object.keys(server.tools ?? {})[0] ?? "");
+        if (!tool) return;
+        const raw = window.prompt("Tool arguments as JSON", "{}");
+        if (raw === null) return;
+        path = "tool/call";
+        body = { server: server.name, tool, arguments: JSON.parse(raw), threadId: codexState.activeThreadId };
+      }
+      const response = await fetch(`${apiBase}/codex/mcp/${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "MCP request failed.");
+      setMcpResult(JSON.stringify(result, null, 2).slice(0, 20_000));
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : String(error));
+    }
+  };
+
+  const slideNavigator = (
+    <>
+      {deckSlides.map((slide, index) => {
+        const slideNumber = index + 1;
+        return (
+          <button
+            key={slide.id}
+            className={`slide-item ${activeSlide === slideNumber ? "active" : ""}`}
+            onClick={() => void switchSlide(slideNumber)}
+            disabled={agentRunning}
+            title={slide.title}
+          >
+            <span className="slide-number">{String(slideNumber).padStart(2, "0")}</span>
+            <span className={`mini-slide mini-${(index % 4) + 1}`}>
+              <i />
+              <b />
+              <em />
+            </span>
+            <span className="slide-name">{slide.title}</span>
+          </button>
+        );
+      })}
+      <button className="new-slide" onClick={addSlide} disabled={agentRunning} aria-label="New slide" title="New slide">
+        ＋
+      </button>
+    </>
+  );
 
   return (
     <main
@@ -702,7 +896,7 @@ export default function Home() {
         </div>
       </header>
 
-      <div className="workspace">
+      <div className="workspace" data-slide-nav={slideNav}>
         <nav className="activity-rail" aria-label="Primary navigation">
           <div className="activity-top">
             <button className="activity-button active" aria-label="Files">◇</button>
@@ -712,49 +906,31 @@ export default function Home() {
           </div>
           <div className="activity-bottom">
             <div className="avatar">FK</div>
-            <button className="activity-button" aria-label="Settings">⚙</button>
+            <button className="activity-button" aria-label="Settings" onClick={() => setShowCodexSettings(true)}>⚙</button>
           </div>
         </nav>
 
-        <aside className="left-panel">
-          <section className="outline-panel">
-            <div className="panel-heading">
-              <span>OUTLINE</span>
-              <button aria-label="More outline options">•••</button>
-            </div>
-            <div className="deck-label"><span>⌄</span> Q3 STRATEGY DECK</div>
-            <div className="slides-list">
-              {deckSlides.map((slide, index) => {
-                const slideNumber = index + 1;
-                return (
-                <button
-                  key={slide.id}
-                  className={`slide-row ${activeSlide === slideNumber ? "active" : ""}`}
-                  onClick={() => void switchSlide(slideNumber)}
-                  disabled={agentRunning}
-                >
-                  <span className="slide-number">{String(slideNumber).padStart(2, "0")}</span>
-                  <span className={`mini-slide mini-${(index % 4) + 1}`}>
-                    <i />
-                    <b />
-                    <em />
-                  </span>
-                  <span className="slide-name">
-                    <strong>{slide.title}</strong>
-                    <small>{slideNumber === 1 ? "Title slide" : slide.background === "grid" ? "Grid background" : "Content slide"}</small>
-                  </span>
-                </button>
-                );
-              })}
-            </div>
-            <button className="new-slide" onClick={addSlide} disabled={agentRunning}><span>＋</span> New slide</button>
-          </section>
+        {slideNav === "rail" && (
+          <nav className="slide-nav slide-rail" aria-label="Slides">
+            {slideNavigator}
+          </nav>
+        )}
 
+        <aside className="left-panel">
           <section className="agent-panel">
             <div className="agent-heading">
               <span><i aria-hidden="true" className={`agent-status ${agentReady ? "" : "offline"}`} /> AGENT</span>
               <button
-                onClick={() => void clearChat()}
+                className="thread-switcher"
+                onClick={() => setShowThreads((value) => !value)}
+                aria-expanded={showThreads}
+                title="Switch conversation"
+              >
+                <span>{activeThreadName}</span>
+                <em aria-hidden="true">⌄</em>
+              </button>
+              <button
+                onClick={() => void newThread()}
                 aria-label="New conversation"
                 title="New conversation"
                 disabled={agentRunning}
@@ -762,6 +938,64 @@ export default function Home() {
                 ＋
               </button>
             </div>
+            {showThreads && (
+              <>
+                <div className="thread-popover-backdrop" role="presentation" onMouseDown={() => setShowThreads(false)} />
+                <div className="thread-popover">
+                  <div className="thread-controls">
+                    <input
+                      type="search"
+                      value={threadSearch}
+                      onChange={(event) => setThreadSearch(event.target.value)}
+                      placeholder="Search Threads"
+                      aria-label="Search Threads"
+                    />
+                    <button
+                      className={showArchivedThreads ? "active" : ""}
+                      onClick={() => setShowArchivedThreads((value) => !value)}
+                    >
+                      {showArchivedThreads ? "Active" : "Archive"}
+                    </button>
+                  </div>
+                  <div className="thread-list" aria-label="Threads">
+                    {codexState.threadOrder
+                      .map((id) => codexState.threads[id])
+                      .filter((thread) => thread && thread.archived === showArchivedThreads)
+                      .slice(0, 12)
+                      .map((thread) => (
+                        <button
+                          key={thread.id}
+                          className={codexState.activeThreadId === thread.id ? "active" : ""}
+                          onClick={() => {
+                            setShowThreads(false);
+                            void openThread(thread.id);
+                          }}
+                        >
+                          <strong>{displayThreadName(thread.name) || thread.preview || "New conversation"}</strong>
+                          <small>{thread.status}</small>
+                        </button>
+                      ))}
+                  </div>
+                  {codexState.activeThreadId && (
+                    <div className="thread-actions">
+                      <button onClick={() => {
+                        const name = window.prompt("Thread name", displayThreadName(codexState.threads[codexState.activeThreadId!]?.name) ?? "");
+                        if (name !== null) void threadAction("name", { name });
+                      }}>Rename</button>
+                      <button onClick={() => void forkThread()}>Fork</button>
+                      <button onClick={() => void manageGoal()}>Goal</button>
+                      <button onClick={() => void threadAction("compact")}>Compact</button>
+                      <button onClick={() => void threadAction(showArchivedThreads ? "unarchive" : "archive")}>
+                        {showArchivedThreads ? "Unarchive" : "Archive"}
+                      </button>
+                      <button onClick={() => {
+                        if (window.confirm("Delete this Weave Thread permanently?")) void threadAction("delete");
+                      }}>Delete</button>
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
             <div
               ref={messagesRef}
               className="messages"
@@ -778,34 +1012,30 @@ export default function Home() {
               <div className="context-chip" role="status">
                 <span aria-hidden="true">◎</span> Slide {activeSlide} in context · {agentActivity}
               </div>
-              {messages.map((message) => (
-                <div key={message.id} className={`message ${message.role}`}>
-                  {message.role === "agent" && <span aria-hidden="true" className="agent-glyph">✦</span>}
-                  <div className="message-content">
-                    {(message.reasoning?.length || message.activity?.length || message.status) && (
-                      <details className="work-details">
-                        <summary>
-                          作業内容
-                          {message.status && <span>{message.status}</span>}
-                        </summary>
-                        {message.reasoning?.map((detail, index) => (
-                          <p key={`reasoning-${index}`}>{detail}</p>
-                        ))}
-                        {message.activity?.map((detail, index) => (
-                          <p key={`activity-${index}`}>{detail}</p>
-                        ))}
-                      </details>
-                    )}
-                    <p>{message.text || (agentRunning ? "Thinking…" : "No response.")}</p>
-                  </div>
-                </div>
+              {!codexState.activeThreadId && <p className="empty-thread">Start or select a conversation.</p>}
+              {activeTurns.map((turn) => (
+                <section className="turn-group" key={turn.id}>
+                  {selectTurnItems(codexState, turn.id).map((item) => <ItemCard key={item.id} item={item} />)}
+                  <footer>
+                    <span>{turn.status}</span>
+                    {turn.diff && <details><summary>Turn diff</summary><pre>{turn.diff}</pre></details>}
+                  </footer>
+                </section>
+              ))}
+              {Object.values(codexState.pendingRequests).map((pending) => (
+                <ServerRequestCard
+                  key={String(pending.id)}
+                  request={pending}
+                  onResolve={(id, result) => void resolveServerRequest(id, result)}
+                  onReject={(id) => void rejectServerRequest(id)}
+                />
               ))}
               <div ref={messagesEndRef} className="messages-end" />
             </div>
             <div className="chat-box">
               <textarea
-                value={chat}
-                onChange={(event) => setChat(event.target.value)}
+                value={promptDraft}
+                onChange={(event) => setPromptDraft(event.target.value)}
                 onCompositionStart={() => {
                   compositionRef.current = true;
                 }}
@@ -847,7 +1077,7 @@ export default function Home() {
                 <button
                   className="send-button"
                   onClick={() => void sendMessage()}
-                  disabled={!agentReady || agentRunning || !chat.trim()}
+                  disabled={!agentReady || !promptDraft.trim() || turnSubmitting}
                   aria-label="Send message"
                 >
                   ↑
@@ -919,25 +1149,44 @@ export default function Home() {
                     {blocks.map((block) => (
                       <div
                         key={block.id}
-                        draggable
+                        /* Dragging the block would hijack the mouse from the caret,
+                           so the block only becomes draggable once editing stops. */
+                        draggable={editingId !== block.id}
                         onDragStart={() => setDraggedId(block.id)}
                         onDragOver={(event: DragEvent) => event.preventDefault()}
                         onDrop={() => dropOn(block.id)}
                         onClick={(event) => {
                           event.stopPropagation();
                           selectBlock(block.id);
+                          focusEditableAt(event.currentTarget, event.clientX, event.clientY);
                         }}
-                        className={`slide-block block-${block.kind} ${selectedId === block.id ? "selected" : ""}`}
+                        className={`slide-block block-${block.kind} ${selectedId === block.id ? "selected" : ""} ${editingId === block.id ? "editing" : ""}`}
                       >
                         {selectedId === block.id && <span className="selection-label">{block.label}</span>}
                         {block.kind === "metrics" ? (
                           <div className="metric-grid">
-                            {block.text.split("|").map((part, index) =>
-                              index % 2 === 0 ? <strong key={index}>{part}</strong> : <span key={index}>{part}</span>,
-                            )}
+                            {block.text.split("|").map((part, index) => (
+                              <EditableText
+                                key={index}
+                                as={index % 2 === 0 ? "strong" : "span"}
+                                value={part}
+                                multiline={false}
+                                label={index % 2 === 0 ? `${block.label} value` : `${block.label} caption`}
+                                onChange={(next) => editMetricPart(block, index, next)}
+                                onFocus={() => setEditingId(block.id)}
+                                onBlur={() => setEditingId((current) => (current === block.id ? null : current))}
+                              />
+                            ))}
                           </div>
                         ) : (
-                          <span>{block.text}</span>
+                          <EditableText
+                            value={block.text}
+                            multiline={block.kind === "heading" || block.kind === "paragraph"}
+                            label={block.label}
+                            onChange={(next) => editBlockText(block.id, next)}
+                            onFocus={() => setEditingId(block.id)}
+                            onBlur={() => setEditingId((current) => (current === block.id ? null : current))}
+                          />
                         )}
                       </div>
                     ))}
@@ -985,6 +1234,12 @@ export default function Home() {
               </div>
             )}
           </div>
+
+          {slideNav === "filmstrip" && (
+            <nav className="slide-nav filmstrip" aria-label="Slides">
+              {slideNavigator}
+            </nav>
+          )}
         </section>
 
         <aside className="inspector">
@@ -1115,6 +1370,144 @@ export default function Home() {
             ))}
           </div>
           {!saved && <p>Save the current edit before restoring history.</p>}
+        </div>
+      )}
+      {showCodexSettings && (
+        <div className="codex-settings-backdrop" role="presentation" onMouseDown={() => setShowCodexSettings(false)}>
+          <section className="codex-settings" role="dialog" aria-modal="true" aria-label="Settings" onMouseDown={(event) => event.stopPropagation()}>
+            <header>
+              <div>
+                <strong>Settings</strong>
+                <small>Codex CLI {codexState.connection.cliVersion ?? "unknown"} · {codexState.connection.status}</small>
+              </div>
+              <button onClick={() => setShowCodexSettings(false)}>×</button>
+            </header>
+            <section className="settings-first">
+              <h3>Layout</h3>
+              <label className="setting-row">
+                <span>Slide navigator</span>
+                <select value={slideNav} onChange={(event) => slideNavStore.write(event.target.value as SlideNav)}>
+                  <option value="filmstrip">Filmstrip below the canvas</option>
+                  <option value="rail">Rail beside the sidebar</option>
+                </select>
+              </label>
+            </section>
+            <div className="settings-grid">
+              <label>
+                <span>Model</span>
+                <select value={selectedModel} onChange={(event) => {
+                  const modelId = event.target.value;
+                  setSelectedModel(modelId);
+                  const model = codexState.catalog.models.find((item: any) => (item.id ?? item.model) === modelId) as any;
+                  if (model?.defaultReasoningEffort) setReasoningEffort(model.defaultReasoningEffort);
+                }}>
+                  {codexState.catalog.models.map((model: any) => (
+                    <option key={model.id ?? model.model} value={model.id ?? model.model}>
+                      {model.displayName ?? model.name ?? model.id ?? model.model}
+                      {model.inputModalities?.length ? ` · ${model.inputModalities.join("/")}` : ""}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                <span>Reasoning effort</span>
+                <select value={reasoningEffort} onChange={(event) => setReasoningEffort(event.target.value)}>
+                  {availableEfforts.map((effort: string) => <option key={effort}>{effort}</option>)}
+                </select>
+              </label>
+              <label>
+                <span>Approvals</span>
+                <select value={approvalPolicy} onChange={(event) => setApprovalPolicy(event.target.value)}>
+                  <option value="never">Never (default)</option>
+                  <option value="on-request">Ask when needed</option>
+                  <option value="untrusted">Untrusted commands</option>
+                </select>
+              </label>
+            </div>
+            {codexState.catalog.modelProvider && (
+              <section>
+                <h3>Provider capabilities</h3>
+                <pre className="settings-output">{JSON.stringify(codexState.catalog.modelProvider, null, 2)}</pre>
+              </section>
+            )}
+            <section>
+              <h3>Account</h3>
+              {codexState.catalog.account ? (
+                <div className="setting-row">
+                  <span>{String(codexState.catalog.account.type ?? "Signed in")}</span>
+                  <button onClick={() => {
+                    void fetch(`${apiBase}/codex/account/logout`, { method: "POST" })
+                      .then(async (response) => {
+                        const result = await response.json();
+                        if (!response.ok) throw new Error(result.error);
+                      })
+                      .catch((error) => setApiError(error.message));
+                  }}>Log out</button>
+                </div>
+              ) : (
+                <>
+                  <button onClick={() => void login("chatgpt")}>Sign in with ChatGPT</button>
+                  <div className="api-key-row">
+                    <input
+                      type="password"
+                      value={apiKeyDraft}
+                      onChange={(event) => setApiKeyDraft(event.target.value)}
+                      placeholder="API key (not stored by Weave)"
+                    />
+                    <button disabled={!apiKeyDraft} onClick={() => void login("apiKey")}>Use key</button>
+                  </div>
+                </>
+              )}
+            </section>
+            <section>
+              <h3>Skills</h3>
+              {codexState.catalog.skills.flatMap((entry: any) => entry.skills ?? [entry]).map((skill: any) => (
+                <label className="setting-row" key={skill.path ?? skill.name}>
+                  <span>{skill.name ?? skill.path}</span>
+                  <input
+                    type="checkbox"
+                    checked={skill.enabled !== false}
+                    onChange={(event) => void updateSkill(skill, event.target.checked)}
+                  />
+                </label>
+              ))}
+            </section>
+            <section>
+              <h3>Hooks</h3>
+              {codexState.catalog.hooks.flatMap((entry: any) => entry.hooks ?? [entry]).map((hook: any, index) => (
+                <div className="setting-row" key={hook.name ?? hook.event ?? index}>
+                  <span>{hook.name ?? hook.event ?? "Configured hook"}</span>
+                  <small>{hook.enabled === false ? "disabled" : "enabled"}</small>
+                </div>
+              ))}
+            </section>
+            <section>
+              <h3>MCP servers</h3>
+              {codexState.catalog.mcpServers.map((server: any) => (
+                <div className="setting-row" key={server.name}>
+                  <span>{server.name}</span>
+                  <small>{server.status ?? server.authStatus ?? "configured"}</small>
+                  {server.resources?.length > 0 && <button onClick={() => void invokeMcp(server, "resource")}>Resource</button>}
+                  {Object.keys(server.tools ?? {}).length > 0 && (
+                    <button disabled={!codexState.activeThreadId} onClick={() => void invokeMcp(server, "tool")}>Tool</button>
+                  )}
+                  <button onClick={() => {
+                    void fetch(`${apiBase}/codex/mcp/oauth`, {
+                      method: "POST",
+                      headers: { "content-type": "application/json" },
+                      body: JSON.stringify({ name: server.name }),
+                    }).then(async (response) => {
+                      const result = await response.json();
+                      if (!response.ok) throw new Error(result.error);
+                      const url = result.authorizationUrl ?? result.url;
+                      if (url && window.confirm(`Open OAuth for ${server.name}?`)) window.open(url, "_blank", "noopener,noreferrer");
+                    }).catch((error) => setApiError(error.message));
+                  }}>OAuth</button>
+                </div>
+              ))}
+              {mcpResult && <pre className="settings-output">{mcpResult}</pre>}
+            </section>
+          </section>
         </div>
       )}
     </main>
