@@ -279,35 +279,21 @@ body {
 .canvas-area { min-height: 0; position: relative; display: grid; place-items: center; overflow: hidden; background-color: #0c0e11; background-image: radial-gradient(#23272d 1px, transparent 1px); background-size: 18px 18px; }
 .light .canvas-area { background-color: #dfe1e5; background-image: radial-gradient(#c8cbd0 1px, transparent 1px); }
 .slide-shell { position: relative; width: min(83%, 880px); aspect-ratio: 16 / 10; display: grid; place-items: center; }
-.slide-canvas { position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden; background: #171a20; box-shadow: var(--shadow); color: #f3f4f6; }
-.slide-canvas.grid { background-color: #1a1e24; background-image: linear-gradient(rgba(255,255,255,.035) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.035) 1px, transparent 1px); background-size: 28px 28px; }
-.slide-canvas.plain { background: #171a20; }
-.slide-canvas::before { content: ""; position: absolute; width: 52%; aspect-ratio: 1; right: -18%; top: -32%; border-radius: 50%; background: color-mix(in srgb, var(--accent) 9%, transparent); filter: blur(2px); }
-.slide-brand { position: absolute; top: 6.2%; left: 6.2%; z-index: 2; font: 700 clamp(9px, .85vw, 13px)/1 var(--font-geist-mono), monospace; letter-spacing: .15em; }
-.slide-brand span { color: var(--accent); margin-left: 4px; font-size: .6em; vertical-align: middle; }
-.decor { position: absolute; pointer-events: none; }
-.decor-one { width: 42%; aspect-ratio: 1; right: -19%; bottom: -37%; border: clamp(16px, 2.2vw, 34px) solid color-mix(in srgb, var(--accent) 62%, transparent); border-radius: 50%; opacity: .7; }
-.decor-two { width: 16%; aspect-ratio: 1; right: 2%; bottom: 4%; border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); border-radius: 50%; }
-.slide-content { position: absolute; left: 11%; top: 22%; width: 68%; display: flex; flex-direction: column; gap: clamp(7px, 1.1vw, 16px); }
-.slide-block { position: relative; width: max-content; max-width: 100%; cursor: default; border: 1px solid transparent; white-space: pre-line; }
-.slide-block:hover { border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
-.slide-block.selected { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(246,184,75,.12); }
-.slide-block.selected::before, .slide-block.selected::after { content: ""; position: absolute; width: 4px; height: 4px; background: #fff; border: 1px solid var(--accent); }
-.slide-block.selected::before { left: -3px; top: -3px; }
-.slide-block.selected::after { right: -3px; bottom: -3px; }
-.slide-block.editing { border-style: dashed; background: color-mix(in srgb, var(--accent) 7%, transparent); }
-.editable-text { white-space: pre-wrap; outline: none; cursor: text; caret-color: var(--accent); }
+
+/* The slide is authored at its design size and scaled to fit; the viewport is the window
+   onto it. Everything inside comes from the project stylesheet (styles/deck.css) — the
+   rules below are editor chrome only, and each undoes the scale so it stays crisp. */
+.slide-viewport { position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden; box-shadow: var(--shadow); }
+.slide-viewport > .weave-slide { position: absolute; left: 0; top: 0; transform: scale(var(--slide-scale)); transform-origin: top left; }
+
+.slide-block { position: relative; cursor: default; outline: calc(1px / var(--slide-scale)) solid transparent; outline-offset: calc(4px / var(--slide-scale)); }
+.slide-block:hover { outline-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.slide-block.selected { outline-color: var(--accent); }
+.slide-block.editing { outline-style: dashed; background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.slide-block.selected::before { content: attr(data-weave-label); position: absolute; left: calc(-5px / var(--slide-scale)); bottom: calc(100% + 7px / var(--slide-scale)); padding: calc(2px / var(--slide-scale)) calc(5px / var(--slide-scale)); border-radius: calc(3px / var(--slide-scale)); background: var(--accent); color: #211a0f; font: 700 calc(8px / var(--slide-scale))/1.2 Arial, sans-serif; letter-spacing: 0; white-space: nowrap; }
+.editable-text { outline-color: transparent; cursor: text; caret-color: var(--accent); }
 .editable-text:empty::after { content: "\00a0"; }
-.selection-label { position: absolute; left: -1px; bottom: calc(100% + 4px); padding: 2px 5px; border-radius: 3px 3px 3px 0; background: var(--accent); color: #211a0f; font: 700 7px/1.2 Arial, sans-serif; white-space: nowrap; }
-.block-eyebrow { padding: 4px 5px; margin-left: -5px; color: var(--accent); font: 700 clamp(6px, .62vw, 9px)/1 var(--font-geist-mono), monospace; letter-spacing: .16em; }
-.block-heading { padding: 3px 5px; margin-left: -5px; font: 600 clamp(24px, 3.75vw, 56px)/.96 var(--font-geist-sans), Arial, sans-serif; letter-spacing: -.055em; }
-.block-paragraph { padding: 3px 5px; margin-left: -5px; max-width: 62%; color: #aeb4bd; font-size: clamp(7px, .9vw, 13px); line-height: 1.5; letter-spacing: .005em; }
-.block-metrics { margin-top: clamp(4px, .7vw, 10px); padding: 4px 5px; margin-left: -5px; }
-.metric-grid { display: grid; grid-template-columns: auto auto auto auto; align-items: baseline; gap: 0 clamp(8px, 1.2vw, 18px); }
-.metric-grid strong { color: var(--accent); font: 600 clamp(14px, 1.9vw, 28px)/1 var(--font-geist-sans), sans-serif; letter-spacing: -.04em; }
-.metric-grid span { color: #969da6; font-size: clamp(6px, .65vw, 9px); max-width: 45px; line-height: 1.2; }
-.block-note { position: absolute; top: calc(100% + clamp(12px, 2vw, 28px)); padding: 2px 0; color: #676e77; font: 600 clamp(5px, .55vw, 8px)/1 var(--font-geist-mono), monospace; letter-spacing: .14em; }
-.slide-index { position: absolute; right: 4.5%; top: 5.5%; color: #727982; font: 600 clamp(5px, .55vw, 8px)/1 var(--font-geist-mono), monospace; letter-spacing: .1em; }
+
 .canvas-toolbar { position: absolute; left: 50%; bottom: 0; transform: translateX(-50%); height: 31px; padding: 3px; display: flex; align-items: center; gap: 1px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel); box-shadow: 0 7px 18px rgba(0,0,0,.28); }
 .canvas-toolbar button { height: 23px; min-width: 24px; border: 0; border-radius: 3px; background: transparent; color: var(--muted); font-size: 9px; cursor: pointer; }
 .canvas-toolbar button:first-child { padding: 0 9px; color: var(--text); }

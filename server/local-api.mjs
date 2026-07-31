@@ -12,6 +12,7 @@ import {
   projectRoot,
   projectState,
   readDeck,
+  readDeckCss,
   writeDeck,
 } from "./project.mjs";
 import { CodexService } from "./codex/service.mjs";
@@ -56,6 +57,7 @@ async function readJson(request) {
 async function statePayload() {
   return {
     deck: await readDeck(),
+    css: await readDeckCss(),
     ...projectState(),
     codex: {
       ready: codex.ready,

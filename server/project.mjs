@@ -2,15 +2,20 @@ import { execFileSync } from "node:child_process";
 import { access, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { defaultDeckCss, renderSlideDocument } from "../shared/slide-design.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const projectRoot = join(repoRoot, "workspaces", "northstar");
 const deckPath = join(projectRoot, ".weave", "deck.json");
 const bufferPath = join(projectRoot, ".weave", "current-buffer.json");
 const slidesRoot = join(projectRoot, "slides");
+const stylesRoot = join(projectRoot, "styles");
+const deckCssPath = join(stylesRoot, "deck.css");
 
 export const agentInstructions = `You are the editing agent embedded in Weave, a visual HTML slide editor.
 The project uses .weave/deck.json as the canonical editor state and one HTML file per slide under slides/.
+Slide styling lives in styles/deck.css. Edit that file to change how slides look; slides/*.html is generated from deck.json and deck.css, so never edit it directly.
+Slides are authored at a fixed 1280x720 design size: write plain pixel values, no responsive units, and keep every selector under .weave-slide.
 The top-level blocks and background mirror the active slide. Keep them synchronized with slides[activeSlide - 1].
 Before editing, inspect .weave/deck.json and .weave/current-buffer.json when present.
 The current buffer is authoritative even when it differs from the last commit.
@@ -88,54 +93,14 @@ function runGit(args, options = {}) {
   }).trim();
 }
 
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-}
-
-function renderSlide(deck) {
-  const blocks = deck.blocks.map((block) => {
-    if (block.kind === "metrics") {
-      const parts = block.text.split("|");
-      return `<div class="metrics" data-weave-id="${escapeHtml(block.id)}"><strong>${escapeHtml(parts[0] ?? "")}</strong><span>${escapeHtml(parts[1] ?? "")}</span><strong>${escapeHtml(parts[2] ?? "")}</strong><span>${escapeHtml(parts[3] ?? "")}</span></div>`;
-    }
-    const tag = block.kind === "heading" ? "h1" : block.kind === "paragraph" ? "p" : "div";
-    return `<${tag} class="${escapeHtml(block.kind)}" data-weave-id="${escapeHtml(block.id)}">${escapeHtml(block.text).replaceAll("\n", "<br>")}</${tag}>`;
-  }).join("\n      ");
-  return `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${escapeHtml(deck.title)}</title>
-  <style>
-    :root { --accent: ${escapeHtml(deck.accent)}; --bg: #171a20; --text: #f3f4f6; }
-    * { box-sizing: border-box; }
-    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #0c0e11; color: var(--text); font-family: Inter, Arial, sans-serif; }
-    .slide { position: relative; width: min(90vw, 1280px); aspect-ratio: 16/9; overflow: hidden; background: var(--bg); }
-    .slide::after { content: ""; position: absolute; width: 38%; aspect-ratio: 1; right: -17%; bottom: -31%; border: 34px solid var(--accent); border-radius: 50%; opacity: .65; }
-    .hero { position: absolute; left: 11%; top: 22%; width: 68%; display: flex; flex-direction: column; gap: 18px; }
-    .eyebrow { color: var(--accent); font-size: 14px; font-weight: 700; letter-spacing: .16em; }
-    h1 { margin: 0; font-size: clamp(42px, 6vw, 82px); line-height: .96; letter-spacing: -.055em; }
-    p { max-width: 58%; margin: 0; color: #aeb4bd; font-size: 18px; line-height: 1.5; }
-    .metrics { display: grid; grid-template-columns: auto auto auto auto; align-items: baseline; gap: 16px; margin-top: 10px; }
-    .metrics strong { color: var(--accent); font-size: 34px; }
-    .metrics span { max-width: 70px; color: #969da6; font-size: 12px; }
-    .note { margin-top: 22px; color: #676e77; font: 600 10px/1 monospace; letter-spacing: .14em; }
-  </style>
-</head>
-<body>
-  <main class="slide ${escapeHtml(deck.background)}">
-    <section class="hero">
-      ${blocks}
-    </section>
-  </main>
-</body>
-</html>
-`;
+/* Slide files are generated from deck.json plus the project stylesheet. deck.css itself is
+   never regenerated — it is hand/agent-authored content that has to survive every save. */
+export async function readDeckCss() {
+  try {
+    return await readFile(deckCssPath, "utf8");
+  } catch {
+    return defaultDeckCss;
+  }
 }
 
 export function validateDeck(input) {
@@ -191,13 +156,14 @@ export async function writeDeck(input, bufferOnly = false) {
     await writeFile(bufferPath, json);
     return deck;
   }
+  const css = await readDeckCss();
   await Promise.all([
     writeFile(deckPath, json),
     writeFile(bufferPath, json),
     ...deck.slides.map((slide, index) =>
       writeFile(
         join(slidesRoot, `${slide.id}.html`),
-        renderSlide({ ...deck, activeSlide: index + 1, background: slide.background, blocks: slide.blocks }),
+        renderSlideDocument({ ...deck, activeSlide: index + 1, background: slide.background, blocks: slide.blocks }, css),
       )),
   ]);
   return deck;
@@ -209,7 +175,7 @@ export async function readDeck() {
 
 export function commitIfChanged(message) {
   if (!runGit(["status", "--porcelain"])) return null;
-  runGit(["add", ".weave/deck.json", ".weave/current-buffer.json", "slides", "AGENTS.md"]);
+  runGit(["add", ".weave/deck.json", ".weave/current-buffer.json", "slides", "styles", "AGENTS.md"]);
   if (!runGit(["diff", "--cached", "--name-only"])) return null;
   runGit(["-c", "user.name=Weave", "-c", "user.email=weave@localhost", "commit", "-m", message.slice(0, 180)]);
   return runGit(["rev-parse", "HEAD"]);
@@ -324,10 +290,16 @@ export async function ensureProject() {
   } catch {
     await writeDeck(defaultDeck);
   }
+  await mkdir(stylesRoot, { recursive: true });
   try {
-    await access(join(projectRoot, "AGENTS.md"));
+    await access(deckCssPath);
   } catch {
-    await writeFile(join(projectRoot, "AGENTS.md"), `${agentInstructions}\n`);
+    await writeFile(deckCssPath, defaultDeckCss);
+  }
+  /* AGENTS.md is generated, so it follows the instructions in this file. */
+  const instructions = `${agentInstructions}\n`;
+  if (await readFile(join(projectRoot, "AGENTS.md"), "utf8").catch(() => null) !== instructions) {
+    await writeFile(join(projectRoot, "AGENTS.md"), instructions);
   }
   if (createdRepository) commitIfChanged("Create Northstar deck");
 }

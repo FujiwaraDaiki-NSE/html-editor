@@ -1,9 +1,10 @@
 "use client";
 /* eslint-disable @typescript-eslint/no-explicit-any -- app-server catalog/request payloads are rendered defensively for forward compatibility. */
 
-import { DragEvent, useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
+import { DragEvent, MouseEvent as ReactMouseEvent, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import { actionFromStreamEvent } from "./codex/actions";
 import { EditableText, focusEditableAt } from "./components/EditableText";
+import { blockTag, defaultDeckCss, designWidth, metricParts, renderSlideDocument } from "../shared/slide-design.mjs";
 import { ItemCard } from "./codex/components/ItemCard";
 import { ServerRequestCard } from "./codex/components/ServerRequestCard";
 import { codexReducer, initialCodexState } from "./codex/reducer";
@@ -41,6 +42,7 @@ type ServerState = {
     blocks: Block[];
     slides: DeckSlide[];
   };
+  css: string;
   history: HistoryEntry[];
   variations: Array<{
     branch: string;
@@ -127,24 +129,6 @@ const blockIcons: Record<Block["kind"], string> = {
   note: "≡",
 };
 
-const codeFor = (blocks: Block[]) =>
-  `<main class="slide">
-  <section class="hero">
-${blocks
-  .map((block) => {
-    if (block.kind === "metrics") {
-      return `    <div class="metrics">
-      <strong>3.2×</strong><span>faster iteration</span>
-      <strong>42%</strong><span>less rework</span>
-    </div>`;
-    }
-    const tag = block.kind === "heading" ? "h1" : block.kind === "paragraph" ? "p" : "div";
-    return `    <${tag} class="${block.kind}">${block.text.replace("\n", "<br />")}</${tag}>`;
-  })
-  .join("\n")}
-  </section>
-</main>`;
-
 export default function Home() {
   const [blocks, setBlocks] = useState(initialBlocks);
   const [selectedId, setSelectedId] = useState("heading");
@@ -154,6 +138,8 @@ export default function Home() {
   const [background, setBackground] = useState<"orbit" | "grid" | "plain">("orbit");
   const [activeSlide, setActiveSlide] = useState(1);
   const [deckSlides, setDeckSlides] = useState<DeckSlide[]>(initialSlides);
+  const [deckCss, setDeckCss] = useState<string>(defaultDeckCss);
+  const [slideScale, setSlideScale] = useState(0.68);
   const [activeVariation, setActiveVariation] = useState("main");
   const [variations, setVariations] = useState<ServerState["variations"]>([]);
   const [showVariationPrompt, setShowVariationPrompt] = useState(false);
@@ -180,6 +166,7 @@ export default function Home() {
   const [showHistory, setShowHistory] = useState(false);
   const [project, setProject] = useState<ServerState["project"] | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
   const compositionRef = useRef(false);
@@ -188,7 +175,14 @@ export default function Home() {
   const eventSequenceRef = useRef(0);
 
   const selected = blocks.find((block) => block.id === selectedId) ?? blocks[0];
-  const code = useMemo(() => codeFor(blocks), [blocks]);
+  /* The code view shows the file the next save writes, rendered by the same module. */
+  const code = useMemo(
+    () => renderSlideDocument(
+      { title: "Q3 Strategy Deck", activeSlide, background, accent, blocks, slides: deckSlides },
+      deckCss,
+    ),
+    [activeSlide, background, accent, blocks, deckSlides, deckCss],
+  );
   const agentReady = codexState.connection.status === "connected";
   const agentRunning = selectThreadRunning(codexState, codexState.activeThreadId);
   const activeTurns = selectThreadTurns(codexState, codexState.activeThreadId);
@@ -231,6 +225,7 @@ export default function Home() {
   const applyServerState = useCallback((state: ServerState) => {
     setBlocks(state.deck.blocks);
     setDeckSlides(state.deck.slides ?? initialSlides);
+    if (state.css) setDeckCss(state.css);
     setActiveSlide(state.deck.activeSlide);
     setBackground(state.deck.background);
     setAccent(state.deck.accent);
@@ -375,6 +370,18 @@ export default function Home() {
       clearTimeout(timer);
     };
   }, [showArchivedThreads, threadSearch, agentReady, codexState.activeThreadId]);
+
+  /* Slides are authored at the design size and scaled to fit, so one stylesheet in
+     absolute pixels drives the canvas, the exported file and any future thumbnail. */
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const observer = new ResizeObserver(([entry]) => {
+      setSlideScale(entry.contentRect.width / designWidth);
+    });
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, [mode]);
 
   useEffect(() => {
     if (shouldAutoScrollRef.current) {
@@ -1141,31 +1148,35 @@ export default function Home() {
             )}
             {mode === "preview" ? (
               <div className="slide-shell">
-                <div className={`slide-canvas ${background}`}>
-                  <div className="slide-brand">WEAVE<span>●</span></div>
-                  {background !== "plain" && <div className="decor decor-one" />}
-                  {background === "orbit" && <div className="decor decor-two" />}
-                  <div className="slide-content">
-                    {blocks.map((block) => (
-                      <div
-                        key={block.id}
-                        /* Dragging the block would hijack the mouse from the caret,
-                           so the block only becomes draggable once editing stops. */
-                        draggable={editingId !== block.id}
-                        onDragStart={() => setDraggedId(block.id)}
-                        onDragOver={(event: DragEvent) => event.preventDefault()}
-                        onDrop={() => dropOn(block.id)}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          selectBlock(block.id);
-                          focusEditableAt(event.currentTarget, event.clientX, event.clientY);
-                        }}
-                        className={`slide-block block-${block.kind} ${selectedId === block.id ? "selected" : ""} ${editingId === block.id ? "editing" : ""}`}
-                      >
-                        {selectedId === block.id && <span className="selection-label">{block.label}</span>}
-                        {block.kind === "metrics" ? (
-                          <div className="metric-grid">
-                            {block.text.split("|").map((part, index) => (
+                {/* The project stylesheet is the only thing styling the slide; the editor's
+                    own chrome lives in globals.css and never overlaps these rules. */}
+                <style>{deckCss}</style>
+                <div className="slide-viewport" ref={viewportRef} style={{ "--slide-scale": slideScale } as React.CSSProperties}>
+                  <main className={`weave-slide ${background}`} style={{ "--accent": accent } as React.CSSProperties}>
+                    <div className="brand">WEAVE<span>●</span></div>
+                    <section className="hero">
+                      {blocks.map((block) => {
+                        const chrome = `slide-block ${selectedId === block.id ? "selected" : ""} ${editingId === block.id ? "editing" : ""}`;
+                        const shared = {
+                          "data-weave-id": block.id,
+                          "data-weave-label": block.label,
+                          /* Dragging the block would hijack the mouse from the caret,
+                             so the block only becomes draggable once editing stops. */
+                          draggable: editingId !== block.id,
+                          onDragStart: () => setDraggedId(block.id),
+                          onDragOver: (event: DragEvent) => event.preventDefault(),
+                          onDrop: () => dropOn(block.id),
+                          onClick: (event: ReactMouseEvent<HTMLElement>) => {
+                            event.stopPropagation();
+                            selectBlock(block.id);
+                            focusEditableAt(event.currentTarget, event.clientX, event.clientY);
+                          },
+                          onFocus: () => setEditingId(block.id),
+                          onBlur: () => setEditingId((current) => (current === block.id ? null : current)),
+                        };
+                        return block.kind === "metrics" ? (
+                          <div key={block.id} {...shared} className={`metrics ${chrome}`}>
+                            {metricParts(block.text).map((part: string, index: number) => (
                               <EditableText
                                 key={index}
                                 as={index % 2 === 0 ? "strong" : "span"}
@@ -1173,31 +1184,31 @@ export default function Home() {
                                 multiline={false}
                                 label={index % 2 === 0 ? `${block.label} value` : `${block.label} caption`}
                                 onChange={(next) => editMetricPart(block, index, next)}
-                                onFocus={() => setEditingId(block.id)}
-                                onBlur={() => setEditingId((current) => (current === block.id ? null : current))}
                               />
                             ))}
                           </div>
                         ) : (
                           <EditableText
+                            key={block.id}
+                            {...shared}
+                            as={blockTag(block.kind)}
+                            className={`${block.kind} ${chrome}`}
                             value={block.text}
                             multiline={block.kind === "heading" || block.kind === "paragraph"}
                             label={block.label}
                             onChange={(next) => editBlockText(block.id, next)}
-                            onFocus={() => setEditingId(block.id)}
-                            onBlur={() => setEditingId((current) => (current === block.id ? null : current))}
                           />
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                  <div className="slide-index">{String(activeSlide).padStart(2, "0")} / {String(deckSlides.length).padStart(2, "0")}</div>
+                        );
+                      })}
+                    </section>
+                    <div className="page-number">{String(activeSlide).padStart(2, "0")} / {String(deckSlides.length).padStart(2, "0")}</div>
+                  </main>
                 </div>
                 <div className="canvas-toolbar">
                   <button onClick={() => setShowAdd(!showAdd)} className={showAdd ? "active" : ""}>＋ Add block</button>
                   <span />
                   <button aria-label="Zoom out">−</button>
-                  <b>72%</b>
+                  <b>{Math.round(slideScale * 100)}%</b>
                   <button aria-label="Zoom in">＋</button>
                   <button aria-label="Fit to screen">⊡</button>
                 </div>

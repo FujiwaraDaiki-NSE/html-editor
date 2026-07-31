@@ -1,17 +1,25 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ElementType } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ElementType,
+  type FocusEvent as ReactFocusEvent,
+  type HTMLAttributes,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ClipboardEvent as ReactClipboardEvent,
+} from "react";
 
-type EditableTextProps = {
+type EditableTextProps = Omit<HTMLAttributes<HTMLElement>, "onChange" | "children" | "dangerouslySetInnerHTML"> & {
   value: string;
   onChange: (next: string) => void;
-  onFocus?: () => void;
-  onBlur?: () => void;
   /** Enter inserts a line break; when false it commits and leaves the field. */
   multiline?: boolean;
-  as?: "span" | "strong";
-  className?: string;
+  as?: ElementType;
   label?: string;
+  draggable?: boolean;
 };
 
 const escapeHtml = (value: string) =>
@@ -56,6 +64,7 @@ const distanceTo = (element: HTMLElement, x: number, y: number) => {
    itself, and a draggable block suppresses the browser's own caret placement anyway. */
 export function focusEditableAt(container: HTMLElement, x: number, y: number) {
   const fields = Array.from(container.querySelectorAll<HTMLElement>(".editable-text"));
+  if (container.classList.contains("editable-text")) fields.push(container);
   let target: HTMLElement | null = null;
   let best = Infinity;
   for (const field of fields) {
@@ -77,10 +86,13 @@ export function EditableText({
   onChange,
   onFocus,
   onBlur,
+  onKeyDown,
+  onPaste,
   multiline = true,
   as = "span",
   className,
   label,
+  ...rest
 }: EditableTextProps) {
   const ref = useRef<HTMLElement>(null);
   /* Rendered once, then owned by the DOM. The object identity has to stay stable too:
@@ -103,6 +115,7 @@ export function EditableText({
   const Tag: ElementType = as;
   return (
     <Tag
+      {...rest}
       ref={ref}
       contentEditable
       suppressContentEditableWarning
@@ -113,12 +126,13 @@ export function EditableText({
       className={`editable-text ${className ?? ""}`.trim()}
       dangerouslySetInnerHTML={html}
       onInput={commit}
-      onFocus={() => onFocus?.()}
-      onBlur={() => {
+      onFocus={(event: ReactFocusEvent<HTMLElement>) => onFocus?.(event)}
+      onBlur={(event: ReactFocusEvent<HTMLElement>) => {
         commit();
-        onBlur?.();
+        onBlur?.(event);
       }}
-      onKeyDown={(event: React.KeyboardEvent<HTMLElement>) => {
+      onKeyDown={(event: ReactKeyboardEvent<HTMLElement>) => {
+        onKeyDown?.(event);
         if (event.key === "Escape" || (event.key === "Enter" && !multiline)) {
           event.preventDefault();
           ref.current?.blur();
@@ -129,7 +143,8 @@ export function EditableText({
           document.execCommand("insertLineBreak");
         }
       }}
-      onPaste={(event: React.ClipboardEvent<HTMLElement>) => {
+      onPaste={(event: ReactClipboardEvent<HTMLElement>) => {
+        onPaste?.(event);
         event.preventDefault();
         const text = event.clipboardData.getData("text/plain");
         document.execCommand("insertText", false, multiline ? text : text.replace(/\s*\n\s*/g, " "));
