@@ -4,17 +4,28 @@
 import { DragEvent, MouseEvent as ReactMouseEvent, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import { actionFromStreamEvent } from "./codex/actions";
 import { EditableText, focusEditableAt } from "./components/EditableText";
-import { blockTag, defaultDeckCss, designWidth, metricParts, renderSlideDocument } from "../shared/slide-design.mjs";
+import { blockTag, containerKinds, defaultDeckCss, designHeight, designWidth, metricParts, renderDeckDocument, renderSlideDocument } from "../shared/slide-design.mjs";
 import { ItemCard } from "./codex/components/ItemCard";
 import { ServerRequestCard } from "./codex/components/ServerRequestCard";
 import { codexReducer, initialCodexState } from "./codex/reducer";
 import { selectThreadRunning, selectThreadTurns, selectTurnItems } from "./codex/selectors";
+import { auditDeckQuality } from "../shared/slide-audit.mjs";
+import { auditCssSafety } from "../shared/content-policy.mjs";
 
 type Block = {
   id: string;
-  kind: "eyebrow" | "heading" | "paragraph" | "metrics" | "note";
+  kind: "eyebrow" | "heading" | "paragraph" | "metrics" | "note" | "row" | "column" | "grid";
   label: string;
   text: string;
+  children?: Block[];
+  style?: {
+    size?: "sm" | "md" | "lg";
+    weight?: "regular" | "medium" | "bold";
+    align?: "left" | "center" | "right";
+    color?: "primary" | "muted" | "accent";
+    spacing?: "tight" | "normal" | "loose";
+    columns?: 2 | 3;
+  };
 };
 
 type SlideNav = "filmstrip" | "rail";
@@ -24,6 +35,16 @@ type DeckSlide = {
   title: string;
   background: "orbit" | "grid" | "plain";
   blocks: Block[];
+  notes?: string;
+};
+
+type DeckSnapshot = {
+  title: string;
+  activeSlide: number;
+  background: DeckSlide["background"];
+  accent: string;
+  blocks: Block[];
+  slides: DeckSlide[];
 };
 
 type HistoryEntry = {
@@ -55,6 +76,7 @@ type ServerState = {
     root: string;
     branch: string;
     commit: string;
+    revision?: string;
     clean: boolean;
   };
   codex: {
@@ -96,8 +118,32 @@ const slideNavStore = {
   },
 };
 
+const templateKey = "weave.slideTemplates";
+const emptyTemplates: DeckSlide[] = [];
+let templateCacheRaw = "";
+let templateCache: DeckSlide[] = [];
+const templateListeners = new Set<() => void>();
+const templateStore = {
+  subscribe(listener: () => void) { templateListeners.add(listener); return () => templateListeners.delete(listener); },
+  read(): DeckSlide[] {
+    const raw = window.localStorage.getItem(templateKey) ?? "";
+    if (raw === templateCacheRaw) return templateCache;
+    templateCacheRaw = raw;
+    try { templateCache = raw ? JSON.parse(raw) : []; } catch { templateCache = []; }
+    return templateCache;
+  },
+  serverRead: (): DeckSlide[] => emptyTemplates,
+  write(value: DeckSlide[]) {
+    templateCache = value;
+    templateCacheRaw = JSON.stringify(value);
+    window.localStorage.setItem(templateKey, templateCacheRaw);
+    templateListeners.forEach((listener) => listener());
+  },
+};
+
 const createMessageId = () =>
   `weave-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+const retryDelay = (attempt: number) => Math.min(10_000, 400 * (2 ** Math.min(attempt, 5))) + Math.random() * 250;
 const displayThreadName = (name: string | null | undefined) =>
   name?.replace(/^Weave · /, "") || null;
 
@@ -127,9 +173,39 @@ const blockIcons: Record<Block["kind"], string> = {
   paragraph: "¶",
   metrics: "▦",
   note: "≡",
+  row: "↔",
+  column: "↕",
+  grid: "▦",
 };
 
+const clone = <T,>(value: T): T => structuredClone(value);
+const flattenBlocks = (items: Block[]): Block[] => items.flatMap((block) => [block, ...flattenBlocks(block.children ?? [])]);
+const blocksWithDepth = (items: Block[], depth = 0): Array<{ block: Block; depth: number }> => items.flatMap((block) => [
+  { block, depth },
+  ...blocksWithDepth(block.children ?? [], depth + 1),
+]);
+const findBlock = (items: Block[], id: string): Block | undefined => flattenBlocks(items).find((item) => item.id === id);
+const mapBlocks = (items: Block[], id: string, patch: Partial<Block>): Block[] => items.map((item) => item.id === id
+  ? { ...item, ...patch }
+  : { ...item, ...(item.children ? { children: mapBlocks(item.children, id, patch) } : {}) });
+const removeBlock = (items: Block[], id: string): Block[] => items
+  .filter((item) => item.id !== id)
+  .map((item) => ({ ...item, ...(item.children ? { children: removeBlock(item.children, id) } : {}) }));
+const insertBeforeBlock = (items: Block[], targetId: string, block: Block): Block[] => items.flatMap((item) => {
+  if (item.id === targetId) return [block, item];
+  return [{ ...item, ...(item.children ? { children: insertBeforeBlock(item.children, targetId, block) } : {}) }];
+});
+const styleClass = (block: Block) => [
+  block.style?.size && `size-${block.style.size}`,
+  block.style?.weight && `weight-${block.style.weight}`,
+  block.style?.align && `align-${block.style.align}`,
+  block.style?.color && `color-${block.style.color}`,
+  block.style?.spacing && `spacing-${block.style.spacing}`,
+  block.kind === "grid" && `columns-${block.style?.columns ?? 2}`,
+].filter(Boolean).join(" ");
+
 export default function Home() {
+  const [deckTitle, setDeckTitle] = useState("Q3 Strategy Deck");
   const [blocks, setBlocks] = useState(initialBlocks);
   const [selectedId, setSelectedId] = useState("heading");
   const [mode, setMode] = useState<"preview" | "code">("preview");
@@ -139,7 +215,8 @@ export default function Home() {
   const [activeSlide, setActiveSlide] = useState(1);
   const [deckSlides, setDeckSlides] = useState<DeckSlide[]>(initialSlides);
   const [deckCss, setDeckCss] = useState<string>(defaultDeckCss);
-  const [slideScale, setSlideScale] = useState(0.68);
+  const [fitScale, setFitScale] = useState(0.68);
+  const [manualZoom, setManualZoom] = useState<number | null>(null);
   const [activeVariation, setActiveVariation] = useState("main");
   const [variations, setVariations] = useState<ServerState["variations"]>([]);
   const [showVariationPrompt, setShowVariationPrompt] = useState(false);
@@ -161,31 +238,52 @@ export default function Home() {
   const [mcpResult, setMcpResult] = useState("");
   const [turnSubmitting, setTurnSubmitting] = useState(false);
   const [draggedId, setDraggedId] = useState<string | null>(null);
+  const [draggedSlide, setDraggedSlide] = useState<number | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [project, setProject] = useState<ServerState["project"] | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
+  const [showPresenter, setShowPresenter] = useState(false);
+  const [showQuality, setShowQuality] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
+  const [showTemplates, setShowTemplates] = useState(false);
+  const slideTemplates = useSyncExternalStore(templateStore.subscribe, templateStore.read, templateStore.serverRead);
+  const [inspectorOpen, setInspectorOpen] = useState(true);
+  const [announcement, setAnnouncement] = useState("Editor ready");
+  const [saveMessage, setSaveMessage] = useState("");
+  const [presentSlide, setPresentSlide] = useState(1);
+  const [serverRevision, setServerRevision] = useState("");
+  const [connectionEpoch, setConnectionEpoch] = useState(0);
+  const [historyState, setHistoryState] = useState({ undo: 0, redo: 0 });
   const viewportRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const importRef = useRef<HTMLInputElement>(null);
   const messagesRef = useRef<HTMLDivElement>(null);
   const compositionRef = useRef(false);
   const turnInFlightRef = useRef(false);
   const shouldAutoScrollRef = useRef(true);
   const eventSequenceRef = useRef(0);
+  const undoRef = useRef<DeckSnapshot[]>([]);
+  const redoRef = useRef<DeckSnapshot[]>([]);
 
-  const selected = blocks.find((block) => block.id === selectedId) ?? blocks[0];
+  const selected = findBlock(blocks, selectedId) ?? flattenBlocks(blocks)[0];
+  const slideScale = manualZoom ?? fitScale;
+  const effectiveSlides = useMemo(() => deckSlides.map((slide, index) =>
+    index === activeSlide - 1 ? { ...slide, background, blocks } : slide,
+  ), [deckSlides, activeSlide, background, blocks]);
   /* The code view shows the file the next save writes, rendered by the same module. */
   const code = useMemo(
-    () => renderSlideDocument(
-      { title: "Q3 Strategy Deck", activeSlide, background, accent, blocks, slides: deckSlides },
+    () => mode === "code" ? renderSlideDocument(
+      { title: deckTitle, activeSlide, background, accent, blocks, slides: deckSlides },
       deckCss,
-    ),
-    [activeSlide, background, accent, blocks, deckSlides, deckCss],
+    ) : "",
+    [mode, deckTitle, activeSlide, background, accent, blocks, deckSlides, deckCss],
   );
   const agentReady = codexState.connection.status === "connected";
   const agentRunning = selectThreadRunning(codexState, codexState.activeThreadId);
   const activeTurns = selectThreadTurns(codexState, codexState.activeThreadId);
+  const visibleTurns = activeTurns.slice(-100);
   const selectedModelInfo = useMemo(
     () => codexState.catalog.models.find(
       (model: any) => (model.id ?? model.model) === selectedModel,
@@ -207,22 +305,75 @@ export default function Home() {
   const activeThreadName = activeThread
     ? displayThreadName(activeThread.name) || activeThread.preview || "New conversation"
     : "No conversation";
-
   const deckPayload = () => {
-    const slides = deckSlides.map((slide, index) =>
-      index === activeSlide - 1 ? { ...slide, background, blocks } : slide,
-    );
     return {
-      title: "Q3 Strategy Deck",
+      title: deckTitle,
       activeSlide,
       background,
       accent,
       blocks,
-      slides,
+      slides: effectiveSlides,
     };
   };
 
+  const contextEnvelope = () => ({
+    revision: serverRevision,
+    activeSlide,
+    selected: selected ? { id: selected.id, kind: selected.kind, label: selected.label, text: selected.text } : null,
+    selectedText: typeof window === "undefined" ? "" : window.getSelection()?.toString().slice(0, 2_000) ?? "",
+    deck: deckPayload(),
+    css: deckCss.slice(0, 30_000),
+    recentHistory: history.slice(0, 5).map(({ shortId, message }) => ({ shortId, message })),
+  });
+
+  const quality = useMemo(() => {
+    const payload = deckPayload();
+    const deckResult = auditDeckQuality(payload);
+    const cssResult = auditCssSafety(deckCss);
+    return {
+      ok: deckResult.ok && cssResult.ok,
+      diagnostics: [...deckResult.diagnostics, ...cssResult.diagnostics],
+      errors: deckResult.summary.errors + cssResult.summary.errors,
+      warnings: deckResult.summary.warnings,
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- deckPayload is intentionally derived from these editor states.
+  }, [deckTitle, activeSlide, background, accent, blocks, deckSlides, deckCss]);
+
+  const snapshot = (): DeckSnapshot => clone(deckPayload());
+  const restoreSnapshot = (value: DeckSnapshot) => {
+    setDeckTitle(value.title);
+    setActiveSlide(value.activeSlide);
+    setBackground(value.background);
+    setAccent(value.accent);
+    setBlocks(clone(value.blocks));
+    setDeckSlides(clone(value.slides));
+    setSelectedId(flattenBlocks(value.blocks)[0]?.id ?? "");
+    setSaved(false);
+  };
+  const checkpoint = () => {
+    undoRef.current = [...undoRef.current.slice(-79), snapshot()];
+    redoRef.current = [];
+    setHistoryState({ undo: undoRef.current.length, redo: 0 });
+  };
+  const undo = () => {
+    const value = undoRef.current.pop();
+    if (!value) return;
+    redoRef.current.push(snapshot());
+    restoreSnapshot(value);
+    setHistoryState({ undo: undoRef.current.length, redo: redoRef.current.length });
+    setAnnouncement("Change undone");
+  };
+  const redo = () => {
+    const value = redoRef.current.pop();
+    if (!value) return;
+    undoRef.current.push(snapshot());
+    restoreSnapshot(value);
+    setHistoryState({ undo: undoRef.current.length, redo: redoRef.current.length });
+    setAnnouncement("Change redone");
+  };
+
   const applyServerState = useCallback((state: ServerState) => {
+    setDeckTitle(state.deck.title);
     setBlocks(state.deck.blocks);
     setDeckSlides(state.deck.slides ?? initialSlides);
     if (state.css) setDeckCss(state.css);
@@ -232,6 +383,7 @@ export default function Home() {
     setHistory(state.history);
     setVariations(state.variations ?? []);
     setProject(state.project);
+    setServerRevision(state.project.revision ?? state.project.commit);
     setActiveVariation(state.project.branch);
     dispatchCodex({
       type: "connection",
@@ -271,18 +423,16 @@ export default function Home() {
         const state = (await response.json()) as ServerState;
         if (canceled) return;
         applyServerState(state);
-        if (!state.codex.ready && attempts < 10) {
+        if (!state.codex.ready) {
           attempts += 1;
-          timer = setTimeout(() => void loadState(), 600);
+          timer = setTimeout(() => void loadState(), retryDelay(attempts));
         }
       } catch (error) {
         if (canceled) return;
         dispatchCodex({ type: "connection", connection: { status: "disconnected", error: "Local API offline" } });
         setApiError(error instanceof Error ? error.message : String(error));
-        if (attempts < 10) {
-          attempts += 1;
-          timer = setTimeout(() => void loadState(), 600);
-        }
+        attempts += 1;
+        timer = setTimeout(() => void loadState(), retryDelay(attempts));
       }
     };
     void loadState();
@@ -290,7 +440,7 @@ export default function Home() {
       canceled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [applyServerState]);
+  }, [applyServerState, connectionEpoch]);
 
   useEffect(() => {
     let canceled = false;
@@ -326,7 +476,7 @@ export default function Home() {
           dispatchCodex({ type: "connection", connection: { status: "reconnecting", error: error instanceof Error ? error.message : String(error) } });
         }
       }
-      if (!canceled) retryTimer = setTimeout(() => void connect(), 800);
+      if (!canceled) retryTimer = setTimeout(() => void connect(), retryDelay(1));
     };
     void connect();
     return () => {
@@ -377,7 +527,7 @@ export default function Home() {
     const viewport = viewportRef.current;
     if (!viewport) return;
     const observer = new ResizeObserver(([entry]) => {
-      setSlideScale(entry.contentRect.width / designWidth);
+      setFitScale(Math.min(entry.contentRect.width / designWidth, entry.contentRect.height / designHeight));
     });
     observer.observe(viewport);
     return () => observer.disconnect();
@@ -393,7 +543,9 @@ export default function Home() {
   }, [codexState.items, agentRunning]);
 
   const updateSelected = (patch: Partial<Block>) => {
-    setBlocks((items) => items.map((item) => (item.id === selected.id ? { ...item, ...patch } : item)));
+    if (!selected) return;
+    checkpoint();
+    setBlocks((items) => mapBlocks(items, selected.id, patch));
     setSaved(false);
   };
 
@@ -403,9 +555,10 @@ export default function Home() {
   };
 
   const editBlockText = (id: string, text: string) => {
-    const target = blocks.find((block) => block.id === id);
+    const target = findBlock(blocks, id);
     if (!target || target.text === text) return;
-    setBlocks((items) => items.map((item) => (item.id === id ? { ...item, text } : item)));
+    checkpoint();
+    setBlocks((items) => mapBlocks(items, id, { text }));
     setSaved(false);
   };
 
@@ -418,21 +571,7 @@ export default function Home() {
   };
 
   const switchSlide = async (slideNumber: number) => {
-    let slides = deckSlides;
-    let clean = project?.clean ?? true;
-    if (!saved) {
-      try {
-        const response = await fetch(`${apiBase}/state`);
-        if (response.ok) {
-          const state = (await response.json()) as ServerState;
-          applyServerState(state);
-          slides = state.deck.slides;
-          clean = state.project.clean;
-        }
-      } catch {
-        clean = false;
-      }
-    }
+    const slides = deckSlides.map((slide, index) => index === activeSlide - 1 ? { ...slide, background, blocks } : slide);
     const slide = slides[slideNumber - 1];
     if (!slide) return;
     setActiveSlide(slideNumber);
@@ -440,10 +579,10 @@ export default function Home() {
     setBackground(slide.background);
     setSelectedId(slide.blocks[0]?.id ?? "");
     setDeckSlides(slides);
-    setSaved(clean);
   };
 
   const addSlide = () => {
+    checkpoint();
     const slideNumber = deckSlides.length + 1;
     const blocks: Block[] = [
       { id: `eyebrow-${slideNumber}`, kind: "eyebrow", label: "Eyebrow", text: "NEW SLIDE" },
@@ -459,24 +598,126 @@ export default function Home() {
     setSaved(false);
   };
 
+  const duplicateSlide = () => {
+    checkpoint();
+    const source = { ...deckSlides[activeSlide - 1], background, blocks };
+    const suffix = createMessageId().slice(6);
+    const regenerate = (items: Block[]): Block[] => items.map((item) => ({
+      ...clone(item),
+      id: `${item.id}-${suffix}`,
+      ...(item.children ? { children: regenerate(item.children) } : {}),
+    }));
+    const copy = { ...clone(source), id: `${source.id}-${suffix}`, title: `${source.title} copy`, blocks: regenerate(source.blocks) };
+    const next = [...deckSlides];
+    next.splice(activeSlide, 0, copy);
+    setDeckSlides(next);
+    setActiveSlide(activeSlide + 1);
+    setBlocks(copy.blocks);
+    setSelectedId(flattenBlocks(copy.blocks)[0]?.id ?? "");
+    setSaved(false);
+  };
+
+  const deleteSlide = () => {
+    if (deckSlides.length <= 1) return;
+    checkpoint();
+    const next = deckSlides.filter((_, index) => index !== activeSlide - 1);
+    const nextNumber = Math.min(activeSlide, next.length);
+    const slide = next[nextNumber - 1];
+    setDeckSlides(next);
+    setActiveSlide(nextNumber);
+    setBlocks(slide.blocks);
+    setBackground(slide.background);
+    setSelectedId(flattenBlocks(slide.blocks)[0]?.id ?? "");
+    setSaved(false);
+  };
+
+  const moveSlide = (direction: -1 | 1) => {
+    const target = activeSlide - 1 + direction;
+    if (target < 0 || target >= deckSlides.length) return;
+    checkpoint();
+    const next = deckSlides.map((slide, index) => index === activeSlide - 1 ? { ...slide, blocks, background } : slide);
+    [next[activeSlide - 1], next[target]] = [next[target], next[activeSlide - 1]];
+    setDeckSlides(next);
+    setActiveSlide(target + 1);
+    setSaved(false);
+  };
+
+  const renameSlide = (title: string) => {
+    checkpoint();
+    setDeckSlides((items) => items.map((slide, index) => index === activeSlide - 1 ? { ...slide, title } : slide));
+    setSaved(false);
+  };
+
+  const saveSlideTemplate = () => {
+    const slide = clone({ ...deckSlides[activeSlide - 1], blocks, background });
+    const next = [...slideTemplates.filter((item) => item.title !== slide.title), slide].slice(-30);
+    templateStore.write(next);
+    setAnnouncement(`Saved ${slide.title} to the slide library`);
+  };
+
+  const insertTemplate = (template: DeckSlide) => {
+    checkpoint();
+    const suffix = createMessageId().slice(6);
+    const regenerate = (items: Block[]): Block[] => items.map((item) => ({ ...clone(item), id: `${item.id}-${suffix}`, ...(item.children ? { children: regenerate(item.children) } : {}) }));
+    const slide = { ...clone(template), id: `${template.id}-${suffix}`, blocks: regenerate(template.blocks) };
+    const next = [...deckSlides];
+    next.splice(activeSlide, 0, slide);
+    setDeckSlides(next);
+    setActiveSlide(activeSlide + 1);
+    setBlocks(slide.blocks);
+    setBackground(slide.background);
+    setSelectedId(flattenBlocks(slide.blocks)[0]?.id ?? "");
+    setShowTemplates(false);
+    setSaved(false);
+  };
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement;
+      if (target.matches("input, textarea, [contenteditable=true]")) return;
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        if (event.shiftKey) redo(); else undo();
+      } else if (event.key === "?") {
+        setShowHelp(true);
+      } else if (event.key === "ArrowRight" && activeSlide < deckSlides.length) {
+        void switchSlide(activeSlide + 1);
+      } else if (event.key === "ArrowLeft" && activeSlide > 1) {
+        void switchSlide(activeSlide - 1);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
+
   const deleteSelected = () => {
-    if (blocks.length <= 1) return;
-    const remaining = blocks.filter((block) => block.id !== selected.id);
+    if (!selected || flattenBlocks(blocks).length <= 1) return;
+    checkpoint();
+    const remaining = removeBlock(blocks, selected.id);
     setBlocks(remaining);
-    setSelectedId(remaining[0].id);
+    setSelectedId(flattenBlocks(remaining)[0]?.id ?? "");
     setSaved(false);
   };
 
   const addBlock = (kind: Block["kind"]) => {
-    const id = `${kind}-${blocks.length + 1}`;
+    checkpoint();
+    const id = `${kind}-${createMessageId().slice(6)}`;
     const defaults: Record<Block["kind"], string> = {
       eyebrow: "NEW SECTION",
       heading: "A clear, compelling headline.",
       paragraph: "Add supporting detail that helps your audience understand the idea.",
       metrics: "24%|growth|8 wk|to launch",
       note: "SOURCE · INTERNAL RESEARCH",
+      row: "",
+      column: "",
+      grid: "",
     };
-    setBlocks((items) => [...items, { id, kind, label: `New ${kind}`, text: defaults[kind] }]);
+    const nextBlock: Block = { id, kind, label: `New ${kind}`, text: defaults[kind], ...(containerKinds.has(kind) ? { children: [] } : {}) };
+    if (selected && containerKinds.has(selected.kind)) {
+      setBlocks((items) => mapBlocks(items, selected.id, { children: [...(selected.children ?? []), nextBlock] }));
+    } else {
+      setBlocks((items) => [...items, nextBlock]);
+    }
     setSelectedId(id);
     setShowAdd(false);
     setSaved(false);
@@ -484,13 +725,17 @@ export default function Home() {
 
   const dropOn = (targetId: string) => {
     if (!draggedId || draggedId === targetId) return;
+    checkpoint();
     setBlocks((items) => {
-      const next = [...items];
-      const from = next.findIndex((item) => item.id === draggedId);
-      const to = next.findIndex((item) => item.id === targetId);
-      const [moved] = next.splice(from, 1);
-      next.splice(to, 0, moved);
-      return next;
+      const dragged = findBlock(items, draggedId);
+      const target = findBlock(items, targetId);
+      if (!dragged || !target) return items;
+      if (flattenBlocks(dragged.children ?? []).some((item) => item.id === targetId)) return items;
+      if (containerKinds.has(target.kind)) {
+        const without = removeBlock(items, draggedId);
+        return mapBlocks(without, targetId, { children: [...(target.children ?? []), dragged] });
+      }
+      return insertBeforeBlock(removeBlock(items, draggedId), targetId, dragged);
     });
     setDraggedId(null);
     setSaved(false);
@@ -501,16 +746,86 @@ export default function Home() {
       const response = await fetch(`${apiBase}/save`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ deck: deckPayload(), message: "Q3 Strategy Deck" }),
+        body: JSON.stringify({ deck: deckPayload(), message: saveMessage || deckTitle, expectedRevision: serverRevision, idempotencyKey: createMessageId() }),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Save failed.");
       applyServerState(result as ServerState);
       setSaved(true);
+      setSaveMessage("");
+      setAnnouncement("Deck saved to history");
       setApiError(null);
     } catch (error) {
       setApiError(error instanceof Error ? error.message : String(error));
     }
+  };
+
+  const exportDeck = () => {
+    if (!quality.ok) {
+      setShowQuality(true);
+      setApiError("Resolve quality errors before exporting.");
+      return;
+    }
+    const html = renderDeckDocument(deckPayload(), deckCss);
+    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${deckTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "weave-deck"}.html`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+    setAnnouncement("Offline presentation downloaded");
+  };
+
+  const downloadBundle = () => {
+    const bundle = JSON.stringify({ format: "weave-deck", version: 1, deck: deckPayload(), css: deckCss }, null, 2);
+    const url = URL.createObjectURL(new Blob([bundle], { type: "application/json" }));
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${deckTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-") || "deck"}.weave.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const importBundle = async (file: File) => {
+    try {
+      if (file.size > 2_000_000) throw new Error("Deck bundle must be 2 MB or smaller.");
+      const bundle = JSON.parse(await file.text());
+      if (bundle.format !== "weave-deck" || bundle.version !== 1 || !bundle.deck || typeof bundle.css !== "string") throw new Error("Unsupported Weave bundle.");
+      const deckCheck = auditDeckQuality(bundle.deck);
+      const cssCheck = auditCssSafety(bundle.css);
+      if (!deckCheck.ok || !cssCheck.ok) throw new Error(`Bundle failed validation (${deckCheck.summary.errors + cssCheck.summary.errors} errors).`);
+      if (!window.confirm(`Replace the editor buffer with “${bundle.deck.title}”? You can Undo this import.`)) return;
+      checkpoint();
+      setDeckTitle(String(bundle.deck.title));
+      setActiveSlide(bundle.deck.activeSlide);
+      setBackground(bundle.deck.background);
+      setAccent(bundle.deck.accent);
+      setBlocks(clone(bundle.deck.blocks));
+      setDeckSlides(clone(bundle.deck.slides));
+      setDeckCss(bundle.css);
+      setSelectedId(flattenBlocks(bundle.deck.blocks)[0]?.id ?? "");
+      setSaved(false);
+      setAnnouncement("Portable deck imported; save to commit it");
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (importRef.current) importRef.current.value = "";
+    }
+  };
+
+  const openPresenter = () => {
+    setPresentSlide(activeSlide);
+    setShowPresenter(true);
+  };
+
+  const printDeck = () => {
+    if (!quality.ok) { setShowQuality(true); return; }
+    const popup = window.open("", "_blank", "noopener,noreferrer");
+    if (!popup) { setApiError("Allow pop-ups to print this deck."); return; }
+    popup.document.write(renderDeckDocument(deckPayload(), deckCss));
+    popup.document.close();
+    popup.addEventListener("load", () => popup.print(), { once: true });
   };
 
   const restoreHistory = async (commit?: string) => {
@@ -567,6 +882,7 @@ export default function Home() {
           model: selectedModel || undefined,
           effort: reasoningEffort,
           approvalPolicy,
+          contextEnvelope: contextEnvelope(),
         }),
       });
       const result = await response.json();
@@ -638,6 +954,7 @@ export default function Home() {
           model: selectedModel || undefined,
           effort: reasoningEffort,
           approvalPolicy,
+          contextEnvelope: contextEnvelope(),
         }),
       });
       const result = await response.json();
@@ -840,17 +1157,90 @@ export default function Home() {
     }
   };
 
+  const renderCanvasBlock = (block: Block): React.ReactNode => {
+    const chrome = `slide-block ${selectedId === block.id ? "selected" : ""} ${editingId === block.id ? "editing" : ""}`;
+    const shared = {
+      "data-weave-id": block.id,
+      "data-weave-label": block.label,
+      draggable: editingId !== block.id,
+      onDragStart: () => setDraggedId(block.id),
+      onDragOver: (event: DragEvent) => event.preventDefault(),
+      onDrop: () => dropOn(block.id),
+      onClick: (event: ReactMouseEvent<HTMLElement>) => {
+        event.stopPropagation();
+        selectBlock(block.id);
+        focusEditableAt(event.currentTarget, event.clientX, event.clientY);
+      },
+    };
+    const tokens = styleClass(block);
+    if (containerKinds.has(block.kind)) {
+      return (
+        <div key={block.id} {...shared} className={`weave-container ${block.kind} ${tokens} ${chrome}`} role="group" aria-label={block.label}>
+          {(block.children ?? []).map(renderCanvasBlock)}
+          {(block.children ?? []).length === 0 && <span className="empty-container">Drop or add a block here</span>}
+        </div>
+      );
+    }
+    if (block.kind === "metrics") {
+      return (
+        <div key={block.id} {...shared} className={`metrics ${tokens} ${chrome}`}>
+          {metricParts(block.text).map((part: string, index: number) => (
+            <EditableText
+              key={index}
+              as={index % 2 === 0 ? "strong" : "span"}
+              value={part}
+              multiline={false}
+              label={index % 2 === 0 ? `${block.label} value` : `${block.label} caption`}
+              onChange={(next) => editMetricPart(block, index, next)}
+              onEditingChange={(editing) => setEditingId(editing ? block.id : null)}
+            />
+          ))}
+        </div>
+      );
+    }
+    return (
+      <EditableText
+        key={block.id}
+        {...shared}
+        as={blockTag(block.kind)}
+        className={`${block.kind} ${tokens} ${chrome}`}
+        value={block.text}
+        multiline={block.kind === "heading" || block.kind === "paragraph"}
+        label={block.label}
+        onChange={(next) => editBlockText(block.id, next)}
+        onEditingChange={(editing) => setEditingId(editing ? block.id : null)}
+      />
+    );
+  };
+
   const slideNavigator = (
     <>
-      {deckSlides.map((slide, index) => {
+      {deckSlides.map((slide, index) => ({ slide, index })).filter(({ index }) =>
+        deckSlides.length <= 60 || index === 0 || index === deckSlides.length - 1 || Math.abs(index - (activeSlide - 1)) <= 20,
+      ).map(({ slide, index }, visibleIndex, visibleEntries) => {
         const slideNumber = index + 1;
         return (
+          <div className="slide-entry" key={slide.id}>
+          {visibleIndex > 0 && index - visibleEntries[visibleIndex - 1].index > 1 && <button className="slide-gap" onClick={() => void switchSlide(Math.max(1, slideNumber - 20))}>…</button>}
           <button
-            key={slide.id}
             className={`slide-item ${activeSlide === slideNumber ? "active" : ""}`}
             onClick={() => void switchSlide(slideNumber)}
             disabled={agentRunning}
             title={slide.title}
+            draggable={!agentRunning}
+            onDragStart={() => setDraggedSlide(index)}
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={() => {
+              if (draggedSlide == null || draggedSlide === index) return;
+              checkpoint();
+              const next = deckSlides.map((item, itemIndex) => itemIndex === activeSlide - 1 ? { ...item, blocks, background } : item);
+              const [moved] = next.splice(draggedSlide, 1);
+              next.splice(index, 0, moved);
+              setDeckSlides(next);
+              setActiveSlide(index + 1);
+              setDraggedSlide(null);
+              setSaved(false);
+            }}
           >
             <span className="slide-number">{String(slideNumber).padStart(2, "0")}</span>
             <span className={`mini-slide mini-${(index % 4) + 1}`}>
@@ -860,6 +1250,7 @@ export default function Home() {
             </span>
             <span className="slide-name">{slide.title}</span>
           </button>
+          </div>
         );
       })}
       <button className="new-slide" onClick={addSlide} disabled={agentRunning} aria-label="New slide" title="New slide">
@@ -889,26 +1280,38 @@ export default function Home() {
           <span className="chevron">⌄</span>
         </button>
         <div className="document-title">
-          <span className={!saved ? "unsaved-dot" : ""}>Q3 Strategy Deck</span>
+          <input
+            className={!saved ? "unsaved-dot" : ""}
+            aria-label="Deck title"
+            value={deckTitle}
+            onChange={(event) => { setDeckTitle(event.target.value); setSaved(false); }}
+          />
           <small>Slide {activeSlide} of {deckSlides.length}</small>
         </div>
         <div className="top-actions">
+          <button className="icon-button" onClick={undo} disabled={historyState.undo === 0} aria-label="Undo">↶</button>
+          <button className="icon-button" onClick={redo} disabled={historyState.redo === 0} aria-label="Redo">↷</button>
           <button className="icon-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} aria-label="Toggle color mode">
             {theme === "dark" ? "☼" : "◐"}
           </button>
-          <button className="share-button">Share</button>
+          <button className="share-button" onClick={openPresenter}>Present</button>
+          <button className="share-button" onClick={exportDeck}>Export</button>
+          <button className="share-button" onClick={printDeck}>PDF</button>
+          <button className="share-button" onClick={downloadBundle}>Bundle</button>
+          <button className="share-button" onClick={() => importRef.current?.click()}>Import</button>
+          <input ref={importRef} className="sr-only" type="file" accept=".json,.weave.json,application/json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importBundle(file); }} />
           <button className="save-button" onClick={() => void saveProject()} disabled={agentRunning}>
             <span>{saved ? "✓" : "↑"}</span> {saved ? "Saved" : "Save"}
           </button>
         </div>
       </header>
 
-      <div className="workspace" data-slide-nav={slideNav}>
+      <div className="workspace" data-slide-nav={slideNav} data-inspector={inspectorOpen ? "open" : "closed"}>
         <nav className="activity-rail" aria-label="Primary navigation">
           <div className="activity-top">
             <button className="activity-button active" aria-label="Files">◇</button>
-            <button className="activity-button" aria-label="Search">⌕</button>
-            <button className="activity-button" aria-label="History">↶</button>
+            <button className="activity-button" aria-label="Keyboard shortcuts" onClick={() => setShowHelp(true)}>⌨</button>
+            <button className="activity-button" aria-label="History" onClick={() => setShowHistory(true)}>↶</button>
             <button className="activity-button" aria-label="Skills">✣</button>
           </div>
           <div className="activity-bottom">
@@ -1020,7 +1423,8 @@ export default function Home() {
                 <span aria-hidden="true">◎</span> Slide {activeSlide} in context · {agentActivity}
               </div>
               {!codexState.activeThreadId && <p className="empty-thread">Start or select a conversation.</p>}
-              {activeTurns.map((turn) => (
+              {activeTurns.length > visibleTurns.length && <p className="trimmed-log">Showing the latest {visibleTurns.length} turns.</p>}
+              {visibleTurns.map((turn) => (
                 <section className="turn-group" key={turn.id}>
                   {selectTurnItems(codexState, turn.id).map((item) => <ItemCard key={item.id} item={item} />)}
                   <footer>
@@ -1151,71 +1555,34 @@ export default function Home() {
                 {/* The project stylesheet is the only thing styling the slide; the editor's
                     own chrome lives in globals.css and never overlaps these rules. */}
                 <style>{deckCss}</style>
-                <div className="slide-viewport" ref={viewportRef} style={{ "--slide-scale": slideScale } as React.CSSProperties}>
+                <div className="slide-viewport" data-zoom-mode={manualZoom == null ? "fit" : "manual"} ref={viewportRef} style={{ "--slide-scale": slideScale } as React.CSSProperties}>
                   <main className={`weave-slide ${background}`} style={{ "--accent": accent } as React.CSSProperties}>
                     <div className="brand">WEAVE<span>●</span></div>
                     <section className="hero">
-                      {blocks.map((block) => {
-                        const chrome = `slide-block ${selectedId === block.id ? "selected" : ""} ${editingId === block.id ? "editing" : ""}`;
-                        const shared = {
-                          "data-weave-id": block.id,
-                          "data-weave-label": block.label,
-                          /* Dragging the block would hijack the mouse from the caret,
-                             so the block only becomes draggable once editing stops. */
-                          draggable: editingId !== block.id,
-                          onDragStart: () => setDraggedId(block.id),
-                          onDragOver: (event: DragEvent) => event.preventDefault(),
-                          onDrop: () => dropOn(block.id),
-                          onClick: (event: ReactMouseEvent<HTMLElement>) => {
-                            event.stopPropagation();
-                            selectBlock(block.id);
-                            focusEditableAt(event.currentTarget, event.clientX, event.clientY);
-                          },
-                          onFocus: () => setEditingId(block.id),
-                          onBlur: () => setEditingId((current) => (current === block.id ? null : current)),
-                        };
-                        return block.kind === "metrics" ? (
-                          <div key={block.id} {...shared} className={`metrics ${chrome}`}>
-                            {metricParts(block.text).map((part: string, index: number) => (
-                              <EditableText
-                                key={index}
-                                as={index % 2 === 0 ? "strong" : "span"}
-                                value={part}
-                                multiline={false}
-                                label={index % 2 === 0 ? `${block.label} value` : `${block.label} caption`}
-                                onChange={(next) => editMetricPart(block, index, next)}
-                              />
-                            ))}
-                          </div>
-                        ) : (
-                          <EditableText
-                            key={block.id}
-                            {...shared}
-                            as={blockTag(block.kind)}
-                            className={`${block.kind} ${chrome}`}
-                            value={block.text}
-                            multiline={block.kind === "heading" || block.kind === "paragraph"}
-                            label={block.label}
-                            onChange={(next) => editBlockText(block.id, next)}
-                          />
-                        );
-                      })}
+                      {blocks.map(renderCanvasBlock)}
                     </section>
                     <div className="page-number">{String(activeSlide).padStart(2, "0")} / {String(deckSlides.length).padStart(2, "0")}</div>
                   </main>
                 </div>
                 <div className="canvas-toolbar">
                   <button onClick={() => setShowAdd(!showAdd)} className={showAdd ? "active" : ""}>＋ Add block</button>
+                  <button onClick={duplicateSlide} title="Duplicate slide">Duplicate</button>
+                  <button onClick={saveSlideTemplate}>Save template</button>
+                  <button onClick={() => setShowTemplates(true)}>Library</button>
+                  <button onClick={() => moveSlide(-1)} disabled={activeSlide === 1} aria-label="Move slide left">←</button>
+                  <button onClick={() => moveSlide(1)} disabled={activeSlide === deckSlides.length} aria-label="Move slide right">→</button>
+                  <button onClick={deleteSlide} disabled={deckSlides.length <= 1}>Delete slide</button>
                   <span />
-                  <button aria-label="Zoom out">−</button>
+                  <button aria-label="Zoom out" onClick={() => setManualZoom(Math.max(.25, (manualZoom ?? fitScale) - .1))}>−</button>
                   <b>{Math.round(slideScale * 100)}%</b>
-                  <button aria-label="Zoom in">＋</button>
-                  <button aria-label="Fit to screen">⊡</button>
+                  <button aria-label="Zoom in" onClick={() => setManualZoom(Math.min(4, (manualZoom ?? fitScale) + .1))}>＋</button>
+                  <button aria-label="Actual size" onClick={() => setManualZoom(1)}>100</button>
+                  <button aria-label="Fit to screen" onClick={() => setManualZoom(null)}>⊡</button>
                 </div>
                 {showAdd && (
                   <div className="block-picker">
                     <small>INSERT BLOCK</small>
-                    {(["heading", "paragraph", "metrics", "note"] as Block["kind"][]).map((kind) => (
+                    {(["heading", "paragraph", "metrics", "note", "row", "column", "grid"] as Block["kind"][]).map((kind) => (
                       <button key={kind} onClick={() => addBlock(kind)}>
                         <i>{blockIcons[kind]}</i>
                         <span><strong>{kind === "paragraph" ? "Body text" : kind[0].toUpperCase() + kind.slice(1)}</strong><small>Add to slide flow</small></span>
@@ -1226,7 +1593,7 @@ export default function Home() {
               </div>
             ) : (
               <div className="code-editor">
-                <div className="code-breadcrumb"><span>slides</span> / <span>opportunity.html</span></div>
+                <div className="code-breadcrumb"><span>slides</span> / <span>{deckSlides[activeSlide - 1]?.id}.html</span></div>
                 <pre>
                   {code.split("\n").map((line, index) => {
                     const lineBlock = blocks.find((block) => line.includes(`class="${block.kind}`));
@@ -1253,10 +1620,10 @@ export default function Home() {
           )}
         </section>
 
-        <aside className="inspector">
+        {inspectorOpen ? <aside className="inspector">
           <div className="inspector-heading">
             <span>INSPECTOR</span>
-            <button aria-label="Close inspector">×</button>
+            <button aria-label="Close inspector" onClick={() => setInspectorOpen(false)}>×</button>
           </div>
           <div className="selection-path">
             <span>section.hero</span>
@@ -1267,8 +1634,8 @@ export default function Home() {
             <div className="property-heading"><span>OBJECT TREE</span><span>{blocks.length}</span></div>
             <div>
               <span className="tree-root">⌄ <b>section.hero</b></span>
-              {blocks.map((block) => (
-                <button key={block.id} className={selected.id === block.id ? "active" : ""} onClick={() => setSelectedId(block.id)}>
+              {blocksWithDepth(blocks).map(({ block, depth }) => (
+                <button key={block.id} style={{ paddingLeft: 14 + depth * 14 }} className={selected.id === block.id ? "active" : ""} onClick={() => setSelectedId(block.id)}>
                   <i>{blockIcons[block.kind]}</i>
                   <span>{block.label}</span>
                   <small>{block.kind}</small>
@@ -1278,41 +1645,35 @@ export default function Home() {
           </section>
           <section className="property-section">
             <div className="property-heading"><span>CONTENT</span><span>⌃</span></div>
-            <label>
+            <label><span>Layer name</span><input value={selected.label} onChange={(event) => updateSelected({ label: event.target.value })} /></label>
+            {!containerKinds.has(selected.kind) && <label>
               <span>Text</span>
               <textarea value={selected.text} onChange={(event) => updateSelected({ text: event.target.value })} />
-            </label>
+            </label>}
           </section>
           <section className="property-section">
             <div className="property-heading"><span>TYPOGRAPHY</span><span>⌃</span></div>
             <div className="control-grid">
-              <label><span>Style</span><button className="select-control">{selected.kind === "heading" ? "Display / 64" : "Body / 18"} <i>⌄</i></button></label>
-              <label><span>Weight</span><button className="select-control">{selected.kind === "heading" ? "Semibold" : "Regular"} <i>⌄</i></button></label>
+              <label><span>Size</span><select value={selected.style?.size ?? "md"} onChange={(event) => updateSelected({ style: { ...selected.style, size: event.target.value as "sm" | "md" | "lg" } })}><option value="sm">Small</option><option value="md">Medium</option><option value="lg">Large</option></select></label>
+              <label><span>Weight</span><select value={selected.style?.weight ?? "regular"} onChange={(event) => updateSelected({ style: { ...selected.style, weight: event.target.value as "regular" | "medium" | "bold" } })}><option value="regular">Regular</option><option value="medium">Medium</option><option value="bold">Bold</option></select></label>
             </div>
             <div className="format-row">
-              <button className="active"><b>B</b></button>
-              <button><i>I</i></button>
-              <button><u>U</u></button>
-              <span />
-              <button className="active">≡</button>
-              <button>≣</button>
-              <button>☷</button>
+              {(["left", "center", "right"] as const).map((align) => <button key={align} className={(selected.style?.align ?? "left") === align ? "active" : ""} onClick={() => updateSelected({ style: { ...selected.style, align } })}>{align === "left" ? "≡" : align === "center" ? "≣" : "☷"}</button>)}
             </div>
           </section>
           <section className="property-section">
             <div className="property-heading"><span>COLOR</span><span>⌃</span></div>
-            <div className="color-control">
-              <span style={{ background: selected.kind === "eyebrow" ? accent : "#f1f2f4" }} />
-              <code>{selected.kind === "eyebrow" ? accent.toUpperCase() : "#F1F2F4"}</code>
-              <b>100%</b>
-            </div>
+            <select value={selected.style?.color ?? "primary"} onChange={(event) => updateSelected({ style: { ...selected.style, color: event.target.value as "primary" | "muted" | "accent" } })}><option value="primary">Primary</option><option value="muted">Muted</option><option value="accent">Accent</option></select>
           </section>
           <section className="property-section">
             <div className="property-heading"><span>SPACING</span><span>⌃</span></div>
-            <div className="spacing-grid">
-              <label><span>↥</span><input value="0" readOnly /><small>px</small></label>
-              <label><span>↧</span><input value="24" readOnly /><small>px</small></label>
-            </div>
+            <select value={selected.style?.spacing ?? "normal"} onChange={(event) => updateSelected({ style: { ...selected.style, spacing: event.target.value as "tight" | "normal" | "loose" } })}><option value="tight">Tight</option><option value="normal">Normal</option><option value="loose">Loose</option></select>
+            {selected.kind === "grid" && <select value={selected.style?.columns ?? 2} onChange={(event) => updateSelected({ style: { ...selected.style, columns: Number(event.target.value) as 2 | 3 } })}><option value="2">2 columns</option><option value="3">3 columns</option></select>}
+          </section>
+          <section className="property-section">
+            <div className="property-heading"><span>SLIDE</span><span>⌃</span></div>
+            <label><span>Title</span><input value={deckSlides[activeSlide - 1]?.title ?? ""} onChange={(event) => renameSlide(event.target.value)} /></label>
+            <label><span>Speaker notes</span><textarea value={deckSlides[activeSlide - 1]?.notes ?? ""} onChange={(event) => { checkpoint(); setDeckSlides((items) => items.map((slide, index) => index === activeSlide - 1 ? { ...slide, notes: event.target.value } : slide)); setSaved(false); }} /></label>
           </section>
           <section className="property-section background-section">
             <div className="property-heading"><span>SLIDE BACKGROUND</span><span>⌃</span></div>
@@ -1347,7 +1708,7 @@ export default function Home() {
             </div>
           </section>
           <button className="delete-block" onClick={deleteSelected} disabled={blocks.length <= 1}>Delete selected block</button>
-        </aside>
+        </aside> : <button className="open-inspector" onClick={() => setInspectorOpen(true)}>Inspector</button>}
       </div>
 
       <footer className="statusbar">
@@ -1355,10 +1716,13 @@ export default function Home() {
           <button className="history-button" onClick={() => setShowHistory(!showHistory)}>
             <span className="history-icon">↶</span><strong>History</strong>
           </button>
+          <button className={`quality-button ${quality.ok ? "ok" : "error"}`} onClick={() => setShowQuality(!showQuality)}>
+            Quality {quality.ok ? "✓" : `${quality.errors} errors`}{quality.warnings ? ` · ${quality.warnings} warnings` : ""}
+          </button>
           <span>{project ? `${project.branch} · ${project.commit}` : "Connecting…"}</span>
           {apiError && <span className="status-error">{apiError}</span>}
         </div>
-        <div><span>HTML</span><span>UTF-8</span><span>Spaces: 2</span><span className={`connection ${agentReady ? "" : "offline"}`}><i /> {agentReady ? "Agent connected" : "Agent offline"}</span></div>
+        <div><span>HTML</span><span>UTF-8</span><span>Spaces: 2</span><button className={`connection ${agentReady ? "" : "offline"}`} onClick={() => setConnectionEpoch((value) => value + 1)} title="Reconnect"><i /> {agentReady ? "Agent connected" : "Reconnect Agent"}</button></div>
       </footer>
       {showHistory && (
         <div className="history-popover">
@@ -1366,6 +1730,7 @@ export default function Home() {
             <span>HISTORY</span>
             <button onClick={() => setShowHistory(false)}>×</button>
           </div>
+          <label className="save-message"><span>Next history label</span><input value={saveMessage} onChange={(event) => setSaveMessage(event.target.value)} placeholder={deckTitle} /></label>
           {project?.branch === "detached" && (
             <button className="return-latest" onClick={() => void restoreHistory()} disabled={agentRunning}>Return to latest on main</button>
           )}
@@ -1383,6 +1748,56 @@ export default function Home() {
           {!saved && <p>Save the current edit before restoring history.</p>}
         </div>
       )}
+      {showQuality && (
+        <aside className="quality-popover" aria-label="Deck quality report">
+          <header><strong>Deck quality</strong><button onClick={() => setShowQuality(false)}>×</button></header>
+          {quality.ok && <p className="quality-empty">No blocking quality issues.</p>}
+          {quality.diagnostics.map((item: any, index: number) => (
+            <button key={`${item.code}-${index}`} onClick={() => {
+              if (Number.isInteger(item.slideIndex)) void switchSlide(item.slideIndex + 1);
+              if (item.blockId) setSelectedId(item.blockId);
+              setShowQuality(false);
+            }}>
+              <i className={item.severity} />
+              <span><strong>{item.message}</strong><small>{item.code} · {item.path ?? item.source}</small></span>
+            </button>
+          ))}
+        </aside>
+      )}
+      {showPresenter && (
+        <div className="presenter" role="dialog" aria-modal="true" aria-label="Presentation mode" tabIndex={-1} onKeyDown={(event) => {
+          if (["ArrowRight", "PageDown", " "].includes(event.key)) setPresentSlide((value) => Math.min(deckSlides.length, value + 1));
+          if (["ArrowLeft", "PageUp"].includes(event.key)) setPresentSlide((value) => Math.max(1, value - 1));
+          if (event.key === "Escape") setShowPresenter(false);
+        }}>
+          <style>{deckCss}</style>
+          <div className="presenter-stage" style={{ "--slide-scale": Math.min((window.innerWidth - 80) / designWidth, (window.innerHeight - 120) / designHeight) } as React.CSSProperties}>
+            <main className={`weave-slide ${effectiveSlides[presentSlide - 1].background}`} style={{ "--accent": accent } as React.CSSProperties}>
+              <div className="brand">WEAVE<span>●</span></div>
+              <section className="hero">{effectiveSlides[presentSlide - 1].blocks.map(renderCanvasBlock)}</section>
+              <div className="page-number">{String(presentSlide).padStart(2, "0")} / {String(deckSlides.length).padStart(2, "0")}</div>
+            </main>
+          </div>
+          <footer><button onClick={() => setPresentSlide((value) => Math.max(1, value - 1))}>← Previous</button><span>{presentSlide} / {deckSlides.length}</span><button onClick={() => setPresentSlide((value) => Math.min(deckSlides.length, value + 1))}>Next →</button><small>{effectiveSlides[presentSlide - 1].notes || "No speaker notes"}</small><button onClick={() => document.documentElement.requestFullscreen?.()}>Fullscreen</button><button onClick={() => setShowPresenter(false)}>Exit</button></footer>
+        </div>
+      )}
+      {showHelp && (
+        <div className="help-backdrop" role="presentation" onMouseDown={() => setShowHelp(false)}>
+          <section className="shortcut-help" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" onMouseDown={(event) => event.stopPropagation()}>
+            <header><strong>Keyboard shortcuts</strong><button onClick={() => setShowHelp(false)}>×</button></header>
+            <dl><dt>← / →</dt><dd>Previous / next slide</dd><dt>Enter or F2</dt><dd>Edit selected text</dd><dt>Esc</dt><dd>Cancel editing or close presentation</dd><dt>⌘/Ctrl Z</dt><dd>Undo</dd><dt>⌘/Ctrl Shift Z</dt><dd>Redo</dd><dt>?</dt><dd>Open this help</dd></dl>
+          </section>
+        </div>
+      )}
+      {showTemplates && (
+        <div className="help-backdrop" role="presentation" onMouseDown={() => setShowTemplates(false)}>
+          <section className="shortcut-help template-library" role="dialog" aria-modal="true" aria-label="Slide library" onMouseDown={(event) => event.stopPropagation()}>
+            <header><strong>Slide library</strong><button onClick={() => setShowTemplates(false)}>×</button></header>
+            {slideTemplates.length === 0 ? <p>No saved templates yet. Save the current slide to reuse it.</p> : slideTemplates.map((template) => <button key={`${template.id}-${template.title}`} onClick={() => insertTemplate(template)}><span className={`background-preview ${template.background}`} /><span><strong>{template.title}</strong><small>{flattenBlocks(template.blocks).length} blocks</small></span></button>)}
+          </section>
+        </div>
+      )}
+      <div className="sr-only" aria-live="polite">{announcement}</div>
       {showCodexSettings && (
         <div className="codex-settings-backdrop" role="presentation" onMouseDown={() => setShowCodexSettings(false)}>
           <section className="codex-settings" role="dialog" aria-modal="true" aria-label="Settings" onMouseDown={(event) => event.stopPropagation()}>

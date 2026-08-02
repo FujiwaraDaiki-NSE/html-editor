@@ -7,6 +7,7 @@ import {
   designHeight,
   designWidth,
   renderSlideDocument,
+  renderDeckDocument,
   renderSlideMarkup,
 } from "../shared/slide-design.mjs";
 
@@ -66,4 +67,35 @@ test("slide styling exists in exactly one place", async () => {
   for (const source of [page, project]) {
     assert.match(source, /shared\/slide-design\.mjs/);
   }
+});
+
+test("structured containers and style tokens render recursively", () => {
+  const markup = renderSlideMarkup({
+    ...deck,
+    blocks: [{
+      id: "grid",
+      kind: "grid",
+      style: { columns: 3 },
+      children: [{ id: "nested", kind: "heading", text: "Nested", style: { color: "accent", align: "center" } }],
+    }],
+  });
+  assert.match(markup, /class="weave-container grid columns-3"/);
+  assert.match(markup, /class="heading align-center color-accent" data-weave-id="nested"/);
+});
+
+test("complete deck export is offline and keyboard-presentable", () => {
+  const fullDeck = {
+    ...deck,
+    slides: [
+      { id: "one", title: "One", background: "orbit", blocks: deck.blocks },
+      { id: "two", title: "Two", background: "plain", blocks: deck.blocks },
+    ],
+  };
+  const html = renderDeckDocument(fullDeck, defaultDeckCss);
+  assert.equal((html.match(/class="weave-slide/g) ?? []).length, 2);
+  assert.match(html, /ArrowRight/);
+  assert.match(html, /requestFullscreen/);
+  assert.match(html, /@page\{size:13\.333in 7\.5in/);
+  assert.match(html, /page-break-after:always/);
+  assert.equal(html.includes("<link"), false);
 });

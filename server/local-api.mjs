@@ -8,6 +8,7 @@ import {
   checkoutVariation,
   commitIfChanged,
   createVariationBranch,
+  discardVariation,
   ensureProject,
   projectRoot,
   projectState,
@@ -20,6 +21,7 @@ import { CodexService } from "./codex/service.mjs";
 const apiPort = Number(process.env.WEAVE_API_PORT ?? 4317);
 const codex = new CodexService({ projectRoot, instructions: agentInstructions });
 const pendingTurns = new Map();
+const completedSaves = new Map();
 const migrationNotice = "Legacy .weave/chat.json history was removed. Conversations now use Codex app-server Threads only.";
 
 function hasAllowedOrigin(request) {
@@ -55,10 +57,16 @@ async function readJson(request) {
 }
 
 async function statePayload() {
+  const state = projectState();
+  const generatingBranches = new Set([...pendingTurns.values()].map((turn) => turn.branch).filter(Boolean));
   return {
     deck: await readDeck(),
     css: await readDeckCss(),
-    ...projectState(),
+    ...state,
+    variations: state.variations.map((variation) => ({
+      ...variation,
+      status: generatingBranches.has(variation.branch) ? "generating" : "ready",
+    })),
     codex: {
       ready: codex.ready,
       connection: codex.ready ? "connected" : "connecting",
@@ -82,6 +90,11 @@ function activeProjectTurn() {
   return codex.activeTurns.size > 0;
 }
 
+function serializeEditorContext(payload) {
+  if (!payload.contextEnvelope || typeof payload.contextEnvelope !== "object") return "";
+  return `\n\nEditor context envelope (authoritative for this turn):\n${JSON.stringify(payload.contextEnvelope).slice(0, 120_000)}`;
+}
+
 async function startEditorTurn(payload, { variation = false } = {}) {
   if (activeProjectTurn()) throw new Error("Another Agent turn is already running in this project.");
   const prompt = requireText(payload.prompt, "Prompt");
@@ -97,7 +110,7 @@ async function startEditorTurn(payload, { variation = false } = {}) {
 Current editor selection: ${String(payload.selectedId ?? "none")}
 The latest editor state has been written to .weave/current-buffer.json and .weave/deck.json.
 Inspect the current project, edit .weave/deck.json, and keep the matching files under slides/ consistent.
-Do not commit; Weave will commit after this turn.`;
+Do not commit; Weave will commit after this turn.${serializeEditorContext(payload)}`;
   const result = await codex.startTurn({
     threadId: thread.id,
     prompt: context,
@@ -119,16 +132,18 @@ codex.client.on("notification", (message) => {
   void (async () => {
     const status = message.params?.turn?.status;
     if (status !== "completed") {
+      if (pending.variation && pending.branch) discardVariation(pending.branch);
       codex.events.publish("weave/project", { status, ...projectState() });
       return;
     }
     try {
-      await readDeck();
-      commitIfChanged(
-        pending.variation
-          ? `Variation: ${pending.prompt.replace(/\s+/g, " ").slice(0, 100)}`
-          : `Agent: ${pending.prompt.replace(/\s+/g, " ").slice(0, 110)}`,
-      );
+      const deck = await readDeck();
+      await writeDeck(deck);
+      /* Ordinary Agent edits remain an unsaved working result. A variation needs a
+         commit because its branch is the durable unit switched by the direction tabs. */
+      if (pending.variation) {
+        commitIfChanged(`Variation: ${pending.prompt.replace(/\s+/g, " ").slice(0, 100)}`);
+      }
       codex.events.publish("weave/project", { status: "updated", ...projectState(), deck: await readDeck() });
     } catch (error) {
       codex.events.publish("weave/project", { status: "error", error: error.message });
@@ -175,13 +190,22 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === "/api/save") {
       if (activeProjectTurn()) return sendJson(request, response, 409, { error: "An Agent turn is running." });
-      const deck = await writeDeck(payload.deck);
+      const idempotencyKey = String(payload.idempotencyKey ?? "");
+      if (idempotencyKey && completedSaves.has(idempotencyKey)) {
+        return sendJson(request, response, 200, completedSaves.get(idempotencyKey));
+      }
+      const deck = await writeDeck(payload.deck, false, payload.expectedRevision);
       const commit = commitIfChanged(`Save: ${String(payload.message ?? deck.title).slice(0, 120)}`);
-      return sendJson(request, response, 200, { ...(await statePayload()), commit });
+      const result = { ...(await statePayload()), commit };
+      if (idempotencyKey) {
+        completedSaves.set(idempotencyKey, result);
+        if (completedSaves.size > 100) completedSaves.delete(completedSaves.keys().next().value);
+      }
+      return sendJson(request, response, 200, result);
     }
     if (url.pathname === "/api/history/checkout") {
       if (activeProjectTurn()) return sendJson(request, response, 409, { error: "An Agent turn is running." });
-      checkoutHistory(String(payload.commit ?? ""));
+      await checkoutHistory(String(payload.commit ?? ""));
       return sendJson(request, response, 200, await statePayload());
     }
     if (url.pathname === "/api/history/main") {
@@ -225,8 +249,8 @@ const server = createServer(async (request, response) => {
     }
     if (url.pathname === "/api/codex/turn/start") {
       const prompt = requireText(payload.prompt, "Prompt");
-      if (payload.deck) await writeDeck(payload.deck);
-      const result = await codex.startTurn({ ...payload, prompt });
+      if (payload.deck) await writeDeck(payload.deck, true);
+      const result = await codex.startTurn({ ...payload, prompt: `${prompt}${serializeEditorContext(payload)}` });
       pendingTurns.set(payload.threadId, { prompt, branch: null, variation: false });
       return sendJson(request, response, 202, result);
     }
@@ -281,8 +305,11 @@ const server = createServer(async (request, response) => {
     return sendJson(request, response, 404, { error: "Not found." });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const status = /required|invalid|unknown|not offered/i.test(message) ? 400 : /owned|running|save/i.test(message) ? 409 : 500;
-    return sendJson(request, response, status, { error: message });
+    const status = error?.code === "WEAVE_REVISION_CONFLICT" ? 409
+      : ["WEAVE_QUALITY_FAILED", "WEAVE_CONTENT_POLICY"].includes(error?.code) ? 422
+      : /required|invalid|unknown|not offered/i.test(message) ? 400
+      : /owned|running|save/i.test(message) ? 409 : 500;
+    return sendJson(request, response, status, { error: message, code: error?.code, diagnostics: error?.diagnostics });
   }
 });
 

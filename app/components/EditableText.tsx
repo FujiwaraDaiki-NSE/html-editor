@@ -10,7 +10,10 @@ import {
   type HTMLAttributes,
   type KeyboardEvent as ReactKeyboardEvent,
   type ClipboardEvent as ReactClipboardEvent,
+  type MouseEvent as ReactMouseEvent,
 } from "react";
+
+import { normalizePastedText } from "./editable-text-utils";
 
 type EditableTextProps = Omit<HTMLAttributes<HTMLElement>, "onChange" | "children" | "dangerouslySetInnerHTML"> & {
   value: string;
@@ -20,6 +23,7 @@ type EditableTextProps = Omit<HTMLAttributes<HTMLElement>, "onChange" | "childre
   as?: ElementType;
   label?: string;
   draggable?: boolean;
+  onEditingChange?: (editing: boolean) => void;
 };
 
 const escapeHtml = (value: string) =>
@@ -29,6 +33,20 @@ const escapeHtml = (value: string) =>
    runs of spaces with NBSP and trailing <br>, neither of which belongs in state. */
 const readText = (element: HTMLElement) =>
   element.innerText.replace(/\u00a0/g, " ").replace(/\n$/, "");
+
+const insertPlainText = (element: HTMLElement, text: string) => {
+  const selection = element.ownerDocument.defaultView?.getSelection();
+  if (!selection || selection.rangeCount === 0) return;
+  const range = selection.getRangeAt(0);
+  if (!element.contains(range.commonAncestorContainer)) return;
+  range.deleteContents();
+  const node = element.ownerDocument.createTextNode(text);
+  range.insertNode(node);
+  range.setStartAfter(node);
+  range.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(range);
+};
 
 const placeCaret = (element: HTMLElement, x: number, y: number) => {
   const selection = window.getSelection();
@@ -88,13 +106,22 @@ export function EditableText({
   onBlur,
   onKeyDown,
   onPaste,
+  onClick,
+  onCompositionStart,
+  onCompositionEnd,
   multiline = true,
   as = "span",
   className,
   label,
+  onEditingChange,
+  tabIndex,
   ...rest
 }: EditableTextProps) {
   const ref = useRef<HTMLElement>(null);
+  const snapshotRef = useRef(value);
+  const draftRef = useRef(value);
+  const composingRef = useRef(false);
+  const [editing, setEditing] = useState(false);
   /* Rendered once, then owned by the DOM. The object identity has to stay stable too:
      React re-applies dangerouslySetInnerHTML whenever it receives a new object, which
      would wipe the text under the caret on every keystroke. */
@@ -103,13 +130,42 @@ export function EditableText({
 
   useEffect(() => {
     const element = ref.current;
-    if (!element || element.ownerDocument.activeElement === element) return;
+    if (!element || editing) return;
     if (readText(element) !== value) element.textContent = value;
-  }, [value]);
+    draftRef.current = value;
+  }, [editing, value]);
 
   const commit = () => {
     const element = ref.current;
-    if (element) onChange(readText(element));
+    if (!element) return;
+    const next = readText(element);
+    draftRef.current = next;
+    setEditing(false);
+    onEditingChange?.(false);
+    if (next !== value) onChange(next);
+  };
+
+  const beginEditing = (point?: { x: number; y: number }) => {
+    const element = ref.current;
+    if (!element || editing) return;
+    snapshotRef.current = readText(element);
+    draftRef.current = snapshotRef.current;
+    setEditing(true);
+    onEditingChange?.(true);
+    requestAnimationFrame(() => {
+      element.focus({ preventScroll: true });
+      if (point) placeCaret(element, point.x, point.y);
+    });
+  };
+
+  const cancel = () => {
+    const element = ref.current;
+    if (!element) return;
+    element.textContent = snapshotRef.current;
+    draftRef.current = snapshotRef.current;
+    composingRef.current = false;
+    setEditing(false);
+    onEditingChange?.(false);
   };
 
   const Tag: ElementType = as;
@@ -117,37 +173,80 @@ export function EditableText({
     <Tag
       {...rest}
       ref={ref}
-      contentEditable
+      contentEditable={editing}
       suppressContentEditableWarning
       spellCheck={false}
       role="textbox"
       aria-label={label}
       aria-multiline={multiline}
+      aria-readonly={!editing}
+      aria-keyshortcuts="Enter F2 Escape Control+Enter Meta+Enter"
+      data-editing={editing ? "true" : "false"}
+      tabIndex={tabIndex ?? 0}
       className={`editable-text ${className ?? ""}`.trim()}
       dangerouslySetInnerHTML={html}
-      onInput={commit}
+      onInput={() => {
+        if (ref.current) draftRef.current = readText(ref.current);
+      }}
       onFocus={(event: ReactFocusEvent<HTMLElement>) => onFocus?.(event)}
       onBlur={(event: ReactFocusEvent<HTMLElement>) => {
-        commit();
+        if (editing) commit();
         onBlur?.(event);
+      }}
+      onClick={(event: ReactMouseEvent<HTMLElement>) => {
+        onClick?.(event);
+        if (!event.defaultPrevented && !editing) {
+          beginEditing({ x: event.clientX, y: event.clientY });
+        }
+      }}
+      onCompositionStart={(event) => {
+        composingRef.current = true;
+        onCompositionStart?.(event);
+      }}
+      onCompositionEnd={(event) => {
+        composingRef.current = false;
+        if (ref.current) draftRef.current = readText(ref.current);
+        onCompositionEnd?.(event);
       }}
       onKeyDown={(event: ReactKeyboardEvent<HTMLElement>) => {
         onKeyDown?.(event);
-        if (event.key === "Escape" || (event.key === "Enter" && !multiline)) {
+        if (event.defaultPrevented) return;
+        if (!editing) {
+          if (event.key === "Enter" || event.key === "F2") {
+            event.preventDefault();
+            event.stopPropagation();
+            beginEditing();
+          }
+          return;
+        }
+        if (composingRef.current || event.nativeEvent.isComposing || event.keyCode === 229) return;
+        if (event.key === "Escape") {
           event.preventDefault();
-          ref.current?.blur();
+          event.stopPropagation();
+          cancel();
+          return;
+        }
+        if (event.key === "Enter" && (event.ctrlKey || event.metaKey || !multiline)) {
+          event.preventDefault();
+          event.stopPropagation();
+          commit();
           return;
         }
         if (event.key === "Enter") {
           event.preventDefault();
           document.execCommand("insertLineBreak");
+          if (ref.current) draftRef.current = readText(ref.current);
         }
       }}
       onPaste={(event: ReactClipboardEvent<HTMLElement>) => {
         onPaste?.(event);
+        if (event.defaultPrevented || !editing) return;
         event.preventDefault();
-        const text = event.clipboardData.getData("text/plain");
-        document.execCommand("insertText", false, multiline ? text : text.replace(/\s*\n\s*/g, " "));
+        const text = normalizePastedText(event.clipboardData.getData("text/plain"), multiline);
+        if (ref.current) {
+          insertPlainText(ref.current, text);
+          draftRef.current = readText(ref.current);
+        }
       }}
     />
   );
