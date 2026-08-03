@@ -96,7 +96,7 @@ const containerClasses = new Set(["row", "column", "grid"]);
    but writes the chosen value as real inline CSS onto the node (no class indirection, so no
    drift). Each control may also expose a custom field as an escape hatch (concept 2.6/2.10). */
 const typeScale = [12, 14, 18, 24, 32, 48, 64, 88].map((n) => ({ label: String(n), value: `${n}px` }));
-const weightScale = [{ label: "Reg", value: "400" }, { label: "Med", value: "600" }, { label: "Bold", value: "700" }];
+const weightScale = [{ label: "Reg", value: "400" }, { label: "Med", value: "600" }, { label: "Bold", value: "800" }];
 const leadingScale = [{ label: "Tight", value: "1" }, { label: "Snug", value: "1.2" }, { label: "Normal", value: "1.5" }, { label: "Loose", value: "1.7" }];
 const spacingScale = [0, 4, 8, 12, 16, 24, 32, 48].map((n) => ({ label: String(n), value: `${n}px` }));
 const measureScale = [{ label: "Auto", value: "" }, { label: "40%", value: "40%" }, { label: "62%", value: "62%" }, { label: "80%", value: "80%" }, { label: "Full", value: "100%" }];
