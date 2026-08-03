@@ -114,7 +114,23 @@ export function buildTailwindSlideCss() {
   const utilities = [...utilityDeclarations].map(([name, declarations]) => `.weave-slide.${escapeClass(name)}, .weave-slide .${escapeClass(name)} { ${declarations}; }`).join("\n");
   return `/* weave-tailwind-slide-v1: precompiled Tailwind-standard slide utilities. */
 .weave-slide, .weave-slide * { box-sizing: border-box; }
-.weave-slide { width: 1280px; height: 720px; margin: 0; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+.weave-slide { --weave-accent: #fbbf24; width: 1280px; height: 720px; margin: 0; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+.weave-slide:has(.text-teal-400) { --weave-accent: #2dd4bf; }
+.weave-slide:has(.text-violet-400) { --weave-accent: #a78bfa; }
+.weave-slide:has(.text-rose-400) { --weave-accent: #fb7185; }
+.weave-slide:has(.text-emerald-400) { --weave-accent: #34d399; }
+.weave-slide.theme-grid {
+  background-image: linear-gradient(rgb(255 255 255 / 0.04) 1px, transparent 1px), linear-gradient(90deg, rgb(255 255 255 / 0.04) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+.weave-slide.theme-orbit::before, .weave-slide.theme-grid::before {
+  content: ""; position: absolute; right: -18%; top: -32%; width: 52%; aspect-ratio: 1; border-radius: 9999px;
+  background: color-mix(in srgb, var(--weave-accent) 10%, transparent); pointer-events: none;
+}
+.weave-slide.theme-orbit::after {
+  content: ""; position: absolute; right: -17%; bottom: -31%; width: 38%; aspect-ratio: 1; border-radius: 9999px;
+  border: 34px solid color-mix(in srgb, var(--weave-accent) 62%, transparent); opacity: 0.7; pointer-events: none;
+}
 .weave-slide > * { min-width: 0; }
 ${utilities}
 `;

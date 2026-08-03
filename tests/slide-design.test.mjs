@@ -55,6 +55,14 @@ test("the stylesheet is authored at the fixed design size, not in responsive uni
   }
 });
 
+test("generated theme backgrounds remain visible and follow Tailwind accent colors", () => {
+  assert.match(defaultDeckCss, /\.weave-slide\.theme-grid \{/);
+  assert.match(defaultDeckCss, /background-size: 40px 40px/);
+  assert.match(defaultDeckCss, /\.weave-slide\.theme-orbit::after/);
+  assert.match(defaultDeckCss, /:has\(\.text-teal-400\)/);
+  assert.match(defaultDeckCss, /var\(--weave-accent\)/);
+});
+
 test("design CSS relies on <br>, not white-space: pre (the formatter reflows text)", () => {
   /* Prettier reindents/wraps long text; under white-space: pre-wrap that indentation would
      surface as visible spaces after a save. Line breaks are <br> elements instead. */

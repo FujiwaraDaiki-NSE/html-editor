@@ -5,7 +5,7 @@ import { DragEvent, useCallback, useEffect, useLayoutEffect, useMemo, useReducer
 import { actionFromStreamEvent } from "./codex/actions";
 import { defaultDeckCss, designHeight, designWidth, renderDeckDocument } from "../shared/slide-design.mjs";
 import { auditContentPolicy } from "../shared/content-policy.mjs";
-import { containerControlKeys, defaultSlideClasses, slideControlGroups, textControlKeys } from "../shared/tailwind-slide.mjs";
+import { containerControlKeys, defaultSlideClasses, migrateSlideHtmlToTailwind, slideControlGroups, textControlKeys } from "../shared/tailwind-slide.mjs";
 import { ItemCard } from "./codex/components/ItemCard";
 import { ServerRequestCard } from "./codex/components/ServerRequestCard";
 import { codexReducer, initialCodexState } from "./codex/reducer";
@@ -278,10 +278,11 @@ export default function Home() {
   const applyServerState = useCallback((state: ServerState, applyDeck = true) => {
     if (applyDeck) {
       setDeckTitle(state.deck.title);
-      const nextSlides = state.deck.slides?.length ? state.deck.slides : initialSlides;
+      const sourceSlides = state.deck.slides?.length ? state.deck.slides : initialSlides;
+      const nextSlides = sourceSlides.map((slide) => ({ ...slide, html: migrateSlideHtmlToTailwind(slide.html) }));
       slidesRef.current = nextSlides;
       setSlides(nextSlides);
-      if (state.css) setDeckCss(state.css);
+      setDeckCss(state.css?.includes("weave-tailwind-slide-v1") ? state.css : defaultDeckCss);
       setHistory(state.history);
       setVariations(state.variations ?? []);
       setProject(state.project);
@@ -737,8 +738,8 @@ export default function Home() {
       if (!window.confirm(`Replace the editor buffer with “${bundle.deck.title}”? You can Undo this import.`)) return;
       checkpoint();
       setDeckTitle(String(bundle.deck.title));
-      setSlidesSynced(bundle.deck.slides);
-      setDeckCss(bundle.css);
+      setSlidesSynced(bundle.deck.slides.map((slide: SlideDoc) => ({ ...slide, html: migrateSlideHtmlToTailwind(slide.html) })));
+      setDeckCss(bundle.css.includes("weave-tailwind-slide-v1") ? bundle.css : defaultDeckCss);
       activeRef.current = 1;
       setActiveSlide(1);
       setSelectedId(null);
