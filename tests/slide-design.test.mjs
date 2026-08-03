@@ -6,36 +6,37 @@ import {
   defaultDeckCss,
   designHeight,
   designWidth,
-  renderSlideDocument,
   renderDeckDocument,
-  renderSlideMarkup,
+  renderSlideDocument,
+  slideFragmentFromBlocks,
 } from "../shared/slide-design.mjs";
 
 const read = (file) => readFile(new URL(file, import.meta.url), "utf8");
 
-const deck = {
-  title: "Test deck",
-  activeSlide: 1,
-  background: "orbit",
-  accent: "#f6b84b",
-  blocks: [
-    { id: "heading", kind: "heading", label: "Heading", text: "Two\nlines" },
-    { id: "metrics", kind: "metrics", label: "Metrics row", text: "3.2×|faster|42%|less <rework>" },
-  ],
-  slides: [{ id: "one" }, { id: "two" }],
-};
+const blocks = [
+  { id: "heading", kind: "heading", text: "Two\nlines" },
+  { id: "metrics", kind: "metrics", text: "3.2×|faster|42%|less <rework>" },
+];
+const fragment = (overrides = {}) => slideFragmentFromBlocks({ background: "orbit", accent: "#f6b84b", total: 2, position: 1, blocks, ...overrides });
 
-test("slide markup carries the classes and ids the stylesheet and editor rely on", () => {
-  const markup = renderSlideMarkup(deck);
-  assert.match(markup, /<main class="weave-slide orbit" style="--accent: #f6b84b">/);
-  assert.match(markup, /<h1 class="heading" data-weave-id="heading">Two\nlines<\/h1>/);
+test("the seed fragment carries the classes and ids the stylesheet and editor rely on", () => {
+  const markup = fragment();
+  assert.match(markup, /<main class="weave-slide orbit" style="--accent: #f6b84b" data-weave-slide>/);
+  assert.match(markup, /<h1 class="heading" data-weave-id="heading">Two<br>lines<\/h1>/);
   assert.match(markup, /<div class="metrics" data-weave-id="metrics"><strong>3\.2×<\/strong><span>faster<\/span>/);
   assert.match(markup, /01 \/ 02/);
   assert.equal(markup.includes("<rework>"), false, "block text must be escaped");
 });
 
+test("line breaks in slide text are <br>, never literal newlines", () => {
+  const markup = fragment();
+  const heading = markup.match(/<h1[^>]*>([\s\S]*?)<\/h1>/)[1];
+  assert.equal(heading.includes("\n"), false, "a literal newline would be collapsed by the formatter");
+  assert.match(heading, /Two<br>lines/);
+});
+
 test("exported slides inline the project stylesheet and stay self-contained", () => {
-  const html = renderSlideDocument(deck, defaultDeckCss);
+  const html = renderSlideDocument(fragment(), defaultDeckCss, "Test slide");
   assert.match(html, /\.weave-slide \.heading/);
   assert.equal(html.includes("<link"), false, "no external stylesheet");
   assert.equal(html.includes("http://"), false, "no external references");
@@ -59,7 +60,6 @@ test("slide styling exists in exactly one place", async () => {
     read("../app/page.tsx"),
     read("../server/project.mjs"),
   ]);
-  /* The editor's stylesheet may style its own chrome, never the slide's content. */
   for (const duplicated of [".slide-canvas", ".slide-content", ".block-heading", ".block-paragraph", ".metric-grid", ".slide-index"]) {
     assert.equal(globals.includes(duplicated), false, `globals.css still styles slide content: ${duplicated}`);
   }
@@ -69,29 +69,24 @@ test("slide styling exists in exactly one place", async () => {
   }
 });
 
-test("structured containers and style tokens render recursively", () => {
-  const markup = renderSlideMarkup({
-    ...deck,
+test("structured containers render recursively", () => {
+  const markup = slideFragmentFromBlocks({
+    background: "orbit",
+    accent: "#f6b84b",
+    total: 1,
+    position: 1,
     blocks: [{
       id: "grid",
       kind: "grid",
-      style: { columns: 3 },
-      children: [{ id: "nested", kind: "heading", text: "Nested", style: { color: "accent", align: "center" } }],
+      children: [{ id: "nested", kind: "heading", text: "Nested" }],
     }],
   });
-  assert.match(markup, /class="weave-container grid columns-3"/);
-  assert.match(markup, /class="heading align-center color-accent" data-weave-id="nested"/);
+  assert.match(markup, /class="weave-container grid" data-weave-id="grid"/);
+  assert.match(markup, /<h1 class="heading" data-weave-id="nested">Nested<\/h1>/);
 });
 
 test("complete deck export is offline and keyboard-presentable", () => {
-  const fullDeck = {
-    ...deck,
-    slides: [
-      { id: "one", title: "One", background: "orbit", blocks: deck.blocks },
-      { id: "two", title: "Two", background: "plain", blocks: deck.blocks },
-    ],
-  };
-  const html = renderDeckDocument(fullDeck, defaultDeckCss);
+  const html = renderDeckDocument([fragment({ position: 1 }), fragment({ position: 2, background: "plain" })], defaultDeckCss, "Full deck");
   assert.equal((html.match(/class="weave-slide/g) ?? []).length, 2);
   assert.match(html, /ArrowRight/);
   assert.match(html, /requestFullscreen/);
