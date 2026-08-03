@@ -224,6 +224,7 @@ export default function Home() {
   const shouldAutoScrollRef = useRef(true);
   const eventSequenceRef = useRef(0);
   const undoRef = useRef<Snapshot[]>([]);
+  const deckLoadedRef = useRef(false);
   const redoRef = useRef<Snapshot[]>([]);
   const slidesRef = useRef(slides);
   const activeRef = useRef(activeSlide);
@@ -309,19 +310,24 @@ export default function Home() {
   const availableEfforts = useMemo(() => selectedModelInfo?.supportedReasoningEfforts?.map((option: any) => option.reasoningEffort) ?? ["low", "medium", "high"], [selectedModelInfo]);
   const agentActivity = !agentReady ? codexState.connection.error ?? "Connecting to Codex…" : agentRunning ? "Codex is working…" : "Ready";
 
-  const applyServerState = useCallback((state: ServerState) => {
-    setDeckTitle(state.deck.title);
-    const nextSlides = state.deck.slides?.length ? state.deck.slides : initialSlides;
-    slidesRef.current = nextSlides;
-    setSlides(nextSlides);
-    if (state.css) setDeckCss(state.css);
-    setHistory(state.history);
-    setVariations(state.variations ?? []);
-    setProject(state.project);
-    setServerRevision(state.project.revision ?? state.project.commit);
-    setActiveVariation(state.project.branch);
-    setSaved(state.project.clean);
-    reinject();
+  /* `applyDeck` controls whether the on-disk deck replaces the editor buffer. Status-only polls
+     (retrying while Codex connects) pass false so they never clobber unsaved edits — the local
+     buffer stays authoritative until a real project change (save, history/variation, agent turn). */
+  const applyServerState = useCallback((state: ServerState, applyDeck = true) => {
+    if (applyDeck) {
+      setDeckTitle(state.deck.title);
+      const nextSlides = state.deck.slides?.length ? state.deck.slides : initialSlides;
+      slidesRef.current = nextSlides;
+      setSlides(nextSlides);
+      if (state.css) setDeckCss(state.css);
+      setHistory(state.history);
+      setVariations(state.variations ?? []);
+      setProject(state.project);
+      setServerRevision(state.project.revision ?? state.project.commit);
+      setActiveVariation(state.project.branch);
+      setSaved(state.project.clean);
+      reinject();
+    }
     dispatchCodex({ type: "connection", connection: { status: state.codex.ready ? "connected" : state.codex.version?.compatible === false ? "incompatible" : "connecting", error: state.codex.version?.message ?? null, cliVersion: state.codex.version?.running } });
     dispatchCodex({ type: "catalog", catalog: state.codex.catalog });
     dispatchCodex({ type: "pendingRequests", requests: state.codex.pendingRequests });
@@ -340,7 +346,10 @@ export default function Home() {
         if (!response.ok) throw new Error("Local API is unavailable.");
         const state = (await response.json()) as ServerState;
         if (canceled) return;
-        applyServerState(state);
+        /* Load the deck once; later readiness retries only refresh Codex status so they
+           cannot overwrite unsaved edits made while Codex is still connecting. */
+        applyServerState(state, !deckLoadedRef.current);
+        deckLoadedRef.current = true;
         if (!state.codex.ready) { attempts += 1; timer = setTimeout(() => void loadState(), retryDelay(attempts)); }
       } catch (error) {
         if (canceled) return;
