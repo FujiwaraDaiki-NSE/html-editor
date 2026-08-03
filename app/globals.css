@@ -306,6 +306,13 @@ body {
 .editable-text:empty::after { content: "\00a0"; }
 .empty-container { display: block; width: 100%; padding: 16px; border: 2px dashed color-mix(in srgb, var(--accent) 35%, transparent); color: #8d949f; font-size: 14px; text-align: center; }
 
+/* Direct-DOM editing chrome (concept 2.10): the slide is live DOM styled only by deck.css;
+   these rules add the editor's selection/hover/edit outlines, scaled to match the canvas. */
+.slide-viewport [data-weave-id] { cursor: default; outline: calc(1px / var(--slide-scale)) solid transparent; outline-offset: calc(3px / var(--slide-scale)); }
+.slide-viewport [data-weave-id]:hover { outline-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.slide-viewport [data-weave-id].weave-selected { outline-color: var(--accent); }
+.slide-viewport [contenteditable="true"] { cursor: text; caret-color: var(--accent); outline-color: transparent; box-shadow: 0 0 0 calc(2px / var(--slide-scale)) color-mix(in srgb, var(--accent) 60%, transparent); }
+
 .canvas-toolbar { position: absolute; left: 50%; bottom: 0; transform: translateX(-50%); height: 31px; padding: 3px; display: flex; align-items: center; gap: 1px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel); box-shadow: 0 7px 18px rgba(0,0,0,.28); }
 .canvas-toolbar button { height: 23px; min-width: 24px; border: 0; border-radius: 3px; background: transparent; color: var(--muted); font-size: 9px; cursor: pointer; }
 .canvas-toolbar button:first-child { padding: 0 9px; color: var(--text); }
