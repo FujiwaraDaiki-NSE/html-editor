@@ -54,6 +54,12 @@ test("the stylesheet is authored at the fixed design size, not in responsive uni
   }
 });
 
+test("design CSS relies on <br>, not white-space: pre (the formatter reflows text)", () => {
+  /* Prettier reindents/wraps long text; under white-space: pre-wrap that indentation would
+     surface as visible spaces after a save. Line breaks are <br> elements instead. */
+  assert.equal(/white-space:\s*pre/.test(defaultDeckCss), false, "design CSS must not use white-space: pre*");
+});
+
 test("slide styling exists in exactly one place", async () => {
   const [globals, page, project] = await Promise.all([
     read("../app/globals.css"),
