@@ -92,6 +92,58 @@ const blockKinds = Object.keys(blockTemplates);
 const blockIcons: Record<string, string> = { eyebrow: "T", heading: "H", paragraph: "¶", metrics: "▦", note: "≡", row: "↔", column: "↕", grid: "▦" };
 const containerClasses = new Set(["row", "column", "grid"]);
 
+/* Tailwind-style constrained scales: the inspector offers steps from a scale (consistency),
+   but writes the chosen value as real inline CSS onto the node (no class indirection, so no
+   drift). Each control may also expose a custom field as an escape hatch (concept 2.6/2.10). */
+const typeScale = [12, 14, 18, 24, 32, 48, 64, 88].map((n) => ({ label: String(n), value: `${n}px` }));
+const weightScale = [{ label: "Reg", value: "400" }, { label: "Med", value: "600" }, { label: "Semi", value: "700" }, { label: "Bold", value: "800" }];
+const leadingScale = [{ label: "Tight", value: "1" }, { label: "Snug", value: "1.2" }, { label: "Normal", value: "1.5" }, { label: "Loose", value: "1.7" }];
+const spacingScale = [0, 4, 8, 12, 16, 24, 32, 48].map((n) => ({ label: String(n), value: `${n}px` }));
+const measureScale = [{ label: "Auto", value: "" }, { label: "40%", value: "40%" }, { label: "62%", value: "62%" }, { label: "80%", value: "80%" }, { label: "Full", value: "100%" }];
+const alignScale = [{ label: "≡", value: "left" }, { label: "≣", value: "center" }, { label: "☷", value: "right" }];
+const justifyScale = [{ label: "Start", value: "flex-start" }, { label: "Center", value: "center" }, { label: "Between", value: "space-between" }, { label: "End", value: "flex-end" }];
+const itemsScale = [{ label: "Start", value: "flex-start" }, { label: "Center", value: "center" }, { label: "Stretch", value: "stretch" }];
+const colorScale = [{ label: "Default", value: "" }, { label: "Muted", value: "#969da6" }, { label: "Accent", value: "var(--accent)" }];
+
+type Control = { label: string; prop: string; scale: Array<{ label: string; value: string }>; custom?: boolean };
+const textSchema: Control[] = [
+  { label: "Size", prop: "fontSize", scale: typeScale, custom: true },
+  { label: "Weight", prop: "fontWeight", scale: weightScale },
+  { label: "Leading", prop: "lineHeight", scale: leadingScale },
+  { label: "Align", prop: "textAlign", scale: alignScale },
+  { label: "Measure", prop: "maxWidth", scale: measureScale, custom: true },
+  { label: "Color", prop: "color", scale: colorScale },
+];
+const containerSchema: Control[] = [
+  { label: "Gap", prop: "gap", scale: spacingScale, custom: true },
+  { label: "Padding", prop: "padding", scale: spacingScale, custom: true },
+  { label: "Justify", prop: "justifyContent", scale: justifyScale },
+  { label: "Align items", prop: "alignItems", scale: itemsScale },
+];
+const readProps = ["fontSize", "fontWeight", "lineHeight", "textAlign", "maxWidth", "color", "gap", "padding", "justifyContent", "alignItems"];
+
+type SelState = { id: string; kind: string; container: boolean; read: Record<string, string> };
+
+/* Read a property back for the inspector's active-step highlight: computed values for layout
+   levers (they reflect deck.css defaults), inline values for per-element overrides. */
+const readProp = (node: HTMLElement, cs: CSSStyleDeclaration, prop: string): string => {
+  switch (prop) {
+    case "fontSize": return `${Math.round(parseFloat(cs.fontSize) || 0)}px`;
+    case "fontWeight": return String(cs.fontWeight);
+    case "lineHeight": { const fs = parseFloat(cs.fontSize) || 16; const lh = parseFloat(cs.lineHeight); return cs.lineHeight === "normal" || !lh ? "normal" : (lh / fs).toFixed(2); }
+    case "gap": return cs.gap && cs.gap !== "normal" ? `${Math.round(parseFloat(cs.gap))}px` : "0px";
+    case "padding": return `${Math.round(parseFloat(cs.paddingTop) || 0)}px`;
+    case "justifyContent": return cs.justifyContent || "flex-start";
+    case "alignItems": return cs.alignItems || "stretch";
+    case "textAlign": return node.style.textAlign || "";
+    case "maxWidth": return node.style.maxWidth || "";
+    case "color": return node.style.color || "";
+    default: return (node.style as unknown as Record<string, string>)[prop] || "";
+  }
+};
+const isActiveValue = (prop: string, current: string, value: string): boolean =>
+  prop === "lineHeight" ? current !== "normal" && Math.abs(parseFloat(current) - parseFloat(value)) < 0.05 : current === value;
+
 const blankSlideHtml = (background: Background = "orbit", accent = "#f6b84b") =>
   `<main class="weave-slide ${background}" style="--accent: ${accent}" data-weave-slide>
     <div class="brand">WEAVE<span>●</span></div>
@@ -159,7 +211,7 @@ export default function Home() {
   const [connectionEpoch, setConnectionEpoch] = useState(0);
   const [historyState, setHistoryState] = useState({ undo: 0, redo: 0 });
   const [outline, setOutline] = useState<Array<{ id: string; label: string; kind: string; depth: number }>>([]);
-  const [sel, setSel] = useState<{ id: string; label: string; kind: string; container: boolean; fontSize: number; align: string; width: string; gap: string; direction: string } | null>(null);
+  const [sel, setSel] = useState<SelState | null>(null);
 
   const canvasRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -187,6 +239,15 @@ export default function Home() {
   const reinject = () => setInjectKey((value) => value + 1);
   const slideRoot = () => canvasRef.current?.querySelector<HTMLElement>(".weave-slide") ?? null;
   const selectedNode = () => (selectedId ? canvasRef.current?.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(selectedId)}"]`) ?? null : null);
+
+  const readSelection = (node: HTMLElement): SelState => {
+    const cs = getComputedStyle(node);
+    const kind = node.className.split(" ").find((cls) => cls && cls !== "weave-container" && cls !== "weave-selected") ?? node.tagName.toLowerCase();
+    const read: Record<string, string> = {};
+    for (const prop of readProps) read[prop] = readProp(node, cs, prop);
+    read.direction = node.classList.contains("column") ? "column" : "row";
+    return { id: node.getAttribute("data-weave-id") ?? "", kind, container: node.classList.contains("weave-container"), read };
+  };
 
   /* Serialize the live slide DOM back to an HTML string, stripping only the editor's transient
      chrome. data-weave-id stays — it is the slide's stable identity, cleaned off only at export. */
@@ -229,7 +290,7 @@ export default function Home() {
   const contextEnvelope = () => ({
     revision: serverRevision,
     activeSlide,
-    selected: selectedId ? { id: selectedId, kind: sel?.kind ?? "", label: sel?.label ?? "" } : null,
+    selected: selectedId ? { id: selectedId, kind: sel?.kind ?? "", label: sel?.kind ?? "" } : null,
     selectedText: typeof window === "undefined" ? "" : window.getSelection()?.toString().slice(0, 2_000) ?? "",
     activeSlideHtml: (serializeCanvas() ?? slides[activeSlide - 1]?.html ?? "").slice(0, 30_000),
     css: deckCss.slice(0, 30_000),
@@ -377,13 +438,7 @@ export default function Home() {
     host.querySelectorAll(".weave-selected").forEach((node) => node.classList.remove("weave-selected"));
     const node = selectedId ? host.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(selectedId)}"]`) : null;
     node?.classList.add("weave-selected");
-    if (node) {
-      const cs = getComputedStyle(node);
-      const kind = node.className.split(" ").find((cls) => cls && cls !== "weave-container" && cls !== "weave-selected") ?? node.tagName.toLowerCase();
-      setSel({ id: selectedId!, label: kind, kind, container: node.classList.contains("weave-container"), fontSize: Math.round(parseFloat(cs.fontSize) || 16), align: node.style.textAlign || "", width: node.style.width || "", gap: node.style.gap || "", direction: node.classList.contains("column") ? "column" : "row" });
-    } else {
-      setSel(null);
-    }
+    setSel(node ? readSelection(node) : null);
     // Rebuild the object tree from the live DOM.
     const hero = host.querySelector(".hero");
     const list: Array<{ id: string; label: string; kind: string; depth: number }> = [];
@@ -506,16 +561,16 @@ export default function Home() {
   };
 
   /* Inline-style edits: the inspector writes real CSS straight onto the selected node. */
-  const applyStyle = (apply: (node: HTMLElement) => void) => {
+  const applyStyle = (mutate: (node: HTMLElement) => void) => {
     const node = selectedNode();
     if (!node) return;
     checkpoint();
-    apply(node);
+    mutate(node);
     syncFromDom();
-    // refresh the read-out
-    const cs = getComputedStyle(node);
-    setSel((current) => current && { ...current, fontSize: Math.round(parseFloat(cs.fontSize) || 16), align: node.style.textAlign || "", width: node.style.width || "", gap: node.style.gap || "", direction: node.classList.contains("column") ? "column" : "row" });
+    setSel(readSelection(node));
   };
+  const setProp = (prop: string, value: string) => applyStyle((node) => { (node.style as unknown as Record<string, string>)[prop] = value; });
+  const setDirection = (value: string) => applyStyle((node) => { node.classList.remove("row", "column"); node.classList.add(value); });
 
   const setSlideBackground = (value: Background) => {
     const root = slideRoot();
@@ -988,6 +1043,8 @@ export default function Home() {
   );
 
   const presenterScale = typeof window === "undefined" ? 1 : Math.min((window.innerWidth - 80) / designWidth, (window.innerHeight - 120) / designHeight);
+  const containerLike = !!sel && (sel.container || sel.kind === "metrics");
+  const inspectorSchema = containerLike ? containerSchema : textSchema;
 
   return (
     <main className={`weave-app ${theme}`} style={{ "--accent": accent } as React.CSSProperties} data-background={background}>
@@ -1204,37 +1261,44 @@ export default function Home() {
             </div>
           </section>
           {sel && (
-            <>
-              <section className="property-section">
-                <div className="property-heading"><span>TYPOGRAPHY</span><span>⌃</span></div>
-                <div className="control-grid">
-                  <label><span>Font size</span><input type="number" min={8} max={200} value={sel.fontSize} onChange={(event) => applyStyle((node) => { node.style.fontSize = `${event.target.value}px`; })} /></label>
-                  <label><span>Width</span><input value={sel.width} placeholder="auto" onChange={(event) => applyStyle((node) => { node.style.width = event.target.value; })} /></label>
-                </div>
-                <div className="format-row">
-                  {(["left", "center", "right"] as const).map((align) => (
-                    <button key={align} className={(sel.align || "left") === align ? "active" : ""} onClick={() => applyStyle((node) => { node.style.textAlign = align; })}>{align === "left" ? "≡" : align === "center" ? "≣" : "☷"}</button>
-                  ))}
-                </div>
-              </section>
-              <section className="property-section">
-                <div className="property-heading"><span>COLOR</span><span>⌃</span></div>
-                <div className="format-row">
-                  <button onClick={() => applyStyle((node) => { node.style.color = ""; })}>Default</button>
-                  <button onClick={() => applyStyle((node) => { node.style.color = "#969da6"; })}>Muted</button>
-                  <button onClick={() => applyStyle((node) => { node.style.color = "var(--accent)"; })}>Accent</button>
-                </div>
-              </section>
-              {sel.container && (
-                <section className="property-section">
-                  <div className="property-heading"><span>LAYOUT</span><span>⌃</span></div>
-                  <div className="control-grid">
-                    <label><span>Direction</span><select value={sel.direction} onChange={(event) => applyStyle((node) => { node.classList.remove("row", "column"); node.classList.add(event.target.value); })}><option value="row">Row</option><option value="column">Column</option></select></label>
-                    <label><span>Gap</span><input value={sel.gap} placeholder="18px" onChange={(event) => applyStyle((node) => { node.style.gap = event.target.value; })} /></label>
+            <section className="property-section">
+              <div className="property-heading"><span>{containerLike ? "LAYOUT" : "TEXT"}</span><span>{sel.kind}</span></div>
+              {containerLike && (
+                <div className="property-row">
+                  <span>Direction</span>
+                  <div className="scale-options">
+                    {[{ label: "Row", value: "row" }, { label: "Column", value: "column" }].map((opt) => (
+                      <button key={opt.value} className={(sel.read.direction || "row") === opt.value ? "active" : ""} onClick={() => setDirection(opt.value)}>{opt.label}</button>
+                    ))}
                   </div>
-                </section>
+                </div>
               )}
-            </>
+              {inspectorSchema.map((ctl) => {
+                const current = sel.read[ctl.prop] ?? "";
+                const inScale = ctl.scale.some((opt) => isActiveValue(ctl.prop, current, opt.value));
+                return (
+                  <div className="property-row" key={ctl.prop}>
+                    <span>{ctl.label}</span>
+                    <div className="scale-options">
+                      {ctl.scale.map((opt) => (
+                        <button key={`${ctl.prop}-${opt.label}`} className={isActiveValue(ctl.prop, current, opt.value) ? "active" : ""} onClick={() => setProp(ctl.prop, opt.value)}>{opt.label}</button>
+                      ))}
+                      {ctl.custom && (
+                        <input
+                          className="scale-custom"
+                          key={`${ctl.prop}-${sel.id}`}
+                          defaultValue={inScale ? "" : current}
+                          placeholder="css"
+                          aria-label={`${ctl.label} custom value`}
+                          onKeyDown={(event) => { if (event.key === "Enter") setProp(ctl.prop, (event.target as HTMLInputElement).value.trim()); }}
+                          onBlur={(event) => { const next = event.target.value.trim(); if (next !== (inScale ? "" : current)) setProp(ctl.prop, next); }}
+                        />
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </section>
           )}
           <section className="property-section">
             <div className="property-heading"><span>SLIDE</span><span>⌃</span></div>
