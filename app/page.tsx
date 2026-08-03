@@ -5,6 +5,7 @@ import { DragEvent, useCallback, useEffect, useLayoutEffect, useMemo, useReducer
 import { actionFromStreamEvent } from "./codex/actions";
 import { defaultDeckCss, designHeight, designWidth, renderDeckDocument } from "../shared/slide-design.mjs";
 import { auditContentPolicy } from "../shared/content-policy.mjs";
+import { containerControlKeys, defaultSlideClasses, slideControlGroups, textControlKeys } from "../shared/tailwind-slide.mjs";
 import { ItemCard } from "./codex/components/ItemCard";
 import { ServerRequestCard } from "./codex/components/ServerRequestCard";
 import { codexReducer, initialCodexState } from "./codex/reducer";
@@ -40,7 +41,12 @@ const apiBase = "http://127.0.0.1:4317/api";
 
 const backgrounds = ["orbit", "grid", "plain"] as const;
 type Background = (typeof backgrounds)[number];
-const accents = ["#f6b84b", "#4ed1c1", "#9c7cf4", "#ff7d6d", "#91b692"];
+const accents = [
+  { color: "#fbbf24", className: "text-amber-400" }, { color: "#2dd4bf", className: "text-teal-400" },
+  { color: "#a78bfa", className: "text-violet-400" }, { color: "#fb7185", className: "text-rose-400" },
+  { color: "#34d399", className: "text-emerald-400" },
+];
+const backgroundClasses: Record<Background, string> = { orbit: "bg-slate-950", grid: "bg-slate-900", plain: "bg-white" };
 
 /* Slide-navigator placement lives in localStorage, read through an external store so the
    server and the first client render agree on the default before the stored value applies. */
@@ -79,80 +85,35 @@ const cssEscape = (value: string) => (typeof CSS !== "undefined" && CSS.escape ?
 /* Curated block registry: each entry is just an HTML fragment stamped into the slide.
    Adding a kind is data, not code — the natural shape once HTML is the truth. */
 const blockTemplates: Record<string, (id: string) => string> = {
-  heading: (id) => `<h1 class="heading" data-weave-id="${id}">A clear, compelling headline.</h1>`,
-  paragraph: (id) => `<p class="paragraph" data-weave-id="${id}">Add supporting detail that helps your audience understand the idea.</p>`,
-  eyebrow: (id) => `<div class="eyebrow" data-weave-id="${id}">NEW SECTION</div>`,
-  note: (id) => `<div class="note" data-weave-id="${id}">SOURCE · INTERNAL RESEARCH</div>`,
-  metrics: (id) => `<div class="metrics" data-weave-id="${id}"><strong>24%</strong><span>growth</span><strong>8 wk</strong><span>to launch</span></div>`,
-  row: (id) => `<div class="weave-container row" data-weave-id="${id}"></div>`,
-  column: (id) => `<div class="weave-container column" data-weave-id="${id}"></div>`,
-  grid: (id) => `<div class="weave-container grid" data-weave-id="${id}"></div>`,
+  heading: (id) => `<h1 class="heading text-6xl font-semibold leading-none tracking-tight text-slate-50" data-weave-id="${id}">A clear, compelling headline.</h1>`,
+  paragraph: (id) => `<p class="paragraph max-w-3xl text-lg leading-normal text-slate-300" data-weave-id="${id}">Add supporting detail that helps your audience understand the idea.</p>`,
+  eyebrow: (id) => `<div class="eyebrow text-sm font-bold uppercase tracking-widest text-amber-400" data-weave-id="${id}">NEW SECTION</div>`,
+  note: (id) => `<div class="note mt-6 text-xs font-semibold uppercase tracking-widest text-slate-400" data-weave-id="${id}">SOURCE · INTERNAL RESEARCH</div>`,
+  metrics: (id) => `<div class="metrics grid grid-cols-4 items-center gap-x-5 mt-2" data-weave-id="${id}"><strong class="text-3xl font-semibold tracking-tight text-amber-400">24%</strong><span class="text-xs text-slate-400">growth</span><strong class="text-3xl font-semibold tracking-tight text-amber-400">8 wk</strong><span class="text-xs text-slate-400">to launch</span></div>`,
+  row: (id) => `<div class="weave-container row flex flex-row w-full gap-4" data-weave-id="${id}"></div>`,
+  column: (id) => `<div class="weave-container column flex flex-col w-full gap-4" data-weave-id="${id}"></div>`,
+  grid: (id) => `<div class="weave-container grid grid-cols-2 w-full gap-4" data-weave-id="${id}"></div>`,
 };
 const blockKinds = Object.keys(blockTemplates);
 const blockIcons: Record<string, string> = { eyebrow: "T", heading: "H", paragraph: "¶", metrics: "▦", note: "≡", row: "↔", column: "↕", grid: "▦" };
 const containerClasses = new Set(["row", "column", "grid"]);
 
-/* Tailwind-style constrained scales: the inspector offers steps from a scale (consistency),
-   but writes the chosen value as real inline CSS onto the node (no class indirection, so no
-   drift). Each control may also expose a custom field as an escape hatch (concept 2.6/2.10). */
-const typeScale = [12, 14, 18, 24, 32, 48, 64, 88].map((n) => ({ label: String(n), value: `${n}px` }));
-const weightScale = [{ label: "Reg", value: "400" }, { label: "Med", value: "600" }, { label: "Bold", value: "800" }];
-const leadingScale = [{ label: "Tight", value: "1" }, { label: "Snug", value: "1.2" }, { label: "Normal", value: "1.5" }, { label: "Loose", value: "1.7" }];
-const spacingScale = [0, 4, 8, 12, 16, 24, 32, 48].map((n) => ({ label: String(n), value: `${n}px` }));
-const measureScale = [{ label: "Auto", value: "" }, { label: "40%", value: "40%" }, { label: "62%", value: "62%" }, { label: "80%", value: "80%" }, { label: "Full", value: "100%" }];
-const alignScale = [{ label: "≡", value: "left" }, { label: "≣", value: "center" }, { label: "☷", value: "right" }];
-const justifyScale = [{ label: "Start", value: "flex-start" }, { label: "Center", value: "center" }, { label: "Between", value: "space-between" }, { label: "End", value: "flex-end" }];
-const itemsScale = [{ label: "Start", value: "flex-start" }, { label: "Center", value: "center" }, { label: "Stretch", value: "stretch" }];
-const colorScale = [{ label: "Default", value: "" }, { label: "Muted", value: "#969da6" }, { label: "Accent", value: "var(--accent)" }];
-
-type Control = { label: string; prop: string; scale: Array<{ label: string; value: string }>; custom?: boolean };
-const textSchema: Control[] = [
-  { label: "Size", prop: "fontSize", scale: typeScale, custom: true },
-  { label: "Weight", prop: "fontWeight", scale: weightScale },
-  { label: "Leading", prop: "lineHeight", scale: leadingScale },
-  { label: "Align", prop: "textAlign", scale: alignScale },
-  { label: "Measure", prop: "maxWidth", scale: measureScale, custom: true },
-  { label: "Color", prop: "color", scale: colorScale },
-];
-const containerSchema: Control[] = [
-  { label: "Gap", prop: "gap", scale: spacingScale, custom: true },
-  { label: "Padding", prop: "padding", scale: spacingScale, custom: true },
-  { label: "Justify", prop: "justifyContent", scale: justifyScale },
-  { label: "Align items", prop: "alignItems", scale: itemsScale },
-];
-const readProps = ["fontSize", "fontWeight", "lineHeight", "textAlign", "maxWidth", "color", "gap", "padding", "justifyContent", "alignItems"];
+type Control = { key: string; label: string; options: Array<{ label: string; className: string }> };
+const controlsFor = (keys: string[]): Control[] => keys.map((key) => ({ key, label: slideControlGroups[key].label, options: slideControlGroups[key].options }));
+const textSchema = controlsFor(textControlKeys);
+const containerSchema = controlsFor(containerControlKeys);
 
 type SelState = { id: string; kind: string; container: boolean; read: Record<string, string> };
 
-/* Read a property back for the inspector's active-step highlight: computed values for layout
-   levers (they reflect deck.css defaults), inline values for per-element overrides. */
-const readProp = (node: HTMLElement, cs: CSSStyleDeclaration, prop: string): string => {
-  switch (prop) {
-    case "fontSize": return `${Math.round(parseFloat(cs.fontSize) || 0)}px`;
-    case "fontWeight": return String(cs.fontWeight);
-    case "lineHeight": { const fs = parseFloat(cs.fontSize) || 16; const lh = parseFloat(cs.lineHeight); return cs.lineHeight === "normal" || !lh ? "normal" : (lh / fs).toFixed(2); }
-    case "gap": return cs.gap && cs.gap !== "normal" ? `${Math.round(parseFloat(cs.gap))}px` : "0px";
-    case "padding": return `${Math.round(parseFloat(cs.paddingTop) || 0)}px`;
-    case "justifyContent": return cs.justifyContent || "flex-start";
-    case "alignItems": return cs.alignItems || "stretch";
-    case "textAlign": return node.style.textAlign || "";
-    case "maxWidth": return node.style.maxWidth || "";
-    case "color": return node.style.color || "";
-    default: return (node.style as unknown as Record<string, string>)[prop] || "";
-  }
-};
-const isActiveValue = (prop: string, current: string, value: string): boolean =>
-  prop === "lineHeight" ? current !== "normal" && Math.abs(parseFloat(current) - parseFloat(value)) < 0.05 : current === value;
-
 const blankSlideHtml = (background: Background = "orbit", accent = "#f6b84b") =>
-  `<main class="weave-slide ${background}" style="--accent: ${accent}" data-weave-slide>
-    <div class="brand">WEAVE<span>●</span></div>
-    <section class="hero">
-      <div class="eyebrow" data-weave-id="eyebrow-${createMessageId().slice(6)}">NEW SECTION</div>
-      <h1 class="heading" data-weave-id="heading-${createMessageId().slice(6)}">Give this idea a clear title.</h1>
-      <p class="paragraph" data-weave-id="body-${createMessageId().slice(6)}">Add the detail your audience needs to move forward.</p>
+  `<main class="${defaultSlideClasses} theme-${background} ${backgroundClasses[background]}" data-weave-slide>
+    <div class="brand flex items-center gap-2 text-xs font-bold tracking-widest text-slate-400">WEAVE<span class="${accents.find((item) => item.color === accent)?.className ?? "text-amber-400"}">●</span></div>
+    <section class="hero flex flex-1 flex-col items-start justify-center gap-6">
+      ${blockTemplates.eyebrow(`eyebrow-${createMessageId().slice(6)}`)}
+      ${blockTemplates.heading(`heading-${createMessageId().slice(6)}`)}
+      ${blockTemplates.paragraph(`body-${createMessageId().slice(6)}`)}
     </section>
-    <div class="page-number">01 / 01</div>
+    <div class="page-number absolute top-0 right-0 p-8 text-xs font-semibold tracking-widest text-slate-400">01 / 01</div>
   </main>`;
 
 const initialSlides: SlideDoc[] = [{ id: "opportunity", title: "The opportunity", notes: "", html: blankSlideHtml() }];
@@ -242,10 +203,11 @@ export default function Home() {
   const selectedNode = () => (selectedId ? canvasRef.current?.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(selectedId)}"]`) ?? null : null);
 
   const readSelection = (node: HTMLElement): SelState => {
-    const cs = getComputedStyle(node);
-    const kind = node.className.split(" ").find((cls) => cls && cls !== "weave-container" && cls !== "weave-selected") ?? node.tagName.toLowerCase();
+    const kind = ["heading", "paragraph", "eyebrow", "note", "metrics", "row", "column", "grid"].find((cls) => node.classList.contains(cls)) ?? node.tagName.toLowerCase();
     const read: Record<string, string> = {};
-    for (const prop of readProps) read[prop] = readProp(node, cs, prop);
+    for (const key of [...textControlKeys, ...containerControlKeys]) {
+      read[key] = slideControlGroups[key].options.find((item: { className: string }) => node.classList.contains(item.className))?.className ?? "";
+    }
     read.direction = node.classList.contains("column") ? "column" : "row";
     return { id: node.getAttribute("data-weave-id") ?? "", kind, container: node.classList.contains("weave-container"), read };
   };
@@ -434,9 +396,10 @@ export default function Home() {
     host.querySelectorAll<HTMLElement>("[data-weave-id]").forEach((node) => { node.draggable = !agentRunning; });
     const root = host.querySelector<HTMLElement>(".weave-slide");
     if (root) {
-      const bg = backgrounds.find((item) => root.classList.contains(item)) ?? "orbit";
+      const bg = backgrounds.find((item) => root.classList.contains(`theme-${item}`)) ?? "orbit";
       setBackground(bg);
-      setAccent(root.style.getPropertyValue("--accent").trim() || "#f6b84b");
+      const activeAccent = accents.find((item) => root.querySelector(`.${item.className}`));
+      setAccent(activeAccent?.color ?? accents[0].color);
     }
   }, [activeSlide, injectKey, mode, agentRunning]);
 
@@ -569,8 +532,8 @@ export default function Home() {
     syncFromDom();
   };
 
-  /* Inline-style edits: the inspector writes real CSS straight onto the selected node. */
-  const applyStyle = (mutate: (node: HTMLElement) => void) => {
+  /* The inspector and Agent share Tailwind classes as the only style representation. */
+  const applyClasses = (mutate: (node: HTMLElement) => void) => {
     const node = selectedNode();
     if (!node) return;
     checkpoint();
@@ -578,15 +541,23 @@ export default function Home() {
     syncFromDom();
     setSel(readSelection(node));
   };
-  const setProp = (prop: string, value: string) => applyStyle((node) => { (node.style as unknown as Record<string, string>)[prop] = value; });
-  const setDirection = (value: string) => applyStyle((node) => { node.classList.remove("row", "column"); node.classList.add(value); });
+  const setUtility = (key: string, className: string) => applyClasses((node) => {
+    node.classList.remove(...slideControlGroups[key].options.map((item: { className: string }) => item.className));
+    node.classList.add(className);
+  });
+  const setDirection = (value: string) => applyClasses((node) => {
+    node.classList.remove("row", "column", "flex-row", "flex-col");
+    node.classList.add(value, value === "column" ? "flex-col" : "flex-row");
+  });
 
   const setSlideBackground = (value: Background) => {
     const root = slideRoot();
     if (!root) return;
     checkpoint();
-    backgrounds.forEach((item) => root.classList.remove(item));
-    root.classList.add(value);
+    backgrounds.forEach((item) => root.classList.remove(`theme-${item}`));
+    Object.values(backgroundClasses).forEach((item) => root.classList.remove(item));
+    root.classList.remove("text-slate-50", "text-slate-950");
+    root.classList.add(`theme-${value}`, backgroundClasses[value], value === "plain" ? "text-slate-950" : "text-slate-50");
     setBackground(value);
     setShowBackgrounds(false);
     syncFromDom();
@@ -595,7 +566,12 @@ export default function Home() {
     const root = slideRoot();
     if (!root) return;
     checkpoint();
-    root.style.setProperty("--accent", value);
+    const next = accents.find((item) => item.color === value) ?? accents[0];
+    const accentClasses = accents.map((item) => item.className);
+    root.querySelectorAll<HTMLElement>(accentClasses.map((item) => `.${item}`).join(",")).forEach((node) => {
+      node.classList.remove(...accentClasses);
+      node.classList.add(next.className);
+    });
     setAccent(value);
     syncFromDom();
   };
@@ -1283,26 +1259,14 @@ export default function Home() {
                 </div>
               )}
               {inspectorSchema.map((ctl) => {
-                const current = sel.read[ctl.prop] ?? "";
-                const inScale = ctl.scale.some((opt) => isActiveValue(ctl.prop, current, opt.value));
+                const current = sel.read[ctl.key] ?? "";
                 return (
-                  <div className="property-row" key={ctl.prop}>
+                  <div className="property-row" key={ctl.key}>
                     <span>{ctl.label}</span>
                     <div className="scale-options">
-                      {ctl.scale.map((opt) => (
-                        <button key={`${ctl.prop}-${opt.label}`} className={isActiveValue(ctl.prop, current, opt.value) ? "active" : ""} onClick={() => setProp(ctl.prop, opt.value)}>{opt.label}</button>
+                      {ctl.options.map((opt) => (
+                        <button key={`${ctl.key}-${opt.label}`} className={current === opt.className ? "active" : ""} onClick={() => setUtility(ctl.key, opt.className)}>{opt.label}</button>
                       ))}
-                      {ctl.custom && (
-                        <input
-                          className="scale-custom"
-                          key={`${ctl.prop}-${sel.id}`}
-                          defaultValue={inScale ? "" : current}
-                          placeholder="css"
-                          aria-label={`${ctl.label} custom value`}
-                          onKeyDown={(event) => { if (event.key === "Enter") setProp(ctl.prop, (event.target as HTMLInputElement).value.trim()); }}
-                          onBlur={(event) => { const next = event.target.value.trim(); if (next !== (inScale ? "" : current)) setProp(ctl.prop, next); }}
-                        />
-                      )}
                     </div>
                   </div>
                 );
@@ -1331,7 +1295,7 @@ export default function Home() {
           </section>
           <section className="accent-section">
             <span>ACCENT</span>
-            <div>{accents.map((color) => <button key={color} style={{ background: color }} className={accent === color ? "active" : ""} onClick={() => setSlideAccent(color)} aria-label={`Use accent ${color}`} />)}</div>
+            <div>{accents.map((item) => <button key={item.color} style={{ background: item.color }} className={accent === item.color ? "active" : ""} onClick={() => setSlideAccent(item.color)} aria-label={`Use accent ${item.color}`} />)}</div>
           </section>
           <button className="delete-block" onClick={deleteSelected} disabled={!sel || outline.length <= 1}>Delete selected block</button>
         </aside> : <button className="open-inspector" onClick={() => setInspectorOpen(true)}>Inspector</button>}

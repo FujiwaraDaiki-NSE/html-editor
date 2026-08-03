@@ -1,5 +1,7 @@
 /** Static safety checks for authored CSS and HTML. No source is modified here. */
 
+import { auditTailwindSlideHtml } from "./tailwind-slide.mjs";
+
 const finding = (code, message, source, index, length) => ({
   code,
   severity: "error",
@@ -114,6 +116,7 @@ export function auditContentPolicy({ css = "", html = "" } = {}) {
   const diagnostics = [
     ...auditCssSafety(css).diagnostics,
     ...auditHtmlSafety(html).diagnostics,
+    ...auditTailwindSlideHtml(html),
   ];
   return makePolicyResult(diagnostics);
 }

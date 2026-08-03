@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { defaultDeckCss, slideFragmentFromBlocks } from "../shared/slide-design.mjs";
 import { formatDeckCss, formatSlideHtml } from "../shared/html-format.mjs";
 import { auditContentPolicy } from "../shared/content-policy.mjs";
+import { migrateSlideHtmlToTailwind } from "../shared/tailwind-slide.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const projectRoot = process.env.WEAVE_PROJECT_ROOT
@@ -19,15 +20,13 @@ const deckCssPath = join(stylesRoot, "deck.css");
 
 export const agentInstructions = `You are the editing agent embedded in Weave, a visual HTML slide editor.
 The truth of every slide is its own file: slides/<id>.html holds a <main class="weave-slide"> fragment.
-Edit those HTML files and styles/deck.css directly — they are the single source of truth. Do not
+Edit those HTML files directly. styles/deck.css is generated and read-only. Do not
 generate or hand-maintain any intermediate model; .weave/deck.json is only a manifest of slide order,
 titles, and speaker notes (Weave keeps it in sync — you rarely touch it, except to reorder slides).
-Slide styling lives in styles/deck.css. Change how slides look by editing that stylesheet (shared type
-rules) or by adding inline style="" to a specific element (a local override).
-Slides are authored at a fixed 1280x720 design size: use plain pixel values or relative units like %/fr,
-no viewport/responsive units, and keep every CSS selector under .weave-slide.
-Use flow layout (flex or grid with gap); never free-position content. Keep a data-weave-id on every
-element the human can select. Represent line breaks inside text as <br>, not literal newlines.
+Slide styling is expressed only with the precompiled Tailwind utility classes already used in the
+project. Use standard Tailwind scale values and existing classes; never use inline style attributes,
+arbitrary-value classes such as [...], or edit styles/deck.css. Prefer flex/grid flow layout. Keep a
+data-weave-id on every element the human can select. Represent line breaks as <br>, not literal newlines.
 Before editing, read .weave/current-buffer.json when present — it is the authoritative unsaved state.
 Make focused changes that answer the user. Do not run git or commit; Weave formats and commits the turn.
 If no file change is needed, respond with a concise explanation.`;
@@ -225,6 +224,12 @@ export async function writeProject(input, bufferOnly = false, expectedRevision =
 
   assertRevision(expectedRevision);
   const css = await readDeckCss();
+  const canonicalCss = await formatDeckCss(defaultDeckCss);
+  if (await formatDeckCss(css) !== canonicalCss) {
+    const error = new Error("styles/deck.css is generated from the supported Tailwind utility registry and cannot be edited.");
+    error.code = "WEAVE_TAILWIND_STYLESHEET";
+    throw error;
+  }
   const policy = auditContentPolicy({ css, html: slides.map((slide) => slide.html).join("\n") });
   if (!policy.ok) {
     const error = new Error(`Content policy gate failed: ${policy.summary.errors} error(s).`);
@@ -490,10 +495,10 @@ export async function ensureProject() {
   if (await excludeCurrentBuffer()) migrationPaths.push(".weave/current-buffer.json");
 
   await mkdir(stylesRoot, { recursive: true });
-  try {
-    await access(deckCssPath);
-  } catch {
-    await writeFile(deckCssPath, await formatDeckCss(defaultDeckCss));
+  const canonicalCss = await formatDeckCss(defaultDeckCss);
+  const existingCss = await readFile(deckCssPath, "utf8").catch(() => "");
+  if (existingCss !== canonicalCss) {
+    await writeFile(deckCssPath, canonicalCss);
     migrationPaths.push("styles/deck.css");
   }
 
@@ -508,6 +513,17 @@ export async function ensureProject() {
     await writeProject(seedProject());
     seededOrMigrated = true;
     migrationPaths.push(".weave/deck.json", "slides");
+  }
+
+  const currentProject = await readProject();
+  const tailwindProject = {
+    ...currentProject,
+    slides: currentProject.slides.map((slide) => ({ ...slide, html: migrateSlideHtmlToTailwind(slide.html) })),
+  };
+  if (tailwindProject.slides.some((slide, index) => slide.html !== currentProject.slides[index].html)) {
+    await writeProject(tailwindProject);
+    seededOrMigrated = true;
+    migrationPaths.push("slides");
   }
 
   const instructions = `${agentInstructions}\n`;

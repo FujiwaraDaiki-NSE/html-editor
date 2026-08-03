@@ -21,9 +21,10 @@ const fragment = (overrides = {}) => slideFragmentFromBlocks({ background: "orbi
 
 test("the seed fragment carries the classes and ids the stylesheet and editor rely on", () => {
   const markup = fragment();
-  assert.match(markup, /<main class="weave-slide orbit" style="--accent: #f6b84b" data-weave-slide>/);
-  assert.match(markup, /<h1 class="heading" data-weave-id="heading">Two<br>lines<\/h1>/);
-  assert.match(markup, /<div class="metrics" data-weave-id="metrics"><strong>3\.2×<\/strong><span>faster<\/span>/);
+  assert.match(markup, /<main class="weave-slide [^"]*bg-slate-950[^"]*" data-weave-slide>/);
+  assert.equal(markup.includes(" style="), false, "slide styling must stay in Tailwind classes");
+  assert.match(markup, /<h1 class="heading [^"]*text-6xl[^"]*" data-weave-id="heading">Two<br>lines<\/h1>/);
+  assert.match(markup, /<div class="metrics [^"]*grid-cols-4[^"]*" data-weave-id="metrics"><strong class="[^"]*text-3xl/);
   assert.match(markup, /01 \/ 02/);
   assert.equal(markup.includes("<rework>"), false, "block text must be escaped");
 });
@@ -37,7 +38,7 @@ test("line breaks in slide text are <br>, never literal newlines", () => {
 
 test("exported slides inline the project stylesheet and stay self-contained", () => {
   const html = renderSlideDocument(fragment(), defaultDeckCss, "Test slide");
-  assert.match(html, /\.weave-slide \.heading/);
+  assert.match(html, /\.weave-slide \.text-6xl/);
   assert.equal(html.includes("<link"), false, "no external stylesheet");
   assert.equal(html.includes("http://"), false, "no external references");
   assert.match(html, new RegExp(`innerWidth / ${designWidth}`));
@@ -87,8 +88,8 @@ test("structured containers render recursively", () => {
       children: [{ id: "nested", kind: "heading", text: "Nested" }],
     }],
   });
-  assert.match(markup, /class="weave-container grid" data-weave-id="grid"/);
-  assert.match(markup, /<h1 class="heading" data-weave-id="nested">Nested<\/h1>/);
+  assert.match(markup, /class="weave-container grid [^"]*grid-cols-2[^"]*" data-weave-id="grid"/);
+  assert.match(markup, /<h1 class="heading [^"]*text-6xl[^"]*" data-weave-id="nested">Nested<\/h1>/);
 });
 
 test("complete deck export is offline and keyboard-presentable", () => {

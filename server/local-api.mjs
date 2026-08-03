@@ -109,7 +109,7 @@ async function startEditorTurn(payload, { variation = false } = {}) {
 
 Current editor selection: ${String(payload.selectedId ?? "none")}
 The latest editor state has been written to slides/*.html and mirrored in .weave/current-buffer.json.
-Inspect the current project and edit the slides/*.html files (and styles/deck.css) directly.
+Inspect the current project and edit the slides/*.html files directly. Do not edit styles/deck.css.
 Do not commit; Weave will commit after this turn.${serializeEditorContext(payload)}`;
   const result = await codex.startTurn({
     threadId: thread.id,

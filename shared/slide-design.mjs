@@ -1,3 +1,5 @@
+import { buildTailwindSlideCss, defaultSlideClasses } from "./tailwind-slide.mjs";
+
 /* Slide geometry, the default stylesheet, and the export document wrappers.
 
    concept 2.10: the slide's `<main class="weave-slide">` fragment in slides/<id>.html is the
@@ -22,158 +24,7 @@ export const escapeHtml = (value) =>
 /** Metric rows keep "value|caption|value|caption" in one string. */
 export const metricParts = (text) => text.split("|");
 
-export const defaultDeckCss = `/* Weave deck styles.
-   Authored at the ${designWidth}x${designHeight} design size in absolute pixels; the editor and the
-   exported file both scale the whole slide to fit, so no responsive units are needed.
-   Every selector stays under .weave-slide — that keeps these rules off the editor's own UI. */
-
-/* A slide is a document root: it states its own typography rather than inheriting any,
-   so it renders the same inside the editor's UI as it does in a file of its own. */
-.weave-slide {
-  --accent: #f6b84b;
-  position: relative;
-  width: ${designWidth}px;
-  height: ${designHeight}px;
-  overflow: hidden;
-  background: #171a20;
-  color: #f3f4f6;
-  font: 400 16px/1.4 Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  letter-spacing: normal;
-  word-spacing: normal;
-  text-align: left;
-  text-transform: none;
-  text-indent: 0;
-}
-
-.weave-slide.grid {
-  background-color: #1a1e24;
-  background-image:
-    linear-gradient(rgba(255, 255, 255, .035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(255, 255, 255, .035) 1px, transparent 1px);
-  background-size: 40px 40px;
-}
-
-.weave-slide::before {
-  content: "";
-  position: absolute;
-  right: -18%;
-  top: -32%;
-  width: 52%;
-  aspect-ratio: 1;
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--accent) 9%, transparent);
-}
-
-.weave-slide.orbit::after {
-  content: "";
-  position: absolute;
-  right: -17%;
-  bottom: -31%;
-  width: 38%;
-  aspect-ratio: 1;
-  border: 34px solid color-mix(in srgb, var(--accent) 62%, transparent);
-  border-radius: 50%;
-  opacity: .7;
-}
-
-.weave-slide.plain::before { display: none; }
-
-.weave-slide .brand {
-  position: absolute;
-  left: 5.5%;
-  top: 5.5%;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: #8a919b;
-  font: 700 11px/1 ui-monospace, "SF Mono", monospace;
-  letter-spacing: .22em;
-}
-
-.weave-slide .brand span { color: var(--accent); font-size: 8px; }
-
-.weave-slide .page-number {
-  position: absolute;
-  right: 4.5%;
-  top: 5.5%;
-  color: #727982;
-  font: 600 11px/1 ui-monospace, "SF Mono", monospace;
-  letter-spacing: .1em;
-}
-
-.weave-slide .hero {
-  position: absolute;
-  left: 11%;
-  top: 22%;
-  width: 68%;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 18px;
-}
-
-/* Blocks hug their own text, so a click target matches what you see. */
-.weave-slide .hero > * {
-  margin: 0;
-  width: max-content;
-  max-width: 100%;
-}
-
-.weave-slide .weave-container { width: 100%; display: flex; gap: 18px; }
-.weave-slide .weave-container.column { flex-direction: column; }
-.weave-slide .weave-container.row { flex-direction: row; align-items: flex-start; }
-.weave-slide .weave-container.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.weave-slide .weave-container > * { min-width: 0; max-width: 100%; margin: 0; }
-
-.weave-slide .eyebrow {
-  color: var(--accent);
-  font: 700 14px/1 ui-monospace, "SF Mono", monospace;
-  letter-spacing: .16em;
-}
-
-.weave-slide .heading {
-  font-size: 64px;
-  font-weight: 600;
-  line-height: .96;
-  letter-spacing: -.055em;
-}
-
-.weave-slide .paragraph {
-  max-width: 62%;
-  color: #aeb4bd;
-  font-size: 18px;
-  line-height: 1.5;
-}
-
-.weave-slide .metrics {
-  display: grid;
-  grid-template-columns: auto auto auto auto;
-  align-items: baseline;
-  gap: 0 20px;
-  margin-top: 10px;
-}
-
-.weave-slide .metrics strong {
-  color: var(--accent);
-  font-size: 34px;
-  font-weight: 600;
-  letter-spacing: -.04em;
-}
-
-.weave-slide .metrics span {
-  max-width: 74px;
-  color: #969da6;
-  font-size: 12px;
-  line-height: 1.2;
-}
-
-.weave-slide .note {
-  margin-top: 22px;
-  color: #676e77;
-  font: 600 11px/1 ui-monospace, "SF Mono", monospace;
-  letter-spacing: .14em;
-}
-`;
+export const defaultDeckCss = buildTailwindSlideCss();
 
 const containerKinds = new Set(["row", "column", "grid"]);
 const blockTag = (kind) => (kind === "heading" ? "h1" : kind === "paragraph" ? "p" : "div");
@@ -190,26 +41,38 @@ export function slideFragmentFromBlocks(deck) {
     const indent = "      ".padEnd(6 + depth * 2, " ");
     if (containerKinds.has(block.kind)) {
       const children = (block.children ?? []).map((child) => renderBlock(child, depth + 1)).join("\n");
-      return `${indent}<div class="weave-container ${classes}" data-weave-id="${id}">\n${children}\n${indent}</div>`;
+      const layout = block.kind === "grid" ? "grid-cols-2" : `flex flex-${block.kind}`;
+      return `${indent}<div class="weave-container ${classes} ${layout} w-full gap-4" data-weave-id="${id}">\n${children}\n${indent}</div>`;
     }
     if (block.kind === "metrics") {
       const cells = metricParts(block.text)
-        .map((part, index) => (index % 2 === 0 ? `<strong>${textToHtml(part)}</strong>` : `<span>${textToHtml(part)}</span>`))
+        .map((part, index) => (index % 2 === 0
+          ? `<strong class="text-3xl font-semibold tracking-tight text-amber-400">${textToHtml(part)}</strong>`
+          : `<span class="text-xs text-slate-400">${textToHtml(part)}</span>`))
         .join("");
-      return `${indent}<div class="${classes}" data-weave-id="${id}">${cells}</div>`;
+      return `${indent}<div class="${classes} grid grid-cols-4 items-center gap-x-5 mt-2" data-weave-id="${id}">${cells}</div>`;
     }
     const tag = blockTag(block.kind);
-    return `${indent}<${tag} class="${classes}" data-weave-id="${id}">${textToHtml(block.text)}</${tag}>`;
+    const utility = block.kind === "heading"
+      ? "text-6xl font-semibold leading-none tracking-tight text-slate-50"
+      : block.kind === "paragraph"
+        ? "max-w-3xl text-lg leading-normal text-slate-300"
+        : block.kind === "eyebrow"
+          ? "text-sm font-bold uppercase tracking-widest text-amber-400"
+          : "mt-6 text-xs font-semibold uppercase tracking-widest text-slate-400";
+    return `${indent}<${tag} class="${classes} ${utility}" data-weave-id="${id}">${textToHtml(block.text)}</${tag}>`;
   };
   const blocks = (deck.blocks ?? []).map((block) => renderBlock(block)).join("\n");
   const total = deck.total ?? 1;
   const position = deck.position ?? 1;
-  return `<main class="weave-slide ${escapeHtml(deck.background ?? "orbit")}" style="--accent: ${escapeHtml(deck.accent ?? "#f6b84b")}" data-weave-slide>
-    <div class="brand">WEAVE<span>●</span></div>
-    <section class="hero">
+  const theme = deck.background === "plain" ? "plain" : deck.background === "grid" ? "grid" : "orbit";
+  const backgroundClass = theme === "plain" ? "bg-white text-slate-950" : theme === "grid" ? "bg-slate-900 text-slate-50" : "bg-slate-950 text-slate-50";
+  return `<main class="${defaultSlideClasses} theme-${theme} ${backgroundClass}" data-weave-slide>
+    <div class="brand flex items-center gap-2 text-xs font-bold tracking-widest text-slate-400">WEAVE<span class="text-amber-400">●</span></div>
+    <section class="hero flex flex-1 flex-col items-start justify-center gap-6">
 ${blocks}
     </section>
-    <div class="page-number">${String(position).padStart(2, "0")} / ${String(total).padStart(2, "0")}</div>
+    <div class="page-number absolute top-0 right-0 p-8 text-xs font-semibold tracking-widest text-slate-400">${String(position).padStart(2, "0")} / ${String(total).padStart(2, "0")}</div>
   </main>`;
 }
 

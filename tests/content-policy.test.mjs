@@ -6,6 +6,7 @@ import {
   auditCssSafety,
   auditHtmlSafety,
 } from "../shared/content-policy.mjs";
+import { migrateSlideHtmlToTailwind } from "../shared/tailwind-slide.mjs";
 
 test("self-contained declarative CSS and HTML pass", () => {
   const result = auditContentPolicy({
@@ -57,4 +58,26 @@ test("relative and embedded resources do not count as external URLs", () => {
     <p>Document onload= complete</p>
   `);
   assert.equal(result.ok, true);
+});
+
+test("Tailwind slide utilities pass while inline, arbitrary, and unknown styles fail", () => {
+  const valid = auditContentPolicy({ html: '<main class="weave-slide flex flex-col gap-6"><h1 class="heading text-6xl font-semibold">Title</h1></main>' });
+  assert.equal(valid.ok, true);
+
+  const invalid = auditContentPolicy({ html: '<main class="weave-slide mystery" style="padding: 19px"><h1 class="text-[61px]">Title</h1></main>' });
+  assert.deepEqual(new Set(invalid.diagnostics.map((item) => item.code)), new Set([
+    "design.inline-style",
+    "design.unknown-class",
+    "design.arbitrary-class",
+  ]));
+});
+
+test("legacy slide styling migrates to Tailwind classes idempotently", () => {
+  const legacy = '<main class="weave-slide plain" style="--accent: #f6b84b"><section class="hero"><h1 class="heading" data-weave-id="h">Title</h1></section></main>';
+  const migrated = migrateSlideHtmlToTailwind(legacy);
+  assert.match(migrated, /theme-plain/);
+  assert.match(migrated, /bg-white/);
+  assert.match(migrated, /heading [^"]*text-6xl/);
+  assert.equal(migrated.includes("style="), false);
+  assert.equal(migrateSlideHtmlToTailwind(migrated), migrated);
 });
