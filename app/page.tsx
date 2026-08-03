@@ -17,6 +17,7 @@ import { selectThreadRunning, selectThreadTurns, selectTurnItems } from "./codex
 type SlideDoc = { id: string; title: string; notes: string; html: string };
 
 type SlideNav = "filmstrip" | "rail";
+type ActivityView = "agent" | "history" | "shortcuts" | "settings";
 
 type ServerState = {
   deck: { title: string; slides: SlideDoc[] };
@@ -146,7 +147,7 @@ export default function Home() {
   const [threadSearch, setThreadSearch] = useState("");
   const [showThreads, setShowThreads] = useState(false);
   const [showArchivedThreads, setShowArchivedThreads] = useState(false);
-  const [showCodexSettings, setShowCodexSettings] = useState(false);
+  const [activityView, setActivityView] = useState<ActivityView>("agent");
   const [selectedModel, setSelectedModel] = useState("");
   const [reasoningEffort, setReasoningEffort] = useState("medium");
   const [approvalPolicy, setApprovalPolicy] = useState("never");
@@ -156,12 +157,10 @@ export default function Home() {
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [draggedSlide, setDraggedSlide] = useState<number | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
-  const [showHistory, setShowHistory] = useState(false);
   const [project, setProject] = useState<ServerState["project"] | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
   const [showPresenter, setShowPresenter] = useState(false);
   const [showQuality, setShowQuality] = useState(false);
-  const [showHelp, setShowHelp] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
   const slideTemplates = useSyncExternalStore(templateStore.subscribe, templateStore.read, templateStore.serverRead);
   const [inspectorOpen, setInspectorOpen] = useState(true);
@@ -680,7 +679,7 @@ export default function Home() {
       const target = event.target as HTMLElement;
       if (target.matches("input, textarea, [contenteditable=true]")) return;
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") { event.preventDefault(); if (event.shiftKey) redo(); else undo(); }
-      else if (event.key === "?") setShowHelp(true);
+      else if (event.key === "?") setActivityView("shortcuts");
       else if (event.key === "ArrowRight" && activeSlide < slides.length) switchSlide(activeSlide + 1);
       else if (event.key === "ArrowLeft" && activeSlide > 1) switchSlide(activeSlide - 1);
     };
@@ -772,7 +771,6 @@ export default function Home() {
       if (!response.ok) throw new Error(result.error ?? "Could not restore history.");
       applyServerState(result as ServerState);
       setSelectedId(null);
-      setShowHistory(false);
       setApiError(null);
     } catch (error) {
       setApiError(error instanceof Error ? error.message : String(error));
@@ -1032,6 +1030,57 @@ export default function Home() {
   const containerLike = !!sel && (sel.container || sel.kind === "metrics");
   const inspectorSchema = containerLike ? containerSchema : textSchema;
 
+  const historySidebar = (
+    <section className="activity-panel history-panel" aria-label="Git history">
+      <header className="activity-panel-heading"><span>HISTORY</span><small>{project?.branch ?? "Connecting…"}</small></header>
+      <div className="activity-panel-body">
+        <div className="repository-summary">
+          <span><i className={saved ? "clean" : "dirty"} />{saved ? "Working tree clean" : "Unsaved editor changes"}</span>
+          <small>{project ? `${project.branch} · ${project.commit}` : "Repository unavailable"}</small>
+        </div>
+        <label className="save-message"><span>Commit label</span><input value={saveMessage} onChange={(event) => setSaveMessage(event.target.value)} placeholder={deckTitle} /></label>
+        <button className="sidebar-primary-action" onClick={() => void saveProject()} disabled={saved || agentRunning}>{saved ? "Current version saved" : "Save current version"}</button>
+        {project?.branch === "detached" && <button className="return-latest" onClick={() => void restoreHistory()} disabled={agentRunning}>Return to latest on main</button>}
+        <div className="activity-section-label">COMMITS</div>
+        <div className="history-list">
+          {history.map((entry, index) => (
+            <button key={entry.id} onClick={() => void restoreHistory(entry.id)} disabled={!saved || agentRunning}>
+              <i className={index === 0 ? "current" : ""} /><span><strong>{entry.message}</strong><small>{entry.shortId} · {new Date(entry.date).toLocaleString()}</small></span>
+            </button>
+          ))}
+        </div>
+        {!saved && <p className="activity-warning">Save the current edit before restoring a commit.</p>}
+      </div>
+    </section>
+  );
+
+  const shortcutsSidebar = (
+    <section className="activity-panel shortcuts-panel" aria-label="Keyboard shortcuts">
+      <header className="activity-panel-heading"><span>KEYBOARD SHORTCUTS</span></header>
+      <div className="activity-panel-body"><dl><dt>← / →</dt><dd>Previous / next slide</dd><dt>Double-click or Enter</dt><dd>Edit selected text</dd><dt>Esc</dt><dd>Finish editing or close presentation</dd><dt>⌘/Ctrl Z</dt><dd>Undo</dd><dt>⌘/Ctrl Shift Z</dt><dd>Redo</dd><dt>?</dt><dd>Open this view</dd></dl></div>
+    </section>
+  );
+
+  const settingsSidebar = (
+    <section className="activity-panel settings-panel" aria-label="Settings">
+      <header className="activity-panel-heading"><span>SETTINGS</span><small>CLI {codexState.connection.cliVersion ?? "unknown"}</small></header>
+      <div className="activity-panel-body settings-sidebar">
+        <section><h3>Layout</h3><label><span>Slide navigator</span><select value={slideNav} onChange={(event) => slideNavStore.write(event.target.value as SlideNav)}><option value="filmstrip">Filmstrip</option><option value="rail">Rail</option></select></label></section>
+        <section><h3>Agent</h3>
+          <label><span>Model</span><select value={selectedModel} onChange={(event) => { const modelId = event.target.value; setSelectedModel(modelId); const model = codexState.catalog.models.find((item: any) => (item.id ?? item.model) === modelId) as any; if (model?.defaultReasoningEffort) setReasoningEffort(model.defaultReasoningEffort); }}>{codexState.catalog.models.map((model: any) => <option key={model.id ?? model.model} value={model.id ?? model.model}>{model.displayName ?? model.name ?? model.id ?? model.model}</option>)}</select></label>
+          <label><span>Reasoning</span><select value={reasoningEffort} onChange={(event) => setReasoningEffort(event.target.value)}>{availableEfforts.map((effort: string) => <option key={effort}>{effort}</option>)}</select></label>
+          <label><span>Approvals</span><select value={approvalPolicy} onChange={(event) => setApprovalPolicy(event.target.value)}><option value="never">Never</option><option value="on-request">Ask when needed</option><option value="untrusted">Untrusted commands</option></select></label>
+          {codexState.catalog.modelProvider && <pre className="settings-output">{JSON.stringify(codexState.catalog.modelProvider, null, 2)}</pre>}
+        </section>
+        <section><h3>Account</h3>{codexState.catalog.account ? <div className="setting-row"><span>{String(codexState.catalog.account.type ?? "Signed in")}</span><button onClick={() => { void fetch(`${apiBase}/codex/account/logout`, { method: "POST" }).catch((error) => setApiError(error.message)); }}>Log out</button></div> : <><button onClick={() => void login("chatgpt")}>Sign in with ChatGPT</button><div className="api-key-row"><input type="password" value={apiKeyDraft} onChange={(event) => setApiKeyDraft(event.target.value)} placeholder="API key" /><button disabled={!apiKeyDraft} onClick={() => void login("apiKey")}>Use key</button></div></>}</section>
+        <section><h3>Skills</h3>{codexState.catalog.skills.flatMap((entry: any) => entry.skills ?? [entry]).map((skill: any) => <label className="setting-row" key={skill.path ?? skill.name}><span>{skill.name ?? skill.path}</span><input type="checkbox" checked={skill.enabled !== false} onChange={(event) => void updateSkill(skill, event.target.checked)} /></label>)}</section>
+        <section><h3>Hooks</h3>{codexState.catalog.hooks.flatMap((entry: any) => entry.hooks ?? [entry]).map((hook: any, index: number) => <div className="setting-row" key={hook.name ?? hook.event ?? index}><span>{hook.name ?? hook.event ?? "Configured hook"}</span><small>{hook.enabled === false ? "disabled" : "enabled"}</small></div>)}</section>
+        <section><h3>MCP servers</h3>{codexState.catalog.mcpServers.map((server: any) => <div className="setting-row" key={server.name}><span>{server.name}</span><small>{server.status ?? server.authStatus ?? "configured"}</small>{server.resources?.length > 0 && <button onClick={() => void invokeMcp(server, "resource")}>Resource</button>}{Object.keys(server.tools ?? {}).length > 0 && <button disabled={!codexState.activeThreadId} onClick={() => void invokeMcp(server, "tool")}>Tool</button>}<button onClick={() => { void fetch(`${apiBase}/codex/mcp/oauth`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: server.name }) }).then(async (response) => { const result = await response.json(); if (!response.ok) throw new Error(result.error); const url = result.authorizationUrl ?? result.url; if (url && window.confirm(`Open OAuth for ${server.name}?`)) window.open(url, "_blank", "noopener,noreferrer"); }).catch((error) => setApiError(error.message)); }}>OAuth</button></div>)}</section>
+        {mcpResult && <pre className="settings-output">{mcpResult}</pre>}
+      </div>
+    </section>
+  );
+
   return (
     <main className={`weave-app ${theme}`} style={{ "--accent": accent } as React.CSSProperties} data-background={background}>
       <header className="topbar">
@@ -1062,21 +1111,20 @@ export default function Home() {
       <div className="workspace" data-slide-nav={slideNav} data-inspector={inspectorOpen ? "open" : "closed"}>
         <nav className="activity-rail" aria-label="Primary navigation">
           <div className="activity-top">
-            <button className="activity-button active" aria-label="Files">◇</button>
-            <button className="activity-button" aria-label="Keyboard shortcuts" onClick={() => setShowHelp(true)}>⌨</button>
-            <button className="activity-button" aria-label="History" onClick={() => setShowHistory(true)}>↶</button>
-            <button className="activity-button" aria-label="Skills">✣</button>
+            <button className={`activity-button ${activityView === "agent" ? "active" : ""}`} aria-label="Agent" aria-pressed={activityView === "agent"} onClick={() => setActivityView("agent")}>◇</button>
+            <button className={`activity-button ${activityView === "history" ? "active" : ""}`} aria-label="History" aria-pressed={activityView === "history"} onClick={() => setActivityView("history")}>↶</button>
+            <button className={`activity-button ${activityView === "shortcuts" ? "active" : ""}`} aria-label="Keyboard shortcuts" aria-pressed={activityView === "shortcuts"} onClick={() => setActivityView("shortcuts")}>⌨</button>
           </div>
           <div className="activity-bottom">
             <div className="avatar">FK</div>
-            <button className="activity-button" aria-label="Settings" onClick={() => setShowCodexSettings(true)}>⚙</button>
+            <button className={`activity-button ${activityView === "settings" ? "active" : ""}`} aria-label="Settings" aria-pressed={activityView === "settings"} onClick={() => setActivityView("settings")}>⚙</button>
           </div>
         </nav>
 
         {slideNav === "rail" && <nav className="slide-nav slide-rail" aria-label="Slides">{slideNavigator}</nav>}
 
         <aside className="left-panel">
-          <section className="agent-panel">
+          {activityView === "agent" ? <section className="agent-panel">
             <div className="agent-heading">
               <span><i aria-hidden="true" className={`agent-status ${agentReady ? "" : "offline"}`} /> AGENT</span>
               <button className="thread-switcher" onClick={() => setShowThreads((value) => !value)} aria-expanded={showThreads} title="Switch conversation"><span>{activeThreadName}</span><em aria-hidden="true">⌄</em></button>
@@ -1134,7 +1182,7 @@ export default function Home() {
                 <button className="send-button" onClick={() => void sendMessage()} disabled={!agentReady || !promptDraft.trim() || turnSubmitting} aria-label="Send message">↑</button>
               </div>
             </div>
-          </section>
+          </section> : activityView === "history" ? historySidebar : activityView === "shortcuts" ? shortcutsSidebar : settingsSidebar}
         </aside>
 
         <section className="center-stage">
@@ -1304,7 +1352,6 @@ export default function Home() {
 
       <footer className="statusbar">
         <div>
-          <button className="history-button" onClick={() => setShowHistory(!showHistory)}><span className="history-icon">↶</span><strong>History</strong></button>
           <button className={`quality-button ${quality.ok ? "ok" : "error"}`} onClick={() => setShowQuality(!showQuality)}>Quality {quality.ok ? "✓" : `${quality.errors} errors`}</button>
           <span>{project ? `${project.branch} · ${project.commit}` : "Connecting…"}</span>
           {apiError && <span className="status-error">{apiError}</span>}
@@ -1312,21 +1359,6 @@ export default function Home() {
         <div><span>HTML</span><span>UTF-8</span><span>Spaces: 2</span><button className={`connection ${agentReady ? "" : "offline"}`} onClick={() => setConnectionEpoch((value) => value + 1)} title="Reconnect"><i /> {agentReady ? "Agent connected" : "Reconnect Agent"}</button></div>
       </footer>
 
-      {showHistory && (
-        <div className="history-popover">
-          <div className="history-popover-heading"><span>HISTORY</span><button onClick={() => setShowHistory(false)}>×</button></div>
-          <label className="save-message"><span>Next history label</span><input value={saveMessage} onChange={(event) => setSaveMessage(event.target.value)} placeholder={deckTitle} /></label>
-          {project?.branch === "detached" && <button className="return-latest" onClick={() => void restoreHistory()} disabled={agentRunning}>Return to latest on main</button>}
-          <div className="history-list">
-            {history.map((entry, index) => (
-              <button key={entry.id} onClick={() => void restoreHistory(entry.id)} disabled={!saved || agentRunning}>
-                <i className={index === 0 ? "current" : ""} /><span><strong>{entry.message}</strong><small>{entry.shortId} · {new Date(entry.date).toLocaleString()}</small></span>
-              </button>
-            ))}
-          </div>
-          {!saved && <p>Save the current edit before restoring history.</p>}
-        </div>
-      )}
       {showQuality && (
         <aside className="quality-popover" aria-label="Deck quality report">
           <header><strong>Deck quality</strong><button onClick={() => setShowQuality(false)}>×</button></header>
@@ -1354,14 +1386,6 @@ export default function Home() {
           </footer>
         </div>
       )}
-      {showHelp && (
-        <div className="help-backdrop" role="presentation" onMouseDown={() => setShowHelp(false)}>
-          <section className="shortcut-help" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" onMouseDown={(event) => event.stopPropagation()}>
-            <header><strong>Keyboard shortcuts</strong><button onClick={() => setShowHelp(false)}>×</button></header>
-            <dl><dt>← / →</dt><dd>Previous / next slide</dd><dt>Double-click or Enter</dt><dd>Edit selected text</dd><dt>Esc</dt><dd>Finish editing or close presentation</dd><dt>⌘/Ctrl Z</dt><dd>Undo</dd><dt>⌘/Ctrl Shift Z</dt><dd>Redo</dd><dt>?</dt><dd>Open this help</dd></dl>
-          </section>
-        </div>
-      )}
       {showTemplates && (
         <div className="help-backdrop" role="presentation" onMouseDown={() => setShowTemplates(false)}>
           <section className="shortcut-help template-library" role="dialog" aria-modal="true" aria-label="Slide library" onMouseDown={(event) => event.stopPropagation()}>
@@ -1373,72 +1397,6 @@ export default function Home() {
         </div>
       )}
       <div className="sr-only" aria-live="polite">{announcement}</div>
-      {showCodexSettings && (
-        <div className="codex-settings-backdrop" role="presentation" onMouseDown={() => setShowCodexSettings(false)}>
-          <section className="codex-settings" role="dialog" aria-modal="true" aria-label="Settings" onMouseDown={(event) => event.stopPropagation()}>
-            <header>
-              <div><strong>Settings</strong><small>Codex CLI {codexState.connection.cliVersion ?? "unknown"} · {codexState.connection.status}</small></div>
-              <button onClick={() => setShowCodexSettings(false)}>×</button>
-            </header>
-            <section className="settings-first">
-              <h3>Layout</h3>
-              <label className="setting-row"><span>Slide navigator</span>
-                <select value={slideNav} onChange={(event) => slideNavStore.write(event.target.value as SlideNav)}>
-                  <option value="filmstrip">Filmstrip below the canvas</option>
-                  <option value="rail">Rail beside the sidebar</option>
-                </select>
-              </label>
-            </section>
-            <div className="settings-grid">
-              <label><span>Model</span>
-                <select value={selectedModel} onChange={(event) => { const modelId = event.target.value; setSelectedModel(modelId); const model = codexState.catalog.models.find((item: any) => (item.id ?? item.model) === modelId) as any; if (model?.defaultReasoningEffort) setReasoningEffort(model.defaultReasoningEffort); }}>
-                  {codexState.catalog.models.map((model: any) => (
-                    <option key={model.id ?? model.model} value={model.id ?? model.model}>{model.displayName ?? model.name ?? model.id ?? model.model}{model.inputModalities?.length ? ` · ${model.inputModalities.join("/")}` : ""}</option>
-                  ))}
-                </select>
-              </label>
-              <label><span>Reasoning effort</span><select value={reasoningEffort} onChange={(event) => setReasoningEffort(event.target.value)}>{availableEfforts.map((effort: string) => <option key={effort}>{effort}</option>)}</select></label>
-              <label><span>Approvals</span><select value={approvalPolicy} onChange={(event) => setApprovalPolicy(event.target.value)}><option value="never">Never (default)</option><option value="on-request">Ask when needed</option><option value="untrusted">Untrusted commands</option></select></label>
-            </div>
-            {codexState.catalog.modelProvider && <section><h3>Provider capabilities</h3><pre className="settings-output">{JSON.stringify(codexState.catalog.modelProvider, null, 2)}</pre></section>}
-            <section>
-              <h3>Account</h3>
-              {codexState.catalog.account ? (
-                <div className="setting-row"><span>{String(codexState.catalog.account.type ?? "Signed in")}</span><button onClick={() => { void fetch(`${apiBase}/codex/account/logout`, { method: "POST" }).then(async (response) => { const result = await response.json(); if (!response.ok) throw new Error(result.error); }).catch((error) => setApiError(error.message)); }}>Log out</button></div>
-              ) : (
-                <>
-                  <button onClick={() => void login("chatgpt")}>Sign in with ChatGPT</button>
-                  <div className="api-key-row"><input type="password" value={apiKeyDraft} onChange={(event) => setApiKeyDraft(event.target.value)} placeholder="API key (not stored by Weave)" /><button disabled={!apiKeyDraft} onClick={() => void login("apiKey")}>Use key</button></div>
-                </>
-              )}
-            </section>
-            <section>
-              <h3>Skills</h3>
-              {codexState.catalog.skills.flatMap((entry: any) => entry.skills ?? [entry]).map((skill: any) => (
-                <label className="setting-row" key={skill.path ?? skill.name}><span>{skill.name ?? skill.path}</span><input type="checkbox" checked={skill.enabled !== false} onChange={(event) => void updateSkill(skill, event.target.checked)} /></label>
-              ))}
-            </section>
-            <section>
-              <h3>Hooks</h3>
-              {codexState.catalog.hooks.flatMap((entry: any) => entry.hooks ?? [entry]).map((hook: any, index: number) => (
-                <div className="setting-row" key={hook.name ?? hook.event ?? index}><span>{hook.name ?? hook.event ?? "Configured hook"}</span><small>{hook.enabled === false ? "disabled" : "enabled"}</small></div>
-              ))}
-            </section>
-            <section>
-              <h3>MCP servers</h3>
-              {codexState.catalog.mcpServers.map((server: any) => (
-                <div className="setting-row" key={server.name}>
-                  <span>{server.name}</span><small>{server.status ?? server.authStatus ?? "configured"}</small>
-                  {server.resources?.length > 0 && <button onClick={() => void invokeMcp(server, "resource")}>Resource</button>}
-                  {Object.keys(server.tools ?? {}).length > 0 && <button disabled={!codexState.activeThreadId} onClick={() => void invokeMcp(server, "tool")}>Tool</button>}
-                  <button onClick={() => { void fetch(`${apiBase}/codex/mcp/oauth`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: server.name }) }).then(async (response) => { const result = await response.json(); if (!response.ok) throw new Error(result.error); const url = result.authorizationUrl ?? result.url; if (url && window.confirm(`Open OAuth for ${server.name}?`)) window.open(url, "_blank", "noopener,noreferrer"); }).catch((error) => setApiError(error.message)); }}>OAuth</button>
-                </div>
-              ))}
-              {mcpResult && <pre className="settings-output">{mcpResult}</pre>}
-            </section>
-          </section>
-        </div>
-      )}
     </main>
   );
 }

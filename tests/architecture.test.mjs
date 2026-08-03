@@ -64,6 +64,18 @@ test("UI uses Thread APIs, reducer, item cards, steering, interrupt, approvals, 
   }
 });
 
+test("activity rail destinations render their details in the left sidebar", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  for (const view of ['"agent"', '"history"', '"shortcuts"', '"settings"']) assert.match(page, new RegExp(`activityView === ${view}`));
+  assert.match(page, /className="activity-panel history-panel"/);
+  assert.match(page, /className="activity-panel settings-panel"/);
+  assert.match(css, /\.activity-panel \{/);
+  assert.doesNotMatch(page, /showHistory|history-popover|showCodexSettings|showHelp/);
+});
+
 test("local API constrains origins and exposes reconnectable NDJSON events", async () => {
   const source = await readFile(new URL("../server/local-api.mjs", import.meta.url), "utf8");
   assert.match(source, /127\.0\.0\.1:3000/);
