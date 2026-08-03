@@ -37,7 +37,7 @@ export const defaultDeckCss = `/* Weave deck styles.
   overflow: hidden;
   background: #171a20;
   color: #f3f4f6;
-  font: 400 16px/1.4 Inter, "Helvetica Neue", Arial, sans-serif;
+  font: 400 16px/1.4 Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   letter-spacing: normal;
   word-spacing: normal;
   text-align: left;
