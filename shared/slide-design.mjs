@@ -1,29 +1,16 @@
-/* The single description of what a slide looks like, used by both the canvas and the
-   exported HTML. The canvas renders these tags as React elements and the exporter writes
-   them as text; both attach the same classes, so `deck.css` is the only stylesheet and
-   the two can no longer drift apart.
+/* Slide geometry, the default stylesheet, and the export document wrappers.
 
-   Slides are authored at a fixed design size and scaled to fit wherever they are shown,
-   which is what lets one stylesheet in absolute pixels serve every context. */
+   concept 2.10: the slide's `<main class="weave-slide">` fragment in slides/<id>.html is the
+   single truth. This module no longer *generates* that markup on every save — it only:
+     - states the fixed design size and ships the default deck.css,
+     - wraps an already-authored fragment into a standalone / presentable document (export),
+     - seeds/migrates a fragment from a block description (used once, not at runtime).
+
+   Slides are authored at a fixed design size and scaled to fit wherever they are shown, which
+   is what lets one stylesheet in absolute pixels serve every context. */
 
 export const designWidth = 1280;
 export const designHeight = 720;
-
-/** Tag per block kind. Anything unknown falls back to a plain container. */
-export const containerKinds = new Set(["row", "column", "grid"]);
-export const blockTag = (kind) => (kind === "heading" ? "h1" : kind === "paragraph" ? "p" : "div");
-
-const styleClasses = (block) => {
-  const tokens = block.style ?? {};
-  return [
-    tokens.size && `size-${tokens.size}`,
-    tokens.weight && `weight-${tokens.weight}`,
-    tokens.align && `align-${tokens.align}`,
-    tokens.color && `color-${tokens.color}`,
-    tokens.spacing && `spacing-${tokens.spacing}`,
-    block.kind === "grid" && `columns-${tokens.columns ?? 2}`,
-  ].filter(Boolean).join(" ");
-};
 
 export const escapeHtml = (value) =>
   String(value)
@@ -43,6 +30,7 @@ export const defaultDeckCss = `/* Weave deck styles.
 /* A slide is a document root: it states its own typography rather than inheriting any,
    so it renders the same inside the editor's UI as it does in a file of its own. */
 .weave-slide {
+  --accent: #f6b84b;
   position: relative;
   width: ${designWidth}px;
   height: ${designHeight}px;
@@ -129,27 +117,13 @@ export const defaultDeckCss = `/* Weave deck styles.
   margin: 0;
   width: max-content;
   max-width: 100%;
-  white-space: pre-wrap;
 }
 
 .weave-slide .weave-container { width: 100%; display: flex; gap: 18px; }
 .weave-slide .weave-container.column { flex-direction: column; }
 .weave-slide .weave-container.row { flex-direction: row; align-items: flex-start; }
 .weave-slide .weave-container.grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.weave-slide .weave-container.columns-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .weave-slide .weave-container > * { min-width: 0; max-width: 100%; margin: 0; }
-.weave-slide .align-center { text-align: center; align-self: center; }
-.weave-slide .align-right { text-align: right; align-self: flex-end; }
-.weave-slide .color-accent { color: var(--accent); }
-.weave-slide .color-muted { color: #969da6; }
-.weave-slide .weight-regular { font-weight: 400; }
-.weave-slide .weight-medium { font-weight: 600; }
-.weave-slide .weight-bold { font-weight: 800; }
-.weave-slide .size-sm { font-size: 14px; }
-.weave-slide .size-md { font-size: 24px; }
-.weave-slide .size-lg { font-size: 52px; }
-.weave-slide .spacing-tight { margin-bottom: -8px; }
-.weave-slide .spacing-loose { margin-bottom: 18px; }
 
 .weave-slide .eyebrow {
   color: var(--accent);
@@ -201,73 +175,52 @@ export const defaultDeckCss = `/* Weave deck styles.
 }
 `;
 
-/** The slide element itself, exactly as the canvas builds it. */
-export function renderSlideMarkup(deck) {
+const containerKinds = new Set(["row", "column", "grid"]);
+const blockTag = (kind) => (kind === "heading" ? "h1" : kind === "paragraph" ? "p" : "div");
+/* Line breaks in slide text are <br> elements, not literal newlines: the canonical formatter
+   (shared/html-format.mjs) collapses newlines but keeps <br>, and contentEditable emits <br>. */
+const textToHtml = (text) => escapeHtml(text).replace(/\n/g, "<br>");
+
+/* Seed/migration only: build a `<main class="weave-slide">` fragment from a block description.
+   Never called at runtime — the fragment on disk is the truth once seeded. */
+export function slideFragmentFromBlocks(deck) {
   const renderBlock = (block, depth = 0) => {
-      const id = escapeHtml(block.id);
-      const tokenClass = styleClasses(block);
-      const classes = `${escapeHtml(block.kind)}${tokenClass ? ` ${escapeHtml(tokenClass)}` : ""}`;
-      const indent = "      ".padEnd(6 + depth * 2, " ");
-      if (containerKinds.has(block.kind)) {
-        const children = (block.children ?? []).map((child) => renderBlock(child, depth + 1)).join("\n");
-        return `${indent}<div class="weave-container ${classes}" data-weave-id="${id}">\n${children}\n${indent}</div>`;
-      }
-      if (block.kind === "metrics") {
-        const cells = metricParts(block.text)
-          .map((part, index) =>
-            index % 2 === 0
-              ? `<strong>${escapeHtml(part)}</strong>`
-              : `<span>${escapeHtml(part)}</span>`)
-          .join("");
-        return `${indent}<div class="${classes}" data-weave-id="${id}">${cells}</div>`;
-      }
-      const tag = blockTag(block.kind);
-      return `${indent}<${tag} class="${classes}" data-weave-id="${id}">${escapeHtml(block.text)}</${tag}>`;
-    };
-  const blocks = deck.blocks
-    .map((block) => renderBlock(block))
-    .join("\n");
-  const total = deck.slides?.length ?? 1;
-  return `  <main class="weave-slide ${escapeHtml(deck.background)}" style="--accent: ${escapeHtml(deck.accent)}">
+    const id = escapeHtml(block.id);
+    const classes = escapeHtml(block.kind);
+    const indent = "      ".padEnd(6 + depth * 2, " ");
+    if (containerKinds.has(block.kind)) {
+      const children = (block.children ?? []).map((child) => renderBlock(child, depth + 1)).join("\n");
+      return `${indent}<div class="weave-container ${classes}" data-weave-id="${id}">\n${children}\n${indent}</div>`;
+    }
+    if (block.kind === "metrics") {
+      const cells = metricParts(block.text)
+        .map((part, index) => (index % 2 === 0 ? `<strong>${textToHtml(part)}</strong>` : `<span>${textToHtml(part)}</span>`))
+        .join("");
+      return `${indent}<div class="${classes}" data-weave-id="${id}">${cells}</div>`;
+    }
+    const tag = blockTag(block.kind);
+    return `${indent}<${tag} class="${classes}" data-weave-id="${id}">${textToHtml(block.text)}</${tag}>`;
+  };
+  const blocks = (deck.blocks ?? []).map((block) => renderBlock(block)).join("\n");
+  const total = deck.total ?? 1;
+  const position = deck.position ?? 1;
+  return `<main class="weave-slide ${escapeHtml(deck.background ?? "orbit")}" style="--accent: ${escapeHtml(deck.accent ?? "#f6b84b")}" data-weave-slide>
     <div class="brand">WEAVE<span>●</span></div>
     <section class="hero">
 ${blocks}
     </section>
-    <div class="page-number">${String(deck.activeSlide).padStart(2, "0")} / ${String(total).padStart(2, "0")}</div>
+    <div class="page-number">${String(position).padStart(2, "0")} / ${String(total).padStart(2, "0")}</div>
   </main>`;
 }
 
-/** One offline, self-contained document containing the complete deck. */
-export function renderDeckDocument(deck, css) {
-  const slides = deck.slides.map((slide, index) => renderSlideMarkup({
-    ...deck,
-    ...slide,
-    activeSlide: index + 1,
-    blocks: slide.blocks,
-  }));
-  return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${escapeHtml(deck.title)}</title><style>
-html,body{height:100%;margin:0;background:#0c0e11;color:white;font-family:Arial,sans-serif;overflow:hidden}
-.weave-present-stage{height:100%;display:grid;place-items:center}.weave-present-stage>.weave-slide{display:none;transform:scale(var(--slide-scale,1))}.weave-present-stage>.weave-slide.active{display:block}
-.weave-present-controls{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);padding:8px 12px;border-radius:99px;background:#111c;color:#fff;font:13px Arial}.weave-present-controls button{border:0;background:transparent;color:inherit;cursor:pointer}
-@page{size:13.333in 7.5in;margin:0}@media print{html,body{height:auto;overflow:visible;background:#fff}.weave-present-stage{display:block;height:auto}.weave-present-stage>.weave-slide{display:block!important;transform:none!important;break-after:page;page-break-after:always}.weave-present-controls{display:none}}
-${css}
-</style></head><body><div class="weave-present-stage">${slides.join("\n")}</div><div class="weave-present-controls"><button data-prev aria-label="Previous slide">←</button> <span data-position></span> <button data-next aria-label="Next slide">→</button> <button data-fullscreen>Fullscreen</button></div><script>
-const slides=[...document.querySelectorAll('.weave-slide')];let current=Math.max(0,Math.min(slides.length-1,(parseInt(location.hash.slice(1),10)||1)-1));
-const show=n=>{current=Math.max(0,Math.min(slides.length-1,n));slides.forEach((s,i)=>s.classList.toggle('active',i===current));document.querySelector('[data-position]').textContent=(current+1)+' / '+slides.length;location.hash=String(current+1);fit()};
-const fit=()=>slides.forEach(s=>s.style.setProperty('--slide-scale',Math.min(innerWidth/${designWidth},innerHeight/${designHeight})));addEventListener('resize',fit);addEventListener('keydown',e=>{if(['ArrowRight','PageDown',' '].includes(e.key))show(current+1);if(['ArrowLeft','PageUp'].includes(e.key))show(current-1);if(e.key==='Home')show(0);if(e.key==='End')show(slides.length-1)});document.querySelector('[data-prev]').onclick=()=>show(current-1);document.querySelector('[data-next]').onclick=()=>show(current+1);document.querySelector('[data-fullscreen]').onclick=()=>document.documentElement.requestFullscreen?.();show(current);
-</script></body></html>`;
-}
-
 /** A standalone slide file: deck.css inlined so the page stays self-contained. */
-export function renderSlideDocument(deck, css) {
+export function renderSlideDocument(slideFragment, css, title = "Weave slide") {
   return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${escapeHtml(deck.title)}</title>
+  <title>${escapeHtml(title)}</title>
   <style>
     html, body { height: 100%; margin: 0; overflow: hidden; }
     body { display: grid; place-items: center; background: #0c0e11; }
@@ -277,7 +230,7 @@ ${css.replace(/^/gm, "    ")}
   </style>
 </head>
 <body>
-${renderSlideMarkup(deck)}
+${slideFragment.replace(/^/gm, "  ")}
   <script>
     /* Fit the fixed-size slide to the window without touching its layout. */
     const slide = document.querySelector(".weave-slide");
@@ -291,4 +244,22 @@ ${renderSlideMarkup(deck)}
 </body>
 </html>
 `;
+}
+
+/** One offline, self-contained document containing the complete deck. */
+export function renderDeckDocument(slideFragments, css, title = "Weave deck") {
+  const slides = slideFragments.join("\n");
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${escapeHtml(title)}</title><style>
+html,body{height:100%;margin:0;background:#0c0e11;color:white;font-family:Arial,sans-serif;overflow:hidden}
+.weave-present-stage{height:100%;display:grid;place-items:center}.weave-present-stage>.weave-slide{display:none;transform:scale(var(--slide-scale,1))}.weave-present-stage>.weave-slide.active{display:block}
+.weave-present-controls{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);padding:8px 12px;border-radius:99px;background:#111c;color:#fff;font:13px Arial}.weave-present-controls button{border:0;background:transparent;color:inherit;cursor:pointer}
+@page{size:13.333in 7.5in;margin:0}@media print{html,body{height:auto;overflow:visible;background:#fff}.weave-present-stage{display:block;height:auto}.weave-present-stage>.weave-slide{display:block!important;transform:none!important;break-after:page;page-break-after:always}.weave-present-controls{display:none}}
+${css}
+</style></head><body><div class="weave-present-stage">${slides}</div><div class="weave-present-controls"><button data-prev aria-label="Previous slide">←</button> <span data-position></span> <button data-next aria-label="Next slide">→</button> <button data-fullscreen>Fullscreen</button></div><script>
+const slides=[...document.querySelectorAll('.weave-slide')];let current=Math.max(0,Math.min(slides.length-1,(parseInt(location.hash.slice(1),10)||1)-1));
+const show=n=>{current=Math.max(0,Math.min(slides.length-1,n));slides.forEach((s,i)=>s.classList.toggle('active',i===current));document.querySelector('[data-position]').textContent=(current+1)+' / '+slides.length;location.hash=String(current+1);fit()};
+const fit=()=>slides.forEach(s=>s.style.setProperty('--slide-scale',Math.min(innerWidth/${designWidth},innerHeight/${designHeight})));addEventListener('resize',fit);addEventListener('keydown',e=>{if(['ArrowRight','PageDown',' '].includes(e.key))show(current+1);if(['ArrowLeft','PageUp'].includes(e.key))show(current-1);if(e.key==='Home')show(0);if(e.key==='End')show(slides.length-1)});document.querySelector('[data-prev]').onclick=()=>show(current-1);document.querySelector('[data-next]').onclick=()=>show(current+1);document.querySelector('[data-fullscreen]').onclick=()=>document.documentElement.requestFullscreen?.();show(current);
+</script></body></html>`;
 }

@@ -12,9 +12,9 @@ import {
   ensureProject,
   projectRoot,
   projectState,
-  readDeck,
+  readProject,
   readDeckCss,
-  writeDeck,
+  writeProject,
 } from "./project.mjs";
 import { CodexService } from "./codex/service.mjs";
 
@@ -60,7 +60,7 @@ async function statePayload() {
   const state = projectState();
   const generatingBranches = new Set([...pendingTurns.values()].map((turn) => turn.branch).filter(Boolean));
   return {
-    deck: await readDeck(),
+    deck: await readProject(),
     css: await readDeckCss(),
     ...state,
     variations: state.variations.map((variation) => ({
@@ -100,7 +100,7 @@ async function startEditorTurn(payload, { variation = false } = {}) {
   const prompt = requireText(payload.prompt, "Prompt");
   let branch = null;
   if (variation) branch = createVariationBranch();
-  const deck = await writeDeck(payload.deck, false);
+  const deck = await writeProject(payload.deck, false);
   const thread = await codex.startThread({
     approvalPolicy: payload.approvalPolicy ?? "never",
     model: payload.model,
@@ -108,8 +108,8 @@ async function startEditorTurn(payload, { variation = false } = {}) {
   const context = `${variation ? "Create a meaningfully different, polished direction. " : ""}User request: ${prompt}
 
 Current editor selection: ${String(payload.selectedId ?? "none")}
-The latest editor state has been written to .weave/current-buffer.json and .weave/deck.json.
-Inspect the current project, edit .weave/deck.json, and keep the matching files under slides/ consistent.
+The latest editor state has been written to slides/*.html and mirrored in .weave/current-buffer.json.
+Inspect the current project and edit the slides/*.html files (and styles/deck.css) directly.
 Do not commit; Weave will commit after this turn.${serializeEditorContext(payload)}`;
   const result = await codex.startTurn({
     threadId: thread.id,
@@ -137,14 +137,14 @@ codex.client.on("notification", (message) => {
       return;
     }
     try {
-      const deck = await readDeck();
-      await writeDeck(deck);
+      const project = await readProject();
+      await writeProject(project);
       /* Ordinary Agent edits remain an unsaved working result. A variation needs a
          commit because its branch is the durable unit switched by the direction tabs. */
       if (pending.variation) {
         commitIfChanged(`Variation: ${pending.prompt.replace(/\s+/g, " ").slice(0, 100)}`);
       }
-      codex.events.publish("weave/project", { status: "updated", ...projectState(), deck: await readDeck() });
+      codex.events.publish("weave/project", { status: "updated", ...projectState(), deck: await readProject() });
     } catch (error) {
       codex.events.publish("weave/project", { status: "error", error: error.message });
     }
@@ -194,7 +194,7 @@ const server = createServer(async (request, response) => {
       if (idempotencyKey && completedSaves.has(idempotencyKey)) {
         return sendJson(request, response, 200, completedSaves.get(idempotencyKey));
       }
-      const deck = await writeDeck(payload.deck, false, payload.expectedRevision);
+      const deck = await writeProject(payload.deck, false, payload.expectedRevision);
       const commit = commitIfChanged(`Save: ${String(payload.message ?? deck.title).slice(0, 120)}`);
       const result = { ...(await statePayload()), commit };
       if (idempotencyKey) {
@@ -249,7 +249,7 @@ const server = createServer(async (request, response) => {
     }
     if (url.pathname === "/api/codex/turn/start") {
       const prompt = requireText(payload.prompt, "Prompt");
-      if (payload.deck) await writeDeck(payload.deck, true);
+      if (payload.deck) await writeProject(payload.deck, true);
       const result = await codex.startTurn({ ...payload, prompt: `${prompt}${serializeEditorContext(payload)}` });
       pendingTurns.set(payload.threadId, { prompt, branch: null, variation: false });
       return sendJson(request, response, 202, result);

@@ -3,91 +3,103 @@ import { randomUUID } from "node:crypto";
 import { access, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { defaultDeckCss, renderSlideDocument } from "../shared/slide-design.mjs";
-import { auditDeckQuality } from "../shared/slide-audit.mjs";
-import { auditCssSafety } from "../shared/content-policy.mjs";
+import { defaultDeckCss, slideFragmentFromBlocks } from "../shared/slide-design.mjs";
+import { formatDeckCss, formatSlideHtml } from "../shared/html-format.mjs";
+import { auditContentPolicy } from "../shared/content-policy.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const projectRoot = process.env.WEAVE_PROJECT_ROOT
   ? resolve(process.env.WEAVE_PROJECT_ROOT)
   : join(repoRoot, "workspaces", "northstar");
-const deckPath = join(projectRoot, ".weave", "deck.json");
+const manifestPath = join(projectRoot, ".weave", "deck.json");
 const bufferPath = join(projectRoot, ".weave", "current-buffer.json");
 const slidesRoot = join(projectRoot, "slides");
 const stylesRoot = join(projectRoot, "styles");
 const deckCssPath = join(stylesRoot, "deck.css");
 
 export const agentInstructions = `You are the editing agent embedded in Weave, a visual HTML slide editor.
-The project uses .weave/deck.json as the canonical editor state and one HTML file per slide under slides/.
-Slide styling lives in styles/deck.css. Edit that file to change how slides look; slides/*.html is generated from deck.json and deck.css, so never edit it directly.
-Slides are authored at a fixed 1280x720 design size: write plain pixel values, no responsive units, and keep every selector under .weave-slide.
-The top-level blocks and background mirror the active slide. Keep them synchronized with slides[activeSlide - 1].
-Before editing, inspect .weave/deck.json and .weave/current-buffer.json when present.
-The current buffer is authoritative even when it differs from the last commit.
-Make focused changes that answer the user. Preserve valid JSON, all slides, and the existing block schema.
-Use flow layout (flex or grid with gap); do not introduce free-positioned content blocks.
-Do not run git commands or commit changes. Weave commits the completed turn atomically.
+The truth of every slide is its own file: slides/<id>.html holds a <main class="weave-slide"> fragment.
+Edit those HTML files and styles/deck.css directly — they are the single source of truth. Do not
+generate or hand-maintain any intermediate model; .weave/deck.json is only a manifest of slide order,
+titles, and speaker notes (Weave keeps it in sync — you rarely touch it, except to reorder slides).
+Slide styling lives in styles/deck.css. Change how slides look by editing that stylesheet (shared type
+rules) or by adding inline style="" to a specific element (a local override).
+Slides are authored at a fixed 1280x720 design size: use plain pixel values or relative units like %/fr,
+no viewport/responsive units, and keep every CSS selector under .weave-slide.
+Use flow layout (flex or grid with gap); never free-position content. Keep a data-weave-id on every
+element the human can select. Represent line breaks inside text as <br>, not literal newlines.
+Before editing, read .weave/current-buffer.json when present — it is the authoritative unsaved state.
+Make focused changes that answer the user. Do not run git or commit; Weave formats and commits the turn.
 If no file change is needed, respond with a concise explanation.`;
 
-const defaultSlides = [
+/* Seed content, authored as blocks and stamped into HTML fragments exactly once. After seeding
+   the fragment on disk is the truth; blocks are never consulted again at runtime. */
+const seedSlides = [
   {
-    id: "opportunity",
-    title: "The opportunity",
-    background: "orbit",
+    id: "opportunity", title: "The opportunity", background: "orbit", notes: "",
     blocks: [
-      { id: "eyebrow", kind: "eyebrow", label: "Eyebrow", text: "PRODUCT STRATEGY · 2026" },
-      { id: "heading", kind: "heading", label: "Heading", text: "Make ideas visible,\nwhile they’re still moving." },
-      { id: "paragraph", kind: "paragraph", label: "Body", text: "A shared canvas where your team and an agent shape the same story — from first thought to final slide." },
-      { id: "metrics", kind: "metrics", label: "Metrics row", text: "3.2×|faster iteration|42%|less rework" },
-      { id: "note", kind: "note", label: "Footnote", text: "Q3 PRODUCT NARRATIVE" },
+      { id: "eyebrow", kind: "eyebrow", text: "PRODUCT STRATEGY · 2026" },
+      { id: "heading", kind: "heading", text: "Make ideas visible,\nwhile they’re still moving." },
+      { id: "paragraph", kind: "paragraph", text: "A shared canvas where your team and an agent shape the same story — from first thought to final slide." },
+      { id: "metrics", kind: "metrics", text: "3.2×|faster iteration|42%|less rework" },
+      { id: "note", kind: "note", text: "Q3 PRODUCT NARRATIVE" },
     ],
   },
   {
-    id: "market-shift",
-    title: "Market shift",
-    background: "grid",
+    id: "market-shift", title: "Market shift", background: "grid", notes: "",
     blocks: [
-      { id: "eyebrow-2", kind: "eyebrow", label: "Eyebrow", text: "THE SHIFT" },
-      { id: "heading-2", kind: "heading", label: "Heading", text: "The interface is becoming\na collaborator." },
-      { id: "paragraph-2", kind: "paragraph", label: "Body", text: "Teams no longer choose between visual tools and code. The strongest workflows bring both into one continuous loop." },
-      { id: "metrics-2", kind: "metrics", label: "Metrics row", text: "68%|use AI weekly|2.4×|more variants" },
-      { id: "note-2", kind: "note", label: "Footnote", text: "WORKFLOW RESEARCH · 2026" },
+      { id: "eyebrow-2", kind: "eyebrow", text: "THE SHIFT" },
+      { id: "heading-2", kind: "heading", text: "The interface is becoming\na collaborator." },
+      { id: "paragraph-2", kind: "paragraph", text: "Teams no longer choose between visual tools and code. The strongest workflows bring both into one continuous loop." },
+      { id: "metrics-2", kind: "metrics", text: "68%|use AI weekly|2.4×|more variants" },
+      { id: "note-2", kind: "note", text: "WORKFLOW RESEARCH · 2026" },
     ],
   },
   {
-    id: "approach",
-    title: "Our approach",
-    background: "orbit",
+    id: "approach", title: "Our approach", background: "orbit", notes: "",
     blocks: [
-      { id: "eyebrow-3", kind: "eyebrow", label: "Eyebrow", text: "OUR APPROACH" },
-      { id: "heading-3", kind: "heading", label: "Heading", text: "One canvas.\nTwo ways to create." },
-      { id: "paragraph-3", kind: "paragraph", label: "Body", text: "People shape the story visually. Agents work directly in the same HTML project. Selection, code, and properties stay aligned." },
-      { id: "metrics-3", kind: "metrics", label: "Metrics row", text: "1|shared history|0|handoff gaps" },
-      { id: "note-3", kind: "note", label: "Footnote", text: "WEAVE PRODUCT PRINCIPLE" },
+      { id: "eyebrow-3", kind: "eyebrow", text: "OUR APPROACH" },
+      { id: "heading-3", kind: "heading", text: "One canvas.\nTwo ways to create." },
+      { id: "paragraph-3", kind: "paragraph", text: "People shape the story visually. Agents work directly in the same HTML project. Selection, code, and properties stay aligned." },
+      { id: "metrics-3", kind: "metrics", text: "1|shared history|0|handoff gaps" },
+      { id: "note-3", kind: "note", text: "WEAVE PRODUCT PRINCIPLE" },
     ],
   },
   {
-    id: "next-steps",
-    title: "Next steps",
-    background: "plain",
+    id: "next-steps", title: "Next steps", background: "plain", notes: "",
     blocks: [
-      { id: "eyebrow-4", kind: "eyebrow", label: "Eyebrow", text: "FROM IDEA TO DECK" },
-      { id: "heading-4", kind: "heading", label: "Heading", text: "Start with the story.\nRefine in the flow." },
-      { id: "paragraph-4", kind: "paragraph", label: "Body", text: "Build the first narrative, generate focused directions, and commit the version your audience should remember." },
-      { id: "metrics-4", kind: "metrics", label: "Metrics row", text: "4|slides to align|1|direction to ship" },
-      { id: "note-4", kind: "note", label: "Footnote", text: "NEXT · PILOT WITH PRODUCT TEAMS" },
+      { id: "eyebrow-4", kind: "eyebrow", text: "FROM IDEA TO DECK" },
+      { id: "heading-4", kind: "heading", text: "Start with the story.\nRefine in the flow." },
+      { id: "paragraph-4", kind: "paragraph", text: "Build the first narrative, generate focused directions, and commit the version your audience should remember." },
+      { id: "metrics-4", kind: "metrics", text: "4|slides to align|1|direction to ship" },
+      { id: "note-4", kind: "note", text: "NEXT · PILOT WITH PRODUCT TEAMS" },
     ],
   },
 ];
 
-const defaultDeck = {
-  title: "Q3 Strategy Deck",
-  activeSlide: 1,
-  background: defaultSlides[0].background,
-  accent: "#f6b84b",
-  blocks: defaultSlides[0].blocks,
-  slides: defaultSlides,
-};
+const seedTitle = "Q3 Strategy Deck";
+
+/* Build the seed/migration project { title, slides:[{id,title,notes,html}] } from block data. */
+function projectFromBlockSlides(title, accent, blockSlides) {
+  const total = blockSlides.length;
+  return {
+    title,
+    slides: blockSlides.map((slide, index) => ({
+      id: slide.id,
+      title: slide.title ?? `Slide ${index + 1}`,
+      notes: slide.notes ?? "",
+      html: slideFragmentFromBlocks({
+        blocks: slide.blocks,
+        background: slide.background ?? "orbit",
+        accent: accent ?? "#f6b84b",
+        total,
+        position: index + 1,
+      }),
+    })),
+  };
+}
+
+const seedProject = () => projectFromBlockSlides(seedTitle, "#f6b84b", seedSlides);
 
 function runGit(args, options = {}) {
   return execFileSync("git", args, {
@@ -128,8 +140,8 @@ async function atomicWriteFile(path, contents) {
   }
 }
 
-/* Slide files are generated from deck.json plus the project stylesheet. deck.css itself is
-   never regenerated — it is hand/agent-authored content that has to survive every save. */
+/* deck.css is authored directly (human via inspector overrides, agent via this file). It is never
+   regenerated — read it as-is, falling back to the shipped default only when absent. */
 export async function readDeckCss() {
   try {
     return await readFile(deckCssPath, "utf8");
@@ -138,108 +150,106 @@ export async function readDeckCss() {
   }
 }
 
-export function validateDeck(input) {
-  if (!input || typeof input !== "object") throw new Error("Deck payload is required.");
-  const allowedKinds = new Set(["eyebrow", "heading", "paragraph", "metrics", "note", "row", "column", "grid"]);
-  const containerKinds = new Set(["row", "column", "grid"]);
-  const cleanBlocks = (blocks, slideIndex, depth = 0) => {
-    if (!Array.isArray(blocks) || (depth === 0 && blocks.length === 0) || blocks.length > 100 || depth > 6) {
-      throw new Error(`Slide ${slideIndex + 1} must contain 1–100 blocks.`);
-    }
-    return blocks.map((block, index) => {
-      if (!block || typeof block !== "object" || !allowedKinds.has(block.kind)) {
-        throw new Error(`Block ${index + 1} is invalid.`);
-      }
-      const id = String(block.id ?? "").slice(0, 80);
-      if (!id) throw new Error(`Block ${index + 1} needs an id.`);
-      const style = block.style && typeof block.style === "object" ? {
-        ...(["sm", "md", "lg"].includes(block.style.size) ? { size: block.style.size } : {}),
-        ...(["regular", "medium", "bold"].includes(block.style.weight) ? { weight: block.style.weight } : {}),
-        ...(["left", "center", "right"].includes(block.style.align) ? { align: block.style.align } : {}),
-        ...(["primary", "muted", "accent"].includes(block.style.color) ? { color: block.style.color } : {}),
-        ...(["tight", "normal", "loose"].includes(block.style.spacing) ? { spacing: block.style.spacing } : {}),
-        ...([2, 3].includes(block.style.columns) ? { columns: block.style.columns } : {}),
-      } : {};
-      return {
-        id,
-        kind: block.kind,
-        label: String(block.label ?? block.kind).slice(0, 80),
-        text: String(block.text ?? "").slice(0, 12_000),
-        ...(Object.keys(style).length ? { style } : {}),
-        ...(containerKinds.has(block.kind) ? { children: cleanBlocks(block.children ?? [], slideIndex, depth + 1) } : {}),
-      };
-    });
-  };
-  const sourceSlides = Array.isArray(input.slides) && input.slides.length
-    ? input.slides.slice(0, 100)
-    : defaultSlides;
-  const slides = sourceSlides.map((slide, index) => ({
-    id: String(slide?.id ?? `slide-${index + 1}`).toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || `slide-${index + 1}`,
-    title: String(slide?.title ?? `Slide ${index + 1}`).slice(0, 200),
-    background: ["orbit", "grid", "plain"].includes(slide?.background) ? slide.background : "orbit",
-    blocks: cleanBlocks(slide?.blocks, index),
-    notes: String(slide?.notes ?? "").slice(0, 20_000),
-  }));
-  const activeSlide = Math.max(1, Math.min(slides.length, Number.isInteger(input.activeSlide) ? input.activeSlide : 1));
-  const activeIndex = activeSlide - 1;
-  if (Array.isArray(input.blocks)) slides[activeIndex].blocks = cleanBlocks(input.blocks, activeIndex);
-  if (["orbit", "grid", "plain"].includes(input.background)) slides[activeIndex].background = input.background;
-  return {
-    title: String(input.title ?? defaultDeck.title).slice(0, 200),
-    activeSlide,
-    background: slides[activeIndex].background,
-    accent: /^#[0-9a-f]{6}$/i.test(input.accent ?? "") ? input.accent : defaultDeck.accent,
-    blocks: slides[activeIndex].blocks,
-    slides,
-  };
+const slugify = (value, fallback) =>
+  String(value ?? "").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || fallback;
+
+/** Normalize a project payload { title, slides:[{id,title,notes,html}] } coming from a client. */
+export function validateProject(input) {
+  if (!input || typeof input !== "object") throw new Error("Project payload is required.");
+  const sourceSlides = Array.isArray(input.slides) && input.slides.length ? input.slides.slice(0, 100) : [];
+  if (!sourceSlides.length) throw new Error("A deck needs at least one slide.");
+  const seen = new Set();
+  const slides = sourceSlides.map((slide, index) => {
+    let id = slugify(slide?.id, `slide-${index + 1}`);
+    while (seen.has(id)) id = `${id}-${index + 1}`;
+    seen.add(id);
+    const html = String(slide?.html ?? "");
+    if (!html.trim()) throw new Error(`Slide ${index + 1} has empty HTML.`);
+    if (html.length > 200_000) throw new Error(`Slide ${index + 1} HTML is too large.`);
+    return {
+      id,
+      title: String(slide?.title ?? `Slide ${index + 1}`).slice(0, 200),
+      notes: String(slide?.notes ?? "").slice(0, 20_000),
+      html,
+    };
+  });
+  return { title: String(input.title ?? seedTitle).slice(0, 200), slides };
 }
 
-export async function writeDeck(input, bufferOnly = false, expectedRevision = null) {
-  const quality = auditDeckQuality(input);
-  if (!quality.ok) {
-    const error = new Error(`Deck quality gate failed: ${quality.summary.errors} error(s).`);
-    error.code = "WEAVE_QUALITY_FAILED";
-    error.diagnostics = quality.diagnostics;
-    throw error;
+async function readSlideHtml(id) {
+  try {
+    return await readFile(join(slidesRoot, `${id}.html`), "utf8");
+  } catch {
+    return "";
   }
-  const deck = validateDeck(input);
+}
+
+async function readManifest() {
+  try {
+    return JSON.parse(await readFile(manifestPath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/** The project as the editor loads it: manifest joined with each slide's HTML fragment. */
+export async function readProject() {
+  const manifest = await readManifest();
+  if (!manifest || !Array.isArray(manifest.slides)) return seedProject();
+  const slides = await Promise.all(manifest.slides.map(async (slide, index) => ({
+    id: slide.id,
+    title: String(slide.title ?? `Slide ${index + 1}`),
+    notes: String(slide.notes ?? ""),
+    html: await readSlideHtml(slide.id),
+  })));
+  return { title: String(manifest.title ?? seedTitle), slides };
+}
+
+/** Write the project: every slide file (formatted) plus the manifest, transactionally. */
+export async function writeProject(input, bufferOnly = false, expectedRevision = null) {
+  const project = validateProject(input);
+  const slides = await Promise.all(project.slides.map(async (slide) => ({
+    ...slide,
+    html: await formatSlideHtml(slide.html),
+  })));
+  const manifest = { title: project.title, slides: slides.map(({ id, title, notes }) => ({ id, title, notes })) };
+  const manifestJson = `${JSON.stringify(manifest, null, 2)}\n`;
+  /* The buffer keeps the full project (HTML included) so the Agent sees unsaved edits. */
+  const bufferJson = `${JSON.stringify({ title: project.title, slides }, null, 2)}\n`;
+
   await mkdir(join(projectRoot, ".weave"), { recursive: true });
-  const json = `${JSON.stringify(deck, null, 2)}\n`;
   if (bufferOnly) {
-    await atomicWriteFile(bufferPath, json);
-    return deck;
+    await atomicWriteFile(bufferPath, bufferJson);
+    return { title: project.title, slides };
   }
+
   assertRevision(expectedRevision);
   const css = await readDeckCss();
-  const cssSafety = auditCssSafety(css);
-  if (!cssSafety.ok) {
-    const error = new Error(`Deck stylesheet safety gate failed: ${cssSafety.summary.errors} error(s).`);
+  const policy = auditContentPolicy({ css, html: slides.map((slide) => slide.html).join("\n") });
+  if (!policy.ok) {
+    const error = new Error(`Content policy gate failed: ${policy.summary.errors} error(s).`);
     error.code = "WEAVE_CONTENT_POLICY";
-    error.diagnostics = cssSafety.diagnostics;
+    error.diagnostics = policy.diagnostics;
     throw error;
   }
+
   const transactionId = randomUUID();
   const stagedSlidesRoot = join(projectRoot, `.slides-${transactionId}.staged`);
   const previousSlidesRoot = join(projectRoot, `.slides-${transactionId}.previous`);
-  const stagedDeckPath = join(projectRoot, ".weave", `.deck-${transactionId}.staged`);
-  const previousDeckPath = join(projectRoot, ".weave", `.deck-${transactionId}.previous`);
+  const stagedManifestPath = join(projectRoot, ".weave", `.deck-${transactionId}.staged`);
+  const previousManifestPath = join(projectRoot, ".weave", `.deck-${transactionId}.previous`);
   let movedPreviousSlides = false;
   let installedSlides = false;
-  let movedPreviousDeck = false;
-  let installedDeck = false;
+  let movedPreviousManifest = false;
+  let installedManifest = false;
   try {
     await mkdir(stagedSlidesRoot, { recursive: true });
     await Promise.all([
-      writeFile(stagedDeckPath, json),
-      ...deck.slides.map((slide, index) =>
-      writeFile(
-        join(stagedSlidesRoot, `${slide.id}.html`),
-        renderSlideDocument({ ...deck, activeSlide: index + 1, background: slide.background, blocks: slide.blocks }, css),
-      )),
+      writeFile(stagedManifestPath, manifestJson),
+      ...slides.map((slide) => writeFile(join(stagedSlidesRoot, `${slide.id}.html`), slide.html)),
     ]);
 
-    // Re-check immediately before publishing so a concurrent commit cannot be
-    // silently overwritten after the relatively expensive slide rendering step.
+    // Re-check just before publishing so a concurrent commit is not silently overwritten.
     assertRevision(expectedRevision);
     try {
       await rename(slidesRoot, previousSlidesRoot);
@@ -250,21 +260,21 @@ export async function writeDeck(input, bufferOnly = false, expectedRevision = nu
     await rename(stagedSlidesRoot, slidesRoot);
     installedSlides = true;
     try {
-      await rename(deckPath, previousDeckPath);
-      movedPreviousDeck = true;
+      await rename(manifestPath, previousManifestPath);
+      movedPreviousManifest = true;
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
     }
-    await rename(stagedDeckPath, deckPath);
-    installedDeck = true;
-    await atomicWriteFile(bufferPath, json);
+    await rename(stagedManifestPath, manifestPath);
+    installedManifest = true;
+    await atomicWriteFile(bufferPath, bufferJson);
     await Promise.all([
       rm(previousSlidesRoot, { recursive: true, force: true }),
-      rm(previousDeckPath, { force: true }),
+      rm(previousManifestPath, { force: true }),
     ]);
   } catch (error) {
-    if (installedDeck) await rm(deckPath, { force: true });
-    if (movedPreviousDeck) await rename(previousDeckPath, deckPath).catch(() => {});
+    if (installedManifest) await rm(manifestPath, { force: true });
+    if (movedPreviousManifest) await rename(previousManifestPath, manifestPath).catch(() => {});
     if (installedSlides) await rm(slidesRoot, { recursive: true, force: true });
     if (movedPreviousSlides) await rename(previousSlidesRoot, slidesRoot).catch(() => {});
     throw error;
@@ -272,15 +282,11 @@ export async function writeDeck(input, bufferOnly = false, expectedRevision = nu
     await Promise.all([
       rm(stagedSlidesRoot, { recursive: true, force: true }),
       rm(previousSlidesRoot, { recursive: true, force: true }),
-      rm(stagedDeckPath, { force: true }),
-      rm(previousDeckPath, { force: true }),
+      rm(stagedManifestPath, { force: true }),
+      rm(previousManifestPath, { force: true }),
     ]);
   }
-  return deck;
-}
-
-export async function readDeck() {
-  return validateDeck(JSON.parse(await readFile(deckPath, "utf8")));
+  return { title: project.title, slides };
 }
 
 export function commitIfChanged(message) {
@@ -338,8 +344,8 @@ export async function checkoutHistory(commit) {
   if (runGit(["branch", "--show-current"]) !== "main") runGit(["checkout", "main"]);
   runGit(["restore", "--source", commit, "--staged", "--worktree", "--", ".weave/deck.json", "slides", "styles", "AGENTS.md"]);
   const restored = commitIfChanged(`Restore history ${commit.slice(0, 12)}`);
-  const deck = await readDeck();
-  await atomicWriteFile(bufferPath, `${JSON.stringify(deck, null, 2)}\n`);
+  const project = await readProject();
+  await atomicWriteFile(bufferPath, `${JSON.stringify(project, null, 2)}\n`);
   return restored ?? getRevision();
 }
 
@@ -419,8 +425,6 @@ async function excludeCurrentBuffer() {
   if (!current.split("\n").some((line) => line.trim() === rule)) {
     await writeFile(excludePath, `${current}${current && !current.endsWith("\n") ? "\n" : ""}${rule}\n`);
   }
-  // Older projects committed the transient buffer. Removing it from the index
-  // keeps the local file available to the Agent while future commits ignore it.
   let tracked = false;
   try {
     tracked = Boolean(runGit(["ls-files", "--error-unmatch", rule], { stdio: ["ignore", "pipe", "ignore"] }));
@@ -446,10 +450,29 @@ async function recoverInterruptedTransactions() {
   const weaveEntries = await readdir(weaveRoot).catch(() => []);
   const previousDecks = weaveEntries.filter((name) => /^\.deck-[\w-]+\.previous$/.test(name));
   const stagedDecks = weaveEntries.filter((name) => /^\.deck-[\w-]+\.staged$/.test(name));
-  const deckExists = await access(deckPath).then(() => true).catch(() => false);
-  if (!deckExists && previousDecks[0]) await rename(join(weaveRoot, previousDecks[0]), deckPath);
-  await Promise.all([...previousDecks.slice(deckExists ? 0 : 1), ...stagedDecks].map((name) =>
+  const manifestExists = await access(manifestPath).then(() => true).catch(() => false);
+  if (!manifestExists && previousDecks[0]) await rename(join(weaveRoot, previousDecks[0]), manifestPath);
+  await Promise.all([...previousDecks.slice(manifestExists ? 0 : 1), ...stagedDecks].map((name) =>
     rm(join(weaveRoot, name), { force: true })));
+}
+
+/* One-time migration from the old token model: deck.json used to hold blocks + style tokens and
+   slides/*.html were generated documents. Rebuild each slide as a `<main>` fragment (block text's
+   literal newlines become <br>) and slim deck.json to a manifest. */
+async function migrateLegacyDeck() {
+  const raw = await readManifest();
+  const isLegacy = raw && (raw.blocks !== undefined || (Array.isArray(raw.slides) && raw.slides.some((slide) => slide?.blocks !== undefined)));
+  if (!isLegacy) return false;
+  const blockSlides = (raw.slides ?? []).map((slide, index) => ({
+    id: slide.id ?? `slide-${index + 1}`,
+    title: slide.title ?? `Slide ${index + 1}`,
+    notes: slide.notes ?? "",
+    background: slide.background ?? "orbit",
+    blocks: slide.blocks ?? [],
+  }));
+  const project = projectFromBlockSlides(raw.title ?? seedTitle, raw.accent ?? "#f6b84b", blockSlides);
+  await writeProject(project);
+  return true;
 }
 
 export async function ensureProject() {
@@ -465,25 +488,34 @@ export async function ensureProject() {
   await removeLegacyChatData();
   const migrationPaths = [];
   if (await excludeCurrentBuffer()) migrationPaths.push(".weave/current-buffer.json");
-  try {
-    await access(deckPath);
-  } catch {
-    await writeDeck(defaultDeck);
-    migrationPaths.push(".weave/deck.json", "slides");
-  }
+
   await mkdir(stylesRoot, { recursive: true });
   try {
     await access(deckCssPath);
   } catch {
-    await writeFile(deckCssPath, defaultDeckCss);
+    await writeFile(deckCssPath, await formatDeckCss(defaultDeckCss));
     migrationPaths.push("styles/deck.css");
   }
-  /* AGENTS.md is generated, so it follows the instructions in this file. */
+
+  let seededOrMigrated = false;
+  try {
+    await access(manifestPath);
+    if (await migrateLegacyDeck()) {
+      seededOrMigrated = true;
+      migrationPaths.push(".weave/deck.json", "slides");
+    }
+  } catch {
+    await writeProject(seedProject());
+    seededOrMigrated = true;
+    migrationPaths.push(".weave/deck.json", "slides");
+  }
+
   const instructions = `${agentInstructions}\n`;
   if (await readFile(join(projectRoot, "AGENTS.md"), "utf8").catch(() => null) !== instructions) {
     await writeFile(join(projectRoot, "AGENTS.md"), instructions);
     migrationPaths.push("AGENTS.md");
   }
   if (createdRepository) commitIfChanged("Create Northstar deck");
+  else if (seededOrMigrated) commitIfChanged("Migrate Weave project to HTML source of truth");
   else commitPathsIfChanged("Migrate Weave project metadata", migrationPaths);
 }
