@@ -120,6 +120,14 @@ const blankSlideHtml = (background: Background = "orbit", accent = "#f6b84b") =>
 const initialSlides: SlideDoc[] = [{ id: "opportunity", title: "The opportunity", notes: "", html: blankSlideHtml() }];
 
 type Snapshot = { title: string; slides: SlideDoc[]; activeSlide: number; selectedId: string | null };
+type BlockDragSession = {
+  id: string;
+  node: HTMLElement;
+  originParent: Node;
+  originNext: ChildNode | null;
+  before: Snapshot;
+  committed: boolean;
+};
 
 export default function Home() {
   const [deckTitle, setDeckTitle] = useState("Q3 Strategy Deck");
@@ -155,6 +163,7 @@ export default function Home() {
   const [mcpResult, setMcpResult] = useState("");
   const [turnSubmitting, setTurnSubmitting] = useState(false);
   const [draggedId, setDraggedId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [draggedSlide, setDraggedSlide] = useState<number | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [project, setProject] = useState<ServerState["project"] | null>(null);
@@ -189,6 +198,7 @@ export default function Home() {
   const slidesRef = useRef(slides);
   const activeRef = useRef(activeSlide);
   const selectedRef = useRef(selectedId);
+  const blockDragRef = useRef<BlockDragSession | null>(null);
 
   const agentReady = codexState.connection.status === "connected";
   const agentRunning = selectThreadRunning(codexState, codexState.activeThreadId);
@@ -219,7 +229,7 @@ export default function Home() {
     const clone = root.cloneNode(true) as HTMLElement;
     clone.querySelectorAll("[contenteditable]").forEach((node) => node.removeAttribute("contenteditable"));
     clone.querySelectorAll("[data-editing]").forEach((node) => node.removeAttribute("data-editing"));
-    clone.querySelectorAll(".weave-selected").forEach((node) => node.classList.remove("weave-selected"));
+    clone.querySelectorAll(".weave-selected, .weave-dragging, .weave-drop-before, .weave-drop-after, .weave-drop-horizontal").forEach((node) => node.classList.remove("weave-selected", "weave-dragging", "weave-drop-before", "weave-drop-after", "weave-drop-horizontal"));
     clone.querySelectorAll("[draggable]").forEach((node) => node.removeAttribute("draggable"));
     return clone.outerHTML;
   };
@@ -392,6 +402,9 @@ export default function Home() {
   useLayoutEffect(() => {
     const host = canvasRef.current;
     if (!host || mode !== "preview") return;
+    blockDragRef.current = null;
+    setDraggedId(null);
+    setEditingId(null);
     host.innerHTML = slidesRef.current[activeSlide - 1]?.html ?? "";
     host.querySelectorAll<HTMLElement>("[data-weave-id]").forEach((node) => { node.draggable = !agentRunning; });
     const root = host.querySelector<HTMLElement>(".weave-slide");
@@ -460,8 +473,10 @@ export default function Home() {
   const beginEdit = (node: HTMLElement) => {
     if (containerClasses.has(node.className.split(" ").find((cls) => containerClasses.has(cls)) ?? "")) return;
     checkpoint();
+    node.draggable = false;
     node.setAttribute("contenteditable", "true");
     node.setAttribute("data-editing", "true");
+    setEditingId(node.getAttribute("data-weave-id"));
     requestAnimationFrame(() => node.focus());
   };
 
@@ -475,6 +490,8 @@ export default function Home() {
     if (node.getAttribute?.("contenteditable") === "true") {
       node.removeAttribute("contenteditable");
       node.removeAttribute("data-editing");
+      node.draggable = !agentRunning;
+      setEditingId(null);
       syncFromDom();
     }
   };
@@ -490,22 +507,96 @@ export default function Home() {
     }
   };
 
+  const clearDropMarkers = () => canvasRef.current?.querySelectorAll(".weave-drop-before, .weave-drop-after, .weave-drop-horizontal").forEach((node) => node.classList.remove("weave-drop-before", "weave-drop-after", "weave-drop-horizontal"));
+  const animateDomReorder = (mutate: () => void) => {
+    const host = canvasRef.current;
+    if (!host) return mutate();
+    const nodes = Array.from(host.querySelectorAll<HTMLElement>("[data-weave-id]"));
+    const before = new Map(nodes.map((node) => [node, node.getBoundingClientRect()]));
+    mutate();
+    const scale = Math.max(slideScale, 0.01);
+    for (const node of nodes) {
+      if (node.classList.contains("weave-dragging")) continue;
+      const first = before.get(node);
+      if (!first || !node.isConnected) continue;
+      const last = node.getBoundingClientRect();
+      const x = (first.left - last.left) / scale;
+      const y = (first.top - last.top) / scale;
+      if (Math.abs(x) < 0.5 && Math.abs(y) < 0.5) continue;
+      node.animate?.([{ transform: `translate(${x}px, ${y}px)` }, { transform: "translate(0, 0)" }], { duration: 170, easing: "cubic-bezier(.2,.8,.2,1)" });
+    }
+  };
+
   const onCanvasDragStart = (event: DragEvent<HTMLDivElement>) => {
     const target = (event.target as HTMLElement).closest<HTMLElement>("[data-weave-id]");
-    if (target) setDraggedId(target.getAttribute("data-weave-id"));
+    const id = target?.getAttribute("data-weave-id");
+    if (!target || !id || target.getAttribute("contenteditable") === "true" || !target.parentNode) {
+      event.preventDefault();
+      return;
+    }
+    setSelectedId(id);
+    setEditingId(null);
+    setDraggedId(id);
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", id);
+    blockDragRef.current = { id, node: target, originParent: target.parentNode, originNext: target.nextSibling, before: snapshot(), committed: false };
+    requestAnimationFrame(() => target.classList.add("weave-dragging"));
   };
+
+  const onCanvasDragOver = (event: DragEvent<HTMLDivElement>) => {
+    const session = blockDragRef.current;
+    const host = canvasRef.current;
+    if (!session || !host) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    const target = (event.target as HTMLElement).closest<HTMLElement>("[data-weave-id]") ?? host.querySelector<HTMLElement>(".hero");
+    if (!target || target === session.node || session.node.contains(target)) return;
+    clearDropMarkers();
+
+    if (target.classList.contains("weave-container")) {
+      target.classList.add("weave-drop-after");
+      if (session.node.parentNode !== target || session.node.nextSibling) animateDomReorder(() => target.appendChild(session.node));
+      return;
+    }
+
+    const parent = target.parentElement;
+    if (!parent) return;
+    const rect = target.getBoundingClientRect();
+    const horizontal = parent.classList.contains("flex-row") || parent.classList.contains("grid");
+    const after = horizontal ? event.clientX > rect.left + rect.width / 2 : event.clientY > rect.top + rect.height / 2;
+    target.classList.add(after ? "weave-drop-after" : "weave-drop-before");
+    if (horizontal) target.classList.add("weave-drop-horizontal");
+    const reference = after ? target.nextSibling : target;
+    if (reference === session.node || (!after && session.node.nextSibling === target) || (after && target.nextSibling === session.node)) return;
+    animateDomReorder(() => parent.insertBefore(session.node, reference));
+  };
+
   const onCanvasDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
-    const host = canvasRef.current;
-    if (!host || !draggedId) return;
-    const dragged = host.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(draggedId)}"]`);
-    const target = (event.target as HTMLElement).closest<HTMLElement>("[data-weave-id]");
+    const session = blockDragRef.current;
+    if (!session) return;
+    session.committed = true;
+    const changed = session.node.parentNode !== session.originParent || session.node.nextSibling !== session.originNext;
+    session.node.classList.remove("weave-dragging");
+    clearDropMarkers();
+    blockDragRef.current = null;
     setDraggedId(null);
-    if (!dragged || !target || target === dragged || dragged.contains(target)) return;
-    checkpoint();
-    if (target.classList.contains("weave-container")) target.appendChild(dragged);
-    else target.parentElement?.insertBefore(dragged, target);
+    if (!changed) return;
+    undoRef.current = [...undoRef.current.slice(-79), session.before];
+    redoRef.current = [];
+    setHistoryState({ undo: undoRef.current.length, redo: 0 });
     syncFromDom();
+    setAnnouncement("Block moved");
+  };
+
+  const onCanvasDragEnd = () => {
+    const session = blockDragRef.current;
+    if (!session) return;
+    if (!session.committed) animateDomReorder(() => session.originParent.insertBefore(session.node, session.originNext));
+    session.node.classList.remove("weave-dragging");
+    clearDropMarkers();
+    blockDragRef.current = null;
+    setDraggedId(null);
   };
 
   const addBlock = (kind: string) => {
@@ -1225,6 +1316,9 @@ export default function Home() {
                 {/* The project stylesheet is the only thing styling the slide; the editor's
                     own chrome lives in globals.css and never overlaps these rules. */}
                 <style>{deckCss}</style>
+                <div className={`canvas-interaction-status ${draggedId ? "dragging" : editingId ? "editing" : selectedId ? "selected" : ""}`} role="status">
+                  {draggedId ? "Moving block · release to place" : editingId ? "Editing text · Esc to finish" : selectedId ? "Move mode · drag to reorder · double-click to edit" : "Click a block to select it"}
+                </div>
                 <div
                   className="slide-viewport"
                   data-zoom-mode={manualZoom == null ? "fit" : "manual"}
@@ -1235,8 +1329,9 @@ export default function Home() {
                   onBlurCapture={onCanvasBlurCapture}
                   onKeyDown={onCanvasKeyDown}
                   onDragStart={onCanvasDragStart}
-                  onDragOver={(event) => event.preventDefault()}
+                  onDragOver={onCanvasDragOver}
                   onDrop={onCanvasDrop}
+                  onDragEnd={onCanvasDragEnd}
                 />
                 <div className="canvas-toolbar">
                   <button onClick={() => setShowAdd(!showAdd)} className={showAdd ? "active" : ""}>＋ Add block</button>

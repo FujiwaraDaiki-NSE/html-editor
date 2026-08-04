@@ -296,6 +296,10 @@ body {
 .canvas-area { min-height: 0; position: relative; display: grid; place-items: center; overflow: hidden; background-color: #0c0e11; background-image: radial-gradient(#23272d 1px, transparent 1px); background-size: 18px 18px; }
 .light .canvas-area { background-color: #dfe1e5; background-image: radial-gradient(#c8cbd0 1px, transparent 1px); }
 .slide-shell { position: relative; width: min(83%, 880px); aspect-ratio: 16 / 10; display: grid; place-items: center; }
+.canvas-interaction-status { position: absolute; z-index: 5; top: 4px; left: 50%; translate: -50% 0; min-height: 24px; padding: 0 9px; display: flex; align-items: center; border: 1px solid var(--line-strong); border-radius: 999px; background: color-mix(in srgb, var(--panel) 92%, transparent); color: var(--muted); box-shadow: 0 4px 12px rgb(0 0 0 / .18); font-size: 8px; white-space: nowrap; pointer-events: none; }
+.canvas-interaction-status.selected { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); color: var(--text); }
+.canvas-interaction-status.dragging { border-color: var(--accent); background: var(--accent); color: #211a0f; font-weight: 700; }
+.canvas-interaction-status.editing { border-style: dashed; color: var(--accent); }
 
 /* The slide is authored at its design size and scaled to fit; the viewport is the window
    onto it. Everything inside comes from the project stylesheet (styles/deck.css) — the
@@ -316,10 +320,17 @@ body {
 
 /* Direct-DOM editing chrome (concept 2.10): the slide is live DOM styled only by deck.css;
    these rules add the editor's selection/hover/edit outlines, scaled to match the canvas. */
-.slide-viewport [data-weave-id] { cursor: default; outline: calc(1px / var(--slide-scale)) solid transparent; outline-offset: calc(3px / var(--slide-scale)); }
+.slide-viewport [data-weave-id] { cursor: grab; outline: calc(1px / var(--slide-scale)) solid transparent; outline-offset: calc(3px / var(--slide-scale)); transition: opacity 120ms ease, outline-color 120ms ease, background-color 120ms ease; }
 .slide-viewport [data-weave-id]:hover { outline-color: color-mix(in srgb, var(--accent) 45%, transparent); }
-.slide-viewport [data-weave-id].weave-selected { outline-color: var(--accent); }
-.slide-viewport [contenteditable="true"] { cursor: text; caret-color: var(--accent); outline-color: transparent; box-shadow: 0 0 0 calc(2px / var(--slide-scale)) color-mix(in srgb, var(--accent) 60%, transparent); }
+.slide-viewport [data-weave-id].weave-selected { outline-width: calc(2px / var(--slide-scale)); outline-color: var(--accent); cursor: grab; }
+.slide-viewport [data-weave-id].weave-selected:active { cursor: grabbing; }
+.slide-viewport [contenteditable="true"] { cursor: text; caret-color: var(--accent); outline-color: transparent; background: color-mix(in srgb, var(--accent) 7%, transparent); box-shadow: 0 0 0 calc(2px / var(--slide-scale)) color-mix(in srgb, var(--accent) 60%, transparent); }
+.slide-viewport .weave-dragging { opacity: .24; cursor: grabbing; outline-style: dashed; }
+.slide-viewport .weave-drop-before { box-shadow: inset 0 calc(4px / var(--slide-scale)) 0 var(--accent); }
+.slide-viewport .weave-drop-after { box-shadow: inset 0 calc(-4px / var(--slide-scale)) 0 var(--accent); }
+.slide-viewport .weave-drop-before.weave-drop-horizontal { box-shadow: inset calc(4px / var(--slide-scale)) 0 0 var(--accent); }
+.slide-viewport .weave-drop-after.weave-drop-horizontal { box-shadow: inset calc(-4px / var(--slide-scale)) 0 0 var(--accent); }
+.slide-viewport .weave-container.weave-drop-after { background: color-mix(in srgb, var(--accent) 10%, transparent); outline: calc(2px / var(--slide-scale)) dashed var(--accent); }
 
 /* Empty Row/Column/Grid: editor-only chrome via :empty so HTML stays clean (no placeholder nodes). */
 .slide-viewport .weave-container:empty {
@@ -345,8 +356,8 @@ body {
   grid-column: 1 / -1;
 }
 
-/* Schema-driven inspector: each intent control offers a constrained scale (plus an optional
-   custom field) and writes real inline CSS onto the selected node (concept 2.6/2.10). */
+/* Schema-driven inspector: each intent control swaps one Tailwind utility group on the
+   selected node, keeping human and Agent edits in the same class vocabulary. */
 .inspector .property-row { display: flex; flex-direction: column; gap: 5px; margin: 0 0 10px; }
 .inspector .property-row > span { font-size: 10px; letter-spacing: .07em; text-transform: uppercase; color: #8d949f; }
 .inspector .scale-options { display: flex; flex-wrap: wrap; gap: 3px; align-items: center; }

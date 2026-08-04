@@ -76,6 +76,15 @@ test("activity rail destinations render their details in the left sidebar", asyn
   assert.doesNotMatch(page, /showHistory|history-popover|showCodexSettings|showHelp/);
 });
 
+test("block dragging previews reordering and separates move from text editing", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  for (const behavior of ["onCanvasDragOver", "animateDomReorder", "onCanvasDragEnd", "originParent", "Moving block · release to place", "Editing text · Esc to finish"]) assert.match(page, new RegExp(behavior.replace(/[·]/g, "·")));
+  for (const affordance of [".canvas-interaction-status", ".weave-dragging", ".weave-drop-before", ".weave-drop-after"]) assert.equal(css.includes(affordance), true, `missing drag affordance: ${affordance}`);
+});
+
 test("local API constrains origins and exposes reconnectable NDJSON events", async () => {
   const source = await readFile(new URL("../server/local-api.mjs", import.meta.url), "utf8");
   assert.match(source, /127\.0\.0\.1:3000/);
