@@ -127,6 +127,7 @@ type BlockDragSession = {
   originNext: ChildNode | null;
   before: Snapshot;
   committed: boolean;
+  lastReorderAt: number;
 };
 
 export default function Home() {
@@ -539,7 +540,7 @@ export default function Home() {
     setDraggedId(id);
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("text/plain", id);
-    blockDragRef.current = { id, node: target, originParent: target.parentNode, originNext: target.nextSibling, before: snapshot(), committed: false };
+    blockDragRef.current = { id, node: target, originParent: target.parentNode, originNext: target.nextSibling, before: snapshot(), committed: false, lastReorderAt: 0 };
     requestAnimationFrame(() => target.classList.add("weave-dragging"));
   };
 
@@ -549,13 +550,20 @@ export default function Home() {
     if (!session || !host) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "move";
-    const target = (event.target as HTMLElement).closest<HTMLElement>("[data-weave-id]") ?? host.querySelector<HTMLElement>(".hero");
+    const now = event.timeStamp;
+    if (now - session.lastReorderAt < 110) return;
+    host.querySelectorAll<HTMLElement>("[data-weave-id]").forEach((node) => node.getAnimations().forEach((animation) => animation.finish()));
+    const hit = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null;
+    const target = hit?.closest<HTMLElement>("[data-weave-id]") ?? host.querySelector<HTMLElement>(".hero");
     if (!target || target === session.node || session.node.contains(target)) return;
     clearDropMarkers();
 
     if (target.classList.contains("weave-container")) {
       target.classList.add("weave-drop-after");
-      if (session.node.parentNode !== target || session.node.nextSibling) animateDomReorder(() => target.appendChild(session.node));
+      if (session.node.parentNode !== target || session.node.nextSibling) {
+        animateDomReorder(() => target.appendChild(session.node));
+        session.lastReorderAt = now;
+      }
       return;
     }
 
@@ -563,12 +571,20 @@ export default function Home() {
     if (!parent) return;
     const rect = target.getBoundingClientRect();
     const horizontal = parent.classList.contains("flex-row") || parent.classList.contains("grid");
-    const after = horizontal ? event.clientX > rect.left + rect.width / 2 : event.clientY > rect.top + rect.height / 2;
+    const siblings = Array.from(parent.children);
+    const draggedIndex = siblings.indexOf(session.node);
+    const targetIndex = siblings.indexOf(target);
+    const pointer = horizontal ? event.clientX : event.clientY;
+    const start = horizontal ? rect.left : rect.top;
+    const size = horizontal ? rect.width : rect.height;
+    const threshold = session.node.parentElement === parent && draggedIndex < targetIndex ? 0.7 : session.node.parentElement === parent && draggedIndex > targetIndex ? 0.3 : 0.5;
+    const after = pointer > start + size * threshold;
     target.classList.add(after ? "weave-drop-after" : "weave-drop-before");
     if (horizontal) target.classList.add("weave-drop-horizontal");
     const reference = after ? target.nextSibling : target;
     if (reference === session.node || (!after && session.node.nextSibling === target) || (after && target.nextSibling === session.node)) return;
     animateDomReorder(() => parent.insertBefore(session.node, reference));
+    session.lastReorderAt = now;
   };
 
   const onCanvasDrop = (event: DragEvent<HTMLDivElement>) => {
