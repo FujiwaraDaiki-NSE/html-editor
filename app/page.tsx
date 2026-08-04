@@ -1255,11 +1255,11 @@ export default function Home() {
                 </div>
                 {showAdd && (
                   <div className="block-picker">
-                    <small>INSERT BLOCK</small>
+                    <small>{sel?.container ? `INSERT INTO ${sel.kind.toUpperCase()}` : "INSERT BLOCK"}</small>
                     {blockKinds.map((kind) => (
                       <button key={kind} onClick={() => addBlock(kind)}>
                         <i>{blockIcons[kind]}</i>
-                        <span><strong>{kind === "paragraph" ? "Body text" : kind[0].toUpperCase() + kind.slice(1)}</strong><small>Add to slide flow</small></span>
+                        <span><strong>{kind === "paragraph" ? "Body text" : kind[0].toUpperCase() + kind.slice(1)}</strong><small>{sel?.container ? "Add inside this container" : "Add to slide flow"}</small></span>
                       </button>
                     ))}
                   </div>

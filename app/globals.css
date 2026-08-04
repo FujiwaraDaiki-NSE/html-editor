@@ -313,7 +313,6 @@ body {
 .editable-text[data-editing="false"] { cursor: default; }
 .editable-text[data-editing="true"] { box-shadow: 0 0 0 calc(2px / var(--slide-scale)) color-mix(in srgb, var(--accent) 60%, transparent); }
 .editable-text:empty::after { content: "\00a0"; }
-.empty-container { display: block; width: 100%; padding: 16px; border: 2px dashed color-mix(in srgb, var(--accent) 35%, transparent); color: #8d949f; font-size: 14px; text-align: center; }
 
 /* Direct-DOM editing chrome (concept 2.10): the slide is live DOM styled only by deck.css;
    these rules add the editor's selection/hover/edit outlines, scaled to match the canvas. */
@@ -321,6 +320,30 @@ body {
 .slide-viewport [data-weave-id]:hover { outline-color: color-mix(in srgb, var(--accent) 45%, transparent); }
 .slide-viewport [data-weave-id].weave-selected { outline-color: var(--accent); }
 .slide-viewport [contenteditable="true"] { cursor: text; caret-color: var(--accent); outline-color: transparent; box-shadow: 0 0 0 calc(2px / var(--slide-scale)) color-mix(in srgb, var(--accent) 60%, transparent); }
+
+/* Empty Row/Column/Grid: editor-only chrome via :empty so HTML stays clean (no placeholder nodes). */
+.slide-viewport .weave-container:empty {
+  box-sizing: border-box;
+  min-height: 88px;
+  padding: 16px;
+  border: 2px dashed color-mix(in srgb, var(--accent) 35%, transparent);
+  align-items: center;
+  justify-content: center;
+}
+.slide-viewport .weave-container:empty::before {
+  color: #8d949f;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  text-align: center;
+  pointer-events: none;
+}
+.slide-viewport .weave-container.row:empty::before { content: "Row — Add block or drop here"; }
+.slide-viewport .weave-container.column:empty::before { content: "Column — Add block or drop here"; }
+.slide-viewport .weave-container.grid:empty::before {
+  content: "Grid — Add block or drop here";
+  grid-column: 1 / -1;
+}
 
 /* Schema-driven inspector: each intent control offers a constrained scale (plus an optional
    custom field) and writes real inline CSS onto the selected node (concept 2.6/2.10). */
