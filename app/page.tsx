@@ -128,6 +128,18 @@ type BlockDragSession = {
   before: Snapshot;
   committed: boolean;
   lastReorderAt: number;
+  lastReorderX: number;
+  lastReorderY: number;
+};
+
+/* Live reordering rewrites the DOM under the cursor, so every move changes the geometry that
+   decided it. Require the pointer to travel before re-deciding: without this, a container that
+   reflows around the dropped block flips the answer back and the block oscillates in place. */
+const REORDER_HYSTERESIS_PX = 9;
+const markReorder = (session: BlockDragSession, event: { timeStamp: number; clientX: number; clientY: number }) => {
+  session.lastReorderAt = event.timeStamp;
+  session.lastReorderX = event.clientX;
+  session.lastReorderY = event.clientY;
 };
 
 export default function Home() {
@@ -569,7 +581,7 @@ export default function Home() {
     setDraggedId(id);
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("text/plain", id);
-    blockDragRef.current = { id, node: target, originParent: target.parentNode, originNext: target.nextSibling, before: snapshot(), committed: false, lastReorderAt: 0 };
+    blockDragRef.current = { id, node: target, originParent: target.parentNode, originNext: target.nextSibling, before: snapshot(), committed: false, lastReorderAt: 0, lastReorderX: event.clientX, lastReorderY: event.clientY };
     requestAnimationFrame(() => target.classList.add("weave-dragging"));
   };
 
@@ -581,6 +593,7 @@ export default function Home() {
     event.dataTransfer.dropEffect = "move";
     const now = event.timeStamp;
     if (now - session.lastReorderAt < 110) return;
+    if (Math.hypot(event.clientX - session.lastReorderX, event.clientY - session.lastReorderY) < REORDER_HYSTERESIS_PX) return;
     host.querySelectorAll<HTMLElement>("[data-weave-id]").forEach((node) => node.getAnimations().forEach((animation) => animation.finish()));
     const hit = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null;
     let target = resolveAtomicContainerTarget(session, hit);
@@ -596,7 +609,7 @@ export default function Home() {
         container.classList.add("weave-drop-after");
         if (session.node.parentNode !== container || session.node.nextSibling) {
           animateDomReorder(() => container.appendChild(session.node));
-          session.lastReorderAt = now;
+          markReorder(session, event);
         }
         return;
       }
@@ -606,7 +619,11 @@ export default function Home() {
     const parent = target.parentElement;
     if (!parent) return;
     const rect = target.getBoundingClientRect();
-    const horizontal = parent.classList.contains("flex-row") || parent.classList.contains("grid");
+    // A grid cell can be approached from any side, so compare on the axis the pointer is
+    // actually crossing: below the cell means "after", not "before the cell to its left".
+    const horizontal = parent.classList.contains("grid")
+      ? event.clientY >= rect.top && event.clientY <= rect.bottom
+      : parent.classList.contains("flex-row");
     const siblings = Array.from(parent.children);
     const draggedIndex = siblings.indexOf(session.node);
     const targetIndex = siblings.indexOf(target);
@@ -620,7 +637,7 @@ export default function Home() {
     const reference = after ? target.nextSibling : target;
     if (reference === session.node || (!after && session.node.nextSibling === target) || (after && target.nextSibling === session.node)) return;
     animateDomReorder(() => parent.insertBefore(session.node, reference));
-    session.lastReorderAt = now;
+    markReorder(session, event);
   };
 
   const onCanvasDrop = (event: DragEvent<HTMLDivElement>) => {

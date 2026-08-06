@@ -332,8 +332,11 @@ body {
 .slide-viewport .weave-drop-after.weave-drop-horizontal { box-shadow: inset calc(-4px / var(--slide-scale)) 0 0 var(--accent); }
 .slide-viewport .weave-container.weave-drop-after { background: color-mix(in srgb, var(--accent) 10%, transparent); outline: calc(2px / var(--slide-scale)) dashed var(--accent); }
 
-/* Empty Row/Column/Grid: editor-only chrome via :empty so HTML stays clean (no placeholder nodes). */
-.slide-viewport .weave-container:empty {
+/* Empty Row/Column/Grid: editor-only chrome via :empty so HTML stays clean (no placeholder nodes).
+   The drag ghost keeps the box: without it the container would shed 88px of min-height the moment
+   a block lands inside, jumping out from under the cursor and bouncing the block straight back. */
+.slide-viewport .weave-container:empty,
+.slide-viewport .weave-container:has(> .weave-dragging:only-child) {
   box-sizing: border-box;
   min-height: 88px;
   padding: 16px;
