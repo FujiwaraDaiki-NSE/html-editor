@@ -51,6 +51,35 @@ test("a text block sizes the same way a container does", () => {
   assert.deepEqual(auditTailwindSlideHtml(`<main class="weave-slide"><p class="${centred.join(" ")}"></p></main>`), []);
 });
 
+test("a cap decides the intent, however hard the box was told to grow", () => {
+  // self-stretch and flex-1 both stop at the measure, so Fixed is what these actually render as.
+  assert.equal(readSize(classesOf("self-stretch max-w-3xl"), "column"), "fixed");
+  assert.equal(readSize(classesOf("flex-1 max-w-3xl"), "row"), "fixed");
+  assert.equal(readSize(classesOf("w-full max-w-3xl"), "row"), "fixed");
+  // max-w-none and max-w-full name a limit without imposing one, so they leave Fill alone.
+  assert.equal(readSize(classesOf("flex-1 max-w-full"), "row"), "fill");
+  assert.equal(readSize(classesOf("self-stretch max-w-none"), "column"), "fill");
+});
+
+test("setting an intent makes it stick — every intent survives being read back", () => {
+  const starting = ["gap-4", "max-w-3xl gap-4", "flex-1 gap-4", "self-stretch max-w-2xl", "self-center max-w-sm"];
+  for (const direction of ["row", "column"]) {
+    for (const intent of ["fill", "hug", "fixed"]) {
+      for (const start of starting) {
+        const written = applySize(classesOf(start), intent, direction);
+        assert.equal(readSize(written, direction), intent, `${intent} in a ${direction} from "${start}" → ${written.join(" ")}`);
+      }
+    }
+  }
+});
+
+test("Fixed brings a measure with it; Fill and Hug drop the one they find", () => {
+  assert.equal(applySize(classesOf("heading text-6xl"), "fixed", "column").join(" "), "heading text-6xl max-w-3xl self-start", "Fixed without a cap would be indistinguishable from Hug");
+  assert.equal(applySize(classesOf("paragraph max-w-sm"), "fixed", "column").join(" "), "paragraph max-w-sm self-start", "a measure already chosen is left alone");
+  assert.equal(applySize(classesOf("paragraph max-w-3xl"), "fill", "column").join(" "), "paragraph self-stretch");
+  assert.equal(applySize(classesOf("paragraph max-w-3xl"), "hug", "row").join(" "), "paragraph flex-none");
+});
+
 test("sizing a centred block keeps it centred", () => {
   const centred = classesOf("weave-container column flex flex-col self-center max-w-3xl gap-4");
   assert.equal(readSize(centred, "column"), "fixed");

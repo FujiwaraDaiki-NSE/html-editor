@@ -1640,7 +1640,9 @@ export default function Home() {
                     </div>
                   </div>
                 )}
-                {propertyRows(containerLike ? containerBlockSchema : blockSchema)}
+                {/* Measure is the detail behind Fixed — the number the box stops at. Under Fill or
+                    Hug there is nothing for it to cap, so it stays out of the way. */}
+                {propertyRows((containerLike ? containerBlockSchema : blockSchema).filter((ctl) => ctl.key !== "maxWidth" || sel.read.size === "fixed"))}
               </section>
               {/* What the block holds: the text inside it, or the children it arranges. */}
               <section className="property-section">

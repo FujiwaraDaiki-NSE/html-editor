@@ -105,32 +105,44 @@ export const sizeIntents = [{ value: "fill", label: "Fill" }, { value: "hug", la
 /* Where the block itself sits — distinct from textAlign, which only moves the text inside it. */
 export const blockPositionOptions = [{ value: "self-start", label: "Start" }, { value: "self-center", label: "Center" }, { value: "self-end", label: "End" }];
 
-const isMeasured = (list) => [...list].some((name) => name.startsWith("max-w-") && name !== "max-w-none" && name !== "max-w-full");
+/* A measure caps the box; max-w-none and max-w-full name a limit without imposing one. */
+const constrains = (name) => name.startsWith("max-w-") && name !== "max-w-none" && name !== "max-w-full";
+const isMeasured = (classes) => [...classes].some(constrains);
+const defaultMeasure = "max-w-3xl";
 
 /** Which intent the classes already express, given the parent's layout direction and classes. */
 export function readSize(classes, parentDirection, parentClasses = []) {
   const list = new Set(classes);
+  // A cap wins over flex-1 or self-stretch: the box stops at the measure however hard it was told
+  // to grow, so Fixed is what it renders as and what the inspector has to say.
+  if (isMeasured(list)) return "fixed";
   if (list.has("w-full")) return "fill";
   if (parentDirection === "column") {
     if (list.has("self-stretch")) return "fill";
     // An unplaced block inherits the parent's align-items, which stretches unless it says otherwise.
     const stretched = !alignSelfClasses.some((name) => list.has(name))
       && ![...parentClasses].some((name) => name.startsWith("items-") && name !== "items-stretch");
-    if (stretched) return "fill";
-    return isMeasured(list) ? "fixed" : "hug";
+    return stretched ? "fill" : "hug";
   }
-  if (list.has("flex-1")) return "fill";
-  return isMeasured(list) ? "fixed" : "hug";
+  return list.has("flex-1") ? "fill" : "hug";
 }
+
+/* Fixed is the intent that owns a measure; Fill and Hug are defined by not having one. Writing the
+   measure alongside the flex class is what makes an intent survive a read — set Hug on a measured
+   block without dropping the cap and it would read straight back as Fixed. */
+const withMeasure = (classes, intent) => intent === "fixed"
+  ? (isMeasured(classes) ? classes : [...classes, defaultMeasure])
+  : classes.filter((name) => !constrains(name));
 
 /** Rewrite the sizing classes for an intent, keeping any horizontal alignment already chosen. */
 export function applySize(classes, intent, parentDirection) {
   const kept = classes.filter((name) => !sizeClasses.includes(name));
   // A grid cell is sized by its parent's template, so it carries no sizing class of its own.
   if (parentDirection === "grid") return kept;
-  if (parentDirection !== "column") return [...kept, mainAxisSize[intent] ?? mainAxisSize.fill];
-  if (intent === "fill") return [...kept, crossAxisSize.fill];
-  return [...kept, classes.find((name) => name === "self-center" || name === "self-end") ?? crossAxisSize[intent] ?? crossAxisSize.hug];
+  const measured = withMeasure(kept, intent);
+  if (parentDirection !== "column") return [...measured, mainAxisSize[intent] ?? mainAxisSize.fill];
+  if (intent === "fill") return [...measured, crossAxisSize.fill];
+  return [...measured, classes.find((name) => name === "self-center" || name === "self-end") ?? crossAxisSize[intent] ?? crossAxisSize.hug];
 }
 
 export const readBlockPosition = (classes) => classes.find((name) => name !== "self-stretch" && alignSelfClasses.includes(name)) ?? "";
