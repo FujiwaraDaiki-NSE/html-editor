@@ -325,7 +325,7 @@ body {
 .slide-viewport [data-weave-id].weave-selected { outline-width: calc(2px / var(--slide-scale)); outline-color: var(--accent); cursor: grab; }
 .slide-viewport [data-weave-id].weave-selected:active { cursor: grabbing; }
 .slide-viewport [contenteditable="true"] { cursor: text; caret-color: var(--accent); outline-color: transparent; background: color-mix(in srgb, var(--accent) 7%, transparent); box-shadow: 0 0 0 calc(2px / var(--slide-scale)) color-mix(in srgb, var(--accent) 60%, transparent); }
-.slide-viewport .weave-dragging { opacity: .24; cursor: grabbing; outline-style: dashed; }
+.slide-viewport .weave-dragging { opacity: .24; cursor: grabbing; outline-style: dashed; pointer-events: none; }
 .slide-viewport .weave-drop-before { box-shadow: inset 0 calc(4px / var(--slide-scale)) 0 var(--accent); }
 .slide-viewport .weave-drop-after { box-shadow: inset 0 calc(-4px / var(--slide-scale)) 0 var(--accent); }
 .slide-viewport .weave-drop-before.weave-drop-horizontal { box-shadow: inset calc(4px / var(--slide-scale)) 0 0 var(--accent); }

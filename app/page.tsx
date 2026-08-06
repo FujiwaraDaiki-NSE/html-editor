@@ -509,6 +509,18 @@ export default function Home() {
   };
 
   const clearDropMarkers = () => canvasRef.current?.querySelectorAll(".weave-drop-before, .weave-drop-after, .weave-drop-horizontal").forEach((node) => node.classList.remove("weave-drop-before", "weave-drop-after", "weave-drop-horizontal"));
+  const resolveAtomicContainerTarget = (session: BlockDragSession, hit: HTMLElement | null) => {
+    let target = hit?.closest<HTMLElement>("[data-weave-id]") ?? null;
+    if (!session.node.classList.contains("weave-container")) return target;
+
+    // A container moves as one block. Ignore its descendants as separate drop targets,
+    // otherwise hit-testing flips between the wrapper and its children after each preview.
+    const parent = session.node.parentElement;
+    while (target && parent && target.parentElement !== parent) {
+      target = target.parentElement?.closest<HTMLElement>("[data-weave-id]") ?? null;
+    }
+    return target;
+  };
   const animateDomReorder = (mutate: () => void) => {
     const host = canvasRef.current;
     if (!host) return mutate();
@@ -554,7 +566,7 @@ export default function Home() {
     if (now - session.lastReorderAt < 110) return;
     host.querySelectorAll<HTMLElement>("[data-weave-id]").forEach((node) => node.getAnimations().forEach((animation) => animation.finish()));
     const hit = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null;
-    const target = hit?.closest<HTMLElement>("[data-weave-id]") ?? host.querySelector<HTMLElement>(".hero");
+    const target = resolveAtomicContainerTarget(session, hit);
     if (!target || target === session.node || session.node.contains(target)) return;
     clearDropMarkers();
 
