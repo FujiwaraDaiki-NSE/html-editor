@@ -85,12 +85,54 @@ export const slideControlGroups = {
 };
 
 export const textControlKeys = ["fontSize", "fontWeight", "lineHeight", "textAlign", "maxWidth", "color"];
-export const containerControlKeys = ["gap", "padding", "justifyContent", "alignItems"];
+export const containerControlKeys = ["gap", "padding", "justifyContent", "alignItems", "maxWidth"];
+
+/* Sizing is stated as an intent — Fill, Hug or Fixed — never as a class. Width is the main axis
+   inside a Row but the cross axis inside a Column, so the same intent needs a different utility
+   depending on the parent. The editor owns that mapping; nobody has to reason about flex axes. */
+const mainAxisSize = { fill: "flex-1", hug: "flex-none", fixed: "flex-none" };
+const crossAxisSize = { fill: "self-stretch", hug: "self-start", fixed: "self-start" };
+const alignSelfClasses = ["self-stretch", "self-start", "self-center", "self-end"];
+/* w-full sized every container before intents existed: it reads as Fill and is dropped on write. */
+const sizeClasses = [...new Set([...Object.values(mainAxisSize), ...alignSelfClasses, "w-full"])];
+
+export const sizeIntents = [{ value: "fill", label: "Fill" }, { value: "hug", label: "Hug" }, { value: "fixed", label: "Fixed" }];
+export const blockAlignOptions = [{ value: "self-start", label: "Start" }, { value: "self-center", label: "Center" }, { value: "self-end", label: "End" }];
+
+const isMeasured = (list) => [...list].some((name) => name.startsWith("max-w-") && name !== "max-w-none" && name !== "max-w-full");
+
+/** Which intent the classes already express, given the parent's layout direction and classes. */
+export function readSize(classes, parentDirection, parentClasses = []) {
+  const list = new Set(classes);
+  if (list.has("w-full")) return "fill";
+  if (parentDirection === "column") {
+    if (list.has("self-stretch")) return "fill";
+    // An unaligned block inherits the parent's align-items, which stretches unless it says otherwise.
+    if (!alignSelfClasses.some((name) => list.has(name))) return [...parentClasses].some((name) => name.startsWith("items-") && name !== "items-stretch") ? "hug" : "fill";
+    return isMeasured(list) ? "fixed" : "hug";
+  }
+  if (list.has("flex-1")) return "fill";
+  return isMeasured(list) ? "fixed" : "hug";
+}
+
+/** Rewrite the sizing classes for an intent, keeping any horizontal alignment already chosen. */
+export function applySize(classes, intent, parentDirection) {
+  const kept = classes.filter((name) => !sizeClasses.includes(name));
+  // A grid cell is sized by its parent's template, so it carries no sizing class of its own.
+  if (parentDirection === "grid") return kept;
+  if (parentDirection !== "column") return [...kept, mainAxisSize[intent] ?? mainAxisSize.fill];
+  if (intent === "fill") return [...kept, crossAxisSize.fill];
+  return [...kept, classes.find((name) => name === "self-center" || name === "self-end") ?? crossAxisSize[intent] ?? crossAxisSize.hug];
+}
+
+export const readBlockAlign = (classes) => classes.find((name) => name !== "self-stretch" && alignSelfClasses.includes(name)) ?? "";
+export const applyBlockAlign = (classes, className) => [...classes.filter((name) => !alignSelfClasses.includes(name)), className];
 
 const extraUtilities = {
   relative: "position: relative", absolute: "position: absolute", "inset-0": "inset: 0", "inset-x-0": "left: 0; right: 0",
   "top-0": "top: 0", "right-0": "right: 0", "bottom-0": "bottom: 0", "left-0": "left: 0",
   flex: "display: flex", grid: "display: grid", "flex-1": "flex: 1 1 0%", "flex-none": "flex: none",
+  "self-stretch": "align-self: stretch", "self-start": "align-self: flex-start", "self-center": "align-self: center", "self-end": "align-self: flex-end",
   "flex-row": "flex-direction: row", "flex-col": "flex-direction: column", "flex-wrap": "flex-wrap: wrap",
   "grid-cols-2": "grid-template-columns: repeat(2, minmax(0, 1fr))", "grid-cols-3": "grid-template-columns: repeat(3, minmax(0, 1fr))", "grid-cols-4": "grid-template-columns: repeat(4, minmax(0, 1fr))",
   "gap-x-5": "column-gap: 1.25rem", "gap-y-2": "row-gap: 0.5rem", "mt-2": "margin-top: 0.5rem", "mt-4": "margin-top: 1rem", "mt-6": "margin-top: 1.5rem", "mt-8": "margin-top: 2rem",
@@ -175,6 +217,8 @@ export function migrateSlideHtmlToTailwind(input) {
     }
     for (const [structural, utilities] of Object.entries(legacyUtilities)) if (classes.includes(structural)) add.push(...utilities.split(" "));
     if (classes.includes("weave-container")) {
+      // w-full is what the old stylesheet said, so it stays: readSize treats it as Fill and the
+      // honest class replaces it the first time the block's size is set.
       add.push("w-full", "gap-4");
       if (classes.includes("grid")) add.push("grid", "grid-cols-2");
       else add.push("flex", classes.includes("column") ? "flex-col" : "flex-row");

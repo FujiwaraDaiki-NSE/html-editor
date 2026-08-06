@@ -5,7 +5,7 @@ import { DragEvent, useCallback, useEffect, useLayoutEffect, useMemo, useReducer
 import { actionFromStreamEvent } from "./codex/actions";
 import { defaultDeckCss, designHeight, designWidth, renderDeckDocument } from "../shared/slide-design.mjs";
 import { auditContentPolicy } from "../shared/content-policy.mjs";
-import { containerControlKeys, defaultSlideClasses, migrateSlideHtmlToTailwind, slideControlGroups, textControlKeys } from "../shared/tailwind-slide.mjs";
+import { applyBlockAlign, applySize, blockAlignOptions, containerControlKeys, defaultSlideClasses, migrateSlideHtmlToTailwind, readBlockAlign, readSize, sizeIntents, slideControlGroups, textControlKeys } from "../shared/tailwind-slide.mjs";
 import { ItemCard } from "./codex/components/ItemCard";
 import { ServerRequestCard } from "./codex/components/ServerRequestCard";
 import { codexReducer, initialCodexState } from "./codex/reducer";
@@ -92,13 +92,21 @@ const blockTemplates: Record<string, (id: string) => string> = {
   eyebrow: (id) => `<div class="eyebrow text-sm font-bold uppercase tracking-widest text-amber-400" data-weave-id="${id}">NEW SECTION</div>`,
   note: (id) => `<div class="note mt-6 text-xs font-semibold uppercase tracking-widest text-slate-400" data-weave-id="${id}">SOURCE · INTERNAL RESEARCH</div>`,
   metrics: (id) => `<div class="metrics grid grid-cols-4 items-center gap-x-5 mt-2" data-weave-id="${id}"><strong class="text-3xl font-semibold tracking-tight text-amber-400">24%</strong><span class="text-xs text-slate-400">growth</span><strong class="text-3xl font-semibold tracking-tight text-amber-400">8 wk</strong><span class="text-xs text-slate-400">to launch</span></div>`,
-  row: (id) => `<div class="weave-container row flex flex-row w-full gap-4" data-weave-id="${id}"></div>`,
-  column: (id) => `<div class="weave-container column flex flex-col w-full gap-4" data-weave-id="${id}"></div>`,
-  grid: (id) => `<div class="weave-container grid grid-cols-2 w-full gap-4" data-weave-id="${id}"></div>`,
+  row: (id) => `<div class="weave-container row flex flex-row gap-4" data-weave-id="${id}"></div>`,
+  column: (id) => `<div class="weave-container column flex flex-col gap-4" data-weave-id="${id}"></div>`,
+  grid: (id) => `<div class="weave-container grid grid-cols-2 gap-4" data-weave-id="${id}"></div>`,
 };
 const blockKinds = Object.keys(blockTemplates);
 const blockIcons: Record<string, string> = { eyebrow: "T", heading: "H", paragraph: "¶", metrics: "▦", note: "≡", row: "↔", column: "↕", grid: "▦" };
 const containerClasses = new Set(["row", "column", "grid"]);
+
+/* Which axis a parent lays its children out on — the context every sizing decision resolves against. */
+const layoutOf = (node: Element | null): string => !node ? "column" : node.classList.contains("grid") ? "grid" : node.classList.contains("flex-row") ? "row" : "column";
+const writeClasses = (node: Element, classes: string[]) => { node.className = classes.join(" "); };
+const sizeOf = (node: Element): string => readSize([...node.classList], layoutOf(node.parentElement), [...(node.parentElement?.classList ?? [])]);
+const resizeForParent = (node: Element, intent: string | null) => {
+  if (intent) writeClasses(node, applySize([...node.classList], intent, layoutOf(node.parentElement)));
+};
 
 type Control = { key: string; label: string; options: Array<{ label: string; className: string }> };
 const controlsFor = (keys: string[]): Control[] => keys.map((key) => ({ key, label: slideControlGroups[key].label, options: slideControlGroups[key].options }));
@@ -128,6 +136,7 @@ type Snapshot = { title: string; slides: SlideDoc[]; activeSlide: number; select
 type BlockDragSession = {
   id: string;
   node: HTMLElement;
+  sizeIntent: string | null;
   originParent: Node;
   originNext: ChildNode | null;
   before: Snapshot;
@@ -244,6 +253,9 @@ export default function Home() {
       read[key] = slideControlGroups[key].options.find((item: { className: string }) => node.classList.contains(item.className))?.className ?? "";
     }
     read.direction = node.classList.contains("column") ? "column" : "row";
+    read.parentLayout = layoutOf(node.parentElement);
+    read.size = sizeOf(node);
+    read.blockAlign = readBlockAlign([...node.classList]);
     return { id: node.getAttribute("data-weave-id") ?? "", kind, container: node.classList.contains("weave-container"), read };
   };
 
@@ -595,7 +607,9 @@ export default function Home() {
     setDraggedId(id);
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("text/plain", id);
-    blockDragRef.current = { id, node: target, originParent: target.parentNode, originNext: target.nextSibling, before: snapshot(), committed: false, lastReorderAt: 0, lastReorderX: event.clientX, lastReorderY: event.clientY };
+    // A container's intent survives the move; the class expressing it is rewritten for each new parent.
+    const sizeIntent = target.classList.contains("weave-container") ? sizeOf(target) : null;
+    blockDragRef.current = { id, node: target, sizeIntent, originParent: target.parentNode, originNext: target.nextSibling, before: snapshot(), committed: false, lastReorderAt: 0, lastReorderX: event.clientX, lastReorderY: event.clientY };
     requestAnimationFrame(() => target.classList.add("weave-dragging"));
   };
 
@@ -625,7 +639,7 @@ export default function Home() {
       } else {
         container.classList.add("weave-drop-after");
         if (session.node.parentNode !== container || session.node.nextSibling) {
-          animateDomReorder(() => container.appendChild(session.node));
+          animateDomReorder(() => { container.appendChild(session.node); resizeForParent(session.node, session.sizeIntent); });
           markReorder(session, event);
         }
         return;
@@ -653,7 +667,7 @@ export default function Home() {
     if (horizontal) target.classList.add("weave-drop-horizontal");
     const reference = after ? target.nextSibling : target;
     if (reference === session.node || (!after && session.node.nextSibling === target) || (after && target.nextSibling === session.node)) return;
-    animateDomReorder(() => parent.insertBefore(session.node, reference));
+    animateDomReorder(() => { parent.insertBefore(session.node, reference); resizeForParent(session.node, session.sizeIntent); });
     markReorder(session, event);
   };
 
@@ -728,7 +742,8 @@ export default function Home() {
     if (!parent || reference === node) return;
     if (parent === node.parentNode && (reference ?? null) === node.nextSibling) return;
     checkpoint();
-    animateDomReorder(() => parent.insertBefore(node, reference));
+    const treeIntent = node.classList.contains("weave-container") ? sizeOf(node) : null;
+    animateDomReorder(() => { parent.insertBefore(node, reference); resizeForParent(node, treeIntent); });
     setSelectedId(dragId);
     syncFromDom();
     setAnnouncement("Block moved");
@@ -743,7 +758,10 @@ export default function Home() {
     const node = selectedNode();
     const container = node?.classList.contains("weave-container") ? node : hero;
     container.insertAdjacentHTML("beforeend", blockTemplates[kind](id));
-    container.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(id)}"]`)?.setAttribute("draggable", "true");
+    const inserted = container.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(id)}"]`);
+    inserted?.setAttribute("draggable", "true");
+    // A new container starts as Fill: hugging content would make an empty one zero-width.
+    if (inserted?.classList.contains("weave-container")) resizeForParent(inserted, "fill");
     setSelectedId(id);
     dismissPopover(false);
     syncFromDom();
@@ -771,10 +789,17 @@ export default function Home() {
     node.classList.remove(...slideControlGroups[key].options.map((item: { className: string }) => item.className));
     node.classList.add(className);
   });
+  /* Flipping a container's direction swaps which axis its children are sized on, so their intents
+     are read under the old axis and re-expressed under the new one. */
   const setDirection = (value: string) => applyClasses((node) => {
+    const children = Array.from(node.children);
+    const intents = children.map(sizeOf);
     node.classList.remove("row", "column", "flex-row", "flex-col");
     node.classList.add(value, value === "column" ? "flex-col" : "flex-row");
+    children.forEach((child, index) => writeClasses(child, applySize([...child.classList], intents[index], value)));
   });
+  const setSize = (intent: string) => applyClasses((node) => resizeForParent(node, intent));
+  const setBlockAlign = (className: string) => applyClasses((node) => writeClasses(node, applyBlockAlign([...node.classList], className)));
 
   const setSlideBackground = (value: Background) => {
     const root = slideRoot();
@@ -1575,6 +1600,28 @@ export default function Home() {
                   <div className="scale-options">
                     {[{ label: "Row", value: "row" }, { label: "Column", value: "column" }].map((opt) => (
                       <button key={opt.value} className={(sel.read.direction || "row") === opt.value ? "active" : ""} onClick={() => setDirection(opt.value)}>{opt.label}</button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {containerLike && sel.read.parentLayout !== "grid" && (
+                <div className="property-row">
+                  <span>Size</span>
+                  <div className="scale-options">
+                    {sizeIntents.map((opt: { value: string; label: string }) => (
+                      <button key={opt.value} className={sel.read.size === opt.value ? "active" : ""} onClick={() => setSize(opt.value)}>{opt.label}</button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {/* Horizontal placement is the child's own business only when it stacks in a column;
+                  inside a Row it is the parent's Justify, so the control stays hidden there. */}
+              {containerLike && sel.read.parentLayout === "column" && sel.read.size !== "fill" && (
+                <div className="property-row">
+                  <span>Align</span>
+                  <div className="scale-options">
+                    {blockAlignOptions.map((opt: { value: string; label: string }) => (
+                      <button key={opt.value} className={sel.read.blockAlign === opt.value ? "active" : ""} onClick={() => setBlockAlign(opt.value)}>{opt.label}</button>
                     ))}
                   </div>
                 </div>

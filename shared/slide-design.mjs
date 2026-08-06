@@ -1,4 +1,4 @@
-import { buildTailwindSlideCss, defaultSlideClasses } from "./tailwind-slide.mjs";
+import { applySize, buildTailwindSlideCss, defaultSlideClasses } from "./tailwind-slide.mjs";
 
 /* Slide geometry, the default stylesheet, and the export document wrappers.
 
@@ -35,14 +35,16 @@ const textToHtml = (text) => escapeHtml(text).replace(/\n/g, "<br>");
 /* Seed/migration only: build a `<main class="weave-slide">` fragment from a block description.
    Never called at runtime — the fragment on disk is the truth once seeded. */
 export function slideFragmentFromBlocks(deck) {
-  const renderBlock = (block, depth = 0) => {
+  // Seeded containers Fill their parent; which class says so depends on the axis they sit on.
+  const renderBlock = (block, depth = 0, parentDirection = "column") => {
     const id = escapeHtml(block.id);
     const classes = escapeHtml(block.kind);
     const indent = "      ".padEnd(6 + depth * 2, " ");
     if (containerKinds.has(block.kind)) {
-      const children = (block.children ?? []).map((child) => renderBlock(child, depth + 1)).join("\n");
+      const children = (block.children ?? []).map((child) => renderBlock(child, depth + 1, block.kind)).join("\n");
       const layout = block.kind === "grid" ? "grid-cols-2" : `flex flex-${block.kind}`;
-      return `${indent}<div class="weave-container ${classes} ${layout} w-full gap-4" data-weave-id="${id}">\n${children}\n${indent}</div>`;
+      const sized = applySize(`weave-container ${classes} ${layout} gap-4`.split(" "), "fill", parentDirection);
+      return `${indent}<div class="${sized.join(" ")}" data-weave-id="${id}">\n${children}\n${indent}</div>`;
     }
     if (block.kind === "metrics") {
       const cells = metricParts(block.text)
