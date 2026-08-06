@@ -521,18 +521,6 @@ export default function Home() {
   };
 
   const clearDropMarkers = () => canvasRef.current?.querySelectorAll(".weave-drop-before, .weave-drop-after, .weave-drop-horizontal").forEach((node) => node.classList.remove("weave-drop-before", "weave-drop-after", "weave-drop-horizontal"));
-  const resolveAtomicContainerTarget = (session: BlockDragSession, hit: HTMLElement | null) => {
-    let target = hit?.closest<HTMLElement>("[data-weave-id]") ?? null;
-    if (!session.node.classList.contains("weave-container")) return target;
-
-    // A container moves as one block. Ignore its descendants as separate drop targets,
-    // otherwise hit-testing flips between the wrapper and its children after each preview.
-    const parent = session.node.parentElement;
-    while (target && parent && target.parentElement !== parent) {
-      target = target.parentElement?.closest<HTMLElement>("[data-weave-id]") ?? null;
-    }
-    return target;
-  };
   const nearestContainerChild = (container: HTMLElement, dragged: HTMLElement, clientX: number, clientY: number) => {
     const children = Array.from(container.children).filter((child): child is HTMLElement => child instanceof HTMLElement && child !== dragged && child.hasAttribute("data-weave-id"));
     const horizontal = container.classList.contains("flex-row");
@@ -596,11 +584,14 @@ export default function Home() {
     if (Math.hypot(event.clientX - session.lastReorderX, event.clientY - session.lastReorderY) < REORDER_HYSTERESIS_PX) return;
     host.querySelectorAll<HTMLElement>("[data-weave-id]").forEach((node) => node.getAnimations().forEach((animation) => animation.finish()));
     const hit = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null;
-    let target = resolveAtomicContainerTarget(session, hit);
+    // The dragged block and its whole subtree are pointer-events: none, so a hit is never inside
+    // it; the contains() guard only catches the frame before .weave-dragging lands.
+    let target = hit?.closest<HTMLElement>("[data-weave-id]") ?? null;
     if (!target || target === session.node || session.node.contains(target)) return;
     clearDropMarkers();
 
-    if (target.classList.contains("weave-container") && !session.node.classList.contains("weave-container")) {
+    // Containers nest: a Row carrying its children can be dropped into another Row, Column or Grid.
+    if (target.classList.contains("weave-container")) {
       const container = target;
       const nearestChild = nearestContainerChild(container, session.node, event.clientX, event.clientY);
       if (nearestChild) {

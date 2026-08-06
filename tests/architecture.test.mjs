@@ -81,9 +81,13 @@ test("block dragging previews reordering and separates move from text editing", 
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
-  for (const behavior of ["onCanvasDragOver", "resolveAtomicContainerTarget", "nearestContainerChild", "animateDomReorder", "onCanvasDragEnd", "originParent", "Moving block · release to place", "Editing text · Esc to finish"]) assert.match(page, new RegExp(behavior.replace(/[·]/g, "·")));
+  for (const behavior of ["onCanvasDragOver", "REORDER_HYSTERESIS_PX", "nearestContainerChild", "animateDomReorder", "onCanvasDragEnd", "originParent", "Moving block · release to place", "Editing text · Esc to finish"]) assert.match(page, new RegExp(behavior.replace(/[·]/g, "·")));
   for (const affordance of [".canvas-interaction-status", ".weave-dragging", ".weave-drop-before", ".weave-drop-after"]) assert.equal(css.includes(affordance), true, `missing drag affordance: ${affordance}`);
   assert.match(css, /\.weave-dragging[^}]*pointer-events: none/);
+  // Containers nest: nothing may exclude a dragged container from a container drop target.
+  assert.doesNotMatch(page, /!session\.node\.classList\.contains\("weave-container"\)/);
+  // A dropped block must not bounce: the container keeps its placeholder box around the ghost.
+  assert.match(css, /:has\(> \.weave-dragging:only-child\)/);
 });
 
 test("local API constrains origins and exposes reconnectable NDJSON events", async () => {
