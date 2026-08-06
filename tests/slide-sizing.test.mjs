@@ -2,18 +2,17 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  advancedControlKeys,
   allControlKeys,
   applyBlockPosition,
   applySize,
   auditTailwindSlideHtml,
-  blockControlKeys,
   buildTailwindSlideCss,
-  containerBlockKeys,
-  containerChildKeys,
-  contentControlKeys,
+  containerControlKeys,
   readBlockPosition,
   readSize,
   slideControlGroups,
+  textControlKeys,
 } from "../shared/tailwind-slide.mjs";
 
 const classesOf = (value) => value.split(" ").filter(Boolean);
@@ -111,21 +110,20 @@ test("every class the sizing model emits is a registered utility", () => {
   }
 });
 
-test("every control is filed under the thing it actually moves", () => {
-  // Fixed is only reachable if a block can set its own measure, container or not.
-  assert.equal(blockControlKeys.includes("maxWidth"), true);
-  assert.equal(containerBlockKeys.includes("maxWidth"), true);
-  // Padding sizes the block's own box; gap and the alignments arrange what sits inside it.
-  assert.equal(containerBlockKeys.includes("padding"), true);
-  assert.deepEqual(containerChildKeys, ["gap", "justifyContent", "alignItems"]);
-  assert.equal(contentControlKeys.includes("textAlign"), true, "textAlign moves the text, not the box");
-  for (const keys of [blockControlKeys, contentControlKeys, containerBlockKeys, containerChildKeys]) {
-    for (const key of keys) assert.ok(slideControlGroups[key], `${key} must name a real control group`);
+test("controls are filed by how widely they apply, and each tier is disjoint", () => {
+  // Kind-specific basics: nothing here belongs to every block, or nothing would set it apart.
+  assert.deepEqual(containerControlKeys, ["gap", "padding", "justifyContent", "alignItems"]);
+  assert.equal(textControlKeys.includes("textAlign"), true, "textAlign moves the text, not the box");
+  // A detail belongs to exactly one tier: the advanced one, or it would show unconditionally.
+  assert.deepEqual(advancedControlKeys, ["maxWidth"]);
+  for (const key of advancedControlKeys) {
+    assert.equal(textControlKeys.includes(key), false, `${key} is advanced and cannot also be a basic`);
+    assert.equal(containerControlKeys.includes(key), false, `${key} is advanced and cannot also be a basic`);
   }
-  // The inspector reads state for every key it can render, whichever section renders it.
-  for (const key of [...blockControlKeys, ...contentControlKeys, ...containerBlockKeys, ...containerChildKeys]) {
-    assert.ok(allControlKeys.includes(key), `${key} is rendered but never read back`);
-  }
+  const tiers = [textControlKeys, containerControlKeys, advancedControlKeys];
+  for (const keys of tiers) for (const key of keys) assert.ok(slideControlGroups[key], `${key} must name a real control group`);
+  // The inspector reads state for every key it can render, whichever tier renders it.
+  for (const key of tiers.flat()) assert.ok(allControlKeys.includes(key), `${key} is rendered but never read back`);
 });
 
 test("a grid cell is sized by its parent's template, not by a class of its own", () => {

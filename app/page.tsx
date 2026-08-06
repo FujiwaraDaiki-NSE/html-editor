@@ -5,7 +5,7 @@ import { DragEvent, useCallback, useEffect, useLayoutEffect, useMemo, useReducer
 import { actionFromStreamEvent } from "./codex/actions";
 import { defaultDeckCss, designHeight, designWidth, renderDeckDocument } from "../shared/slide-design.mjs";
 import { auditContentPolicy } from "../shared/content-policy.mjs";
-import { allControlKeys, applyBlockPosition, applySize, blockControlKeys, blockPositionOptions, containerBlockKeys, containerChildKeys, contentControlKeys, defaultSlideClasses, migrateSlideHtmlToTailwind, readBlockPosition, readSize, sizeIntents, slideControlGroups } from "../shared/tailwind-slide.mjs";
+import { advancedControlKeys, allControlKeys, applyBlockPosition, applySize, blockPositionOptions, containerControlKeys, defaultSlideClasses, migrateSlideHtmlToTailwind, readBlockPosition, readSize, sizeIntents, slideControlGroups, textControlKeys } from "../shared/tailwind-slide.mjs";
 import { ItemCard } from "./codex/components/ItemCard";
 import { ServerRequestCard } from "./codex/components/ServerRequestCard";
 import { codexReducer, initialCodexState } from "./codex/reducer";
@@ -113,12 +113,17 @@ const relayoutForParent = (node: Element, intent: string, fromLayout: string): s
   return layout;
 };
 
+/* What each advanced control is waiting for. A key missing from here never surfaces, which is the
+   one thing this tier must get right: a detail with no trigger is just a control in the wrong place. */
+const advancedConditions: Record<string, (read: Record<string, string>) => boolean> = {
+  maxWidth: (read) => read.size === "fixed",
+};
+
 type Control = { key: string; label: string; options: Array<{ label: string; className: string }> };
 const controlsFor = (keys: string[]): Control[] => keys.map((key) => ({ key, label: slideControlGroups[key].label, options: slideControlGroups[key].options }));
-const blockSchema = controlsFor(blockControlKeys);
-const contentSchema = controlsFor(contentControlKeys);
-const containerBlockSchema = controlsFor(containerBlockKeys);
-const containerChildSchema = controlsFor(containerChildKeys);
+const textSchema = controlsFor(textControlKeys);
+const containerSchema = controlsFor(containerControlKeys);
+const advancedSchema = controlsFor(advancedControlKeys);
 
 type SelState = { id: string; kind: string; container: boolean; read: Record<string, string> };
 
@@ -1301,6 +1306,7 @@ export default function Home() {
       </div>
     );
   });
+  const advancedControls = sel ? advancedSchema.filter((ctl) => advancedConditions[ctl.key]?.(sel.read) ?? false) : [];
 
   const historySidebar = (
     <section className="activity-panel history-panel" aria-label="Git history">
@@ -1614,8 +1620,8 @@ export default function Home() {
           </section>
           {sel && (
             <>
-              {/* How the block sits in its parent. Every block is a flex child, so this is not a
-                  container's privilege — only a grid cell is exempt, sized by its parent's template. */}
+              {/* Tier one: what every block has, whatever it is. A block is a flex child before it
+                  is a heading or a row, so its width and its place in the parent come first. */}
               <section className="property-section">
                 <div className="property-heading"><span>BLOCK</span><span>{sel.kind}</span></div>
                 {sel.read.parentLayout !== "grid" && (
@@ -1640,13 +1646,11 @@ export default function Home() {
                     </div>
                   </div>
                 )}
-                {/* Measure is the detail behind Fixed — the number the box stops at. Under Fill or
-                    Hug there is nothing for it to cap, so it stays out of the way. */}
-                {propertyRows((containerLike ? containerBlockSchema : blockSchema).filter((ctl) => ctl.key !== "maxWidth" || sel.read.size === "fixed"))}
               </section>
-              {/* What the block holds: the text inside it, or the children it arranges. */}
+              {/* Tier two: what this kind of block can do that others cannot — arrange children, or
+                  set type. Position and Align items stay under separate headings, as they must. */}
               <section className="property-section">
-                <div className="property-heading"><span>{containerLike ? "CHILDREN" : "CONTENT"}</span></div>
+                <div className="property-heading"><span>{containerLike ? "CONTAINER" : "TEXT"}</span></div>
                 {containerLike && (
                   <div className="property-row">
                     <span>Direction</span>
@@ -1657,8 +1661,17 @@ export default function Home() {
                     </div>
                   </div>
                 )}
-                {propertyRows(containerLike ? containerChildSchema : contentSchema)}
+                {propertyRows(containerLike ? containerSchema : textSchema)}
               </section>
+              {/* Tier three: settings a choice above brought into being — Measure is the number
+                  Fixed stops at, and means nothing under Fill or Hug. The section is absent, not
+                  empty, when no choice has asked for one. */}
+              {advancedControls.length > 0 && (
+                <section className="property-section">
+                  <div className="property-heading"><span>ADVANCED</span></div>
+                  {propertyRows(advancedControls)}
+                </section>
+              )}
             </>
           )}
           <section className="property-section">

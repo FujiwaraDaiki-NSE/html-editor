@@ -84,13 +84,14 @@ export const slideControlGroups = {
   },
 };
 
-/* Controls split by what they move: the block's own box, or what sits inside it. Placing a block
-   and arranging its children are different jobs, and only the heading above them says whose. */
-export const blockControlKeys = ["maxWidth"];
-export const contentControlKeys = ["fontSize", "fontWeight", "lineHeight", "textAlign", "color"];
-export const containerBlockKeys = ["padding", "maxWidth"];
-export const containerChildKeys = ["gap", "justifyContent", "alignItems"];
-export const allControlKeys = [...new Set([...blockControlKeys, ...contentControlKeys, ...containerBlockKeys, ...containerChildKeys])];
+/* Controls grouped by how widely each one applies. Width and Position sit above these: every block
+   has them whatever it is, so the editor renders them itself rather than reading them from here.
+   What follows is what changes with the block's kind, and then the details that only mean anything
+   once a particular choice has been made — kept out of sight until it has. */
+export const textControlKeys = ["fontSize", "fontWeight", "lineHeight", "textAlign", "color"];
+export const containerControlKeys = ["gap", "padding", "justifyContent", "alignItems"];
+export const advancedControlKeys = ["maxWidth"];
+export const allControlKeys = [...new Set([...textControlKeys, ...containerControlKeys, ...advancedControlKeys])];
 
 /* Sizing is stated as an intent — Fill, Hug or Fixed — never as a class. Width is the main axis
    inside a Row but the cross axis inside a Column, so the same intent needs a different utility
