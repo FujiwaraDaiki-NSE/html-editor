@@ -18,7 +18,7 @@ type SlideDoc = { id: string; title: string; notes: string; html: string };
 
 type SlideNav = "filmstrip" | "rail";
 type ActivityView = "agent" | "history" | "shortcuts" | "settings";
-type OpenPopover = "threads" | "addBlock" | "backgrounds" | "quality" | null;
+type OpenPopover = "project" | "delivery" | "threads" | "addBlock" | "backgrounds" | "quality" | null;
 
 type ServerState = {
   deck: { title: string; slides: SlideDoc[] };
@@ -120,6 +120,10 @@ const blankSlideHtml = (background: Background = "orbit", accent = "#f6b84b") =>
 
 const initialSlides: SlideDoc[] = [{ id: "opportunity", title: "The opportunity", notes: "", html: blankSlideHtml() }];
 
+type OutlineItem = { id: string; label: string; kind: string; depth: number; container: boolean };
+/* Where a tree row drop lands: beside the target, or as the last child when the target is a container. */
+type TreeDrop = { id: string | null; position: "before" | "after" | "inside" };
+
 type Snapshot = { title: string; slides: SlideDoc[]; activeSlide: number; selectedId: string | null };
 type BlockDragSession = {
   id: string;
@@ -190,7 +194,9 @@ export default function Home() {
   const [serverRevision, setServerRevision] = useState("");
   const [connectionEpoch, setConnectionEpoch] = useState(0);
   const [historyState, setHistoryState] = useState({ undo: 0, redo: 0 });
-  const [outline, setOutline] = useState<Array<{ id: string; label: string; kind: string; depth: number }>>([]);
+  const [outline, setOutline] = useState<OutlineItem[]>([]);
+  const [treeDragId, setTreeDragId] = useState<string | null>(null);
+  const [treeDrop, setTreeDrop] = useState<TreeDrop | null>(null);
   const [sel, setSel] = useState<SelState | null>(null);
 
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -446,14 +452,14 @@ export default function Home() {
     setSel(node ? readSelection(node) : null);
     // Rebuild the object tree from the live DOM.
     const hero = host.querySelector(".hero");
-    const list: Array<{ id: string; label: string; kind: string; depth: number }> = [];
+    const list: OutlineItem[] = [];
     if (hero) {
       const walk = (element: Element, depth: number) => {
         for (const child of Array.from(element.children)) {
           const id = child.getAttribute("data-weave-id");
           if (id) {
             const kind = child.className.split(" ").find((cls) => cls && cls !== "weave-container" && cls !== "weave-selected") ?? child.tagName.toLowerCase();
-            list.push({ id, label: kind, kind, depth });
+            list.push({ id, label: kind, kind, depth, container: child.classList.contains("weave-container") });
             walk(child, depth + 1);
           }
         }
@@ -461,7 +467,9 @@ export default function Home() {
       walk(hero, 0);
     }
     setOutline(list);
-  }, [selectedId, injectKey, activeSlide, mode]);
+    // `slides` is a dependency because every DOM edit flows back through it: without it the tree
+    // keeps showing the pre-move order after a canvas or tree drag.
+  }, [selectedId, injectKey, activeSlide, mode, slides]);
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
@@ -675,6 +683,55 @@ export default function Home() {
     clearDropMarkers();
     blockDragRef.current = null;
     setDraggedId(null);
+  };
+
+  /* --- Reordering from the object tree ------------------------------------------------- */
+
+  const canDropInTree = (dragId: string, targetId: string | null) => {
+    const host = canvasRef.current;
+    if (!host || !dragId) return false;
+    const node = host.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(dragId)}"]`);
+    if (!node) return false;
+    if (targetId == null) return true;
+    if (targetId === dragId) return false;
+    const target = host.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(targetId)}"]`);
+    // A block can never be dropped inside itself, so its own subtree is not a valid target.
+    return !!target && !node.contains(target);
+  };
+
+  const onTreeDragOver = (event: DragEvent<HTMLElement>, item: OutlineItem | null) => {
+    if (!treeDragId || !canDropInTree(treeDragId, item?.id ?? null)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    if (!item) { setTreeDrop({ id: null, position: "inside" }); return; }
+    const rect = event.currentTarget.getBoundingClientRect();
+    const ratio = (event.clientY - rect.top) / rect.height;
+    // Containers keep a middle band that means "put it in me"; leaf rows split top/bottom.
+    const position = item.container ? (ratio < 0.3 ? "before" : ratio > 0.7 ? "after" : "inside") : ratio < 0.5 ? "before" : "after";
+    setTreeDrop((current) => (current?.id === item.id && current.position === position ? current : { id: item.id, position }));
+  };
+
+  const onTreeDrop = (event: DragEvent<HTMLElement>, item: OutlineItem | null) => {
+    event.preventDefault();
+    const host = canvasRef.current;
+    const drop = treeDrop;
+    const dragId = treeDragId;
+    setTreeDragId(null);
+    setTreeDrop(null);
+    if (!host || !dragId || !drop || drop.id !== (item?.id ?? null)) return;
+    if (!canDropInTree(dragId, drop.id)) return;
+    const node = host.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(dragId)}"]`);
+    const target = drop.id ? host.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(drop.id)}"]`) : host.querySelector<HTMLElement>(".hero");
+    if (!node || !target) return;
+    const parent = drop.position === "inside" ? target : target.parentElement;
+    const reference = drop.position === "inside" ? null : drop.position === "after" ? target.nextSibling : target;
+    if (!parent || reference === node) return;
+    if (parent === node.parentNode && (reference ?? null) === node.nextSibling) return;
+    checkpoint();
+    animateDomReorder(() => parent.insertBefore(node, reference));
+    setSelectedId(dragId);
+    syncFromDom();
+    setAnnouncement("Block moved");
   };
 
   const addBlock = (kind: string) => {
@@ -1234,7 +1291,7 @@ export default function Home() {
     <section className="activity-panel settings-panel" aria-label="Settings">
       <header className="activity-panel-heading"><span>SETTINGS</span><small>CLI {codexState.connection.cliVersion ?? "unknown"}</small></header>
       <div className="activity-panel-body settings-sidebar">
-        <section><h3>Layout</h3><label><span>Slide navigator</span><select value={slideNav} onChange={(event) => slideNavStore.write(event.target.value as SlideNav)}><option value="filmstrip">Filmstrip</option><option value="rail">Rail</option></select></label></section>
+        <section><h3>Appearance</h3><label><span>Color mode</span><select value={theme} onChange={(event) => setTheme(event.target.value as "dark" | "light")}><option value="dark">Dark</option><option value="light">Light</option></select></label><label><span>Slide navigator</span><select value={slideNav} onChange={(event) => slideNavStore.write(event.target.value as SlideNav)}><option value="filmstrip">Filmstrip</option><option value="rail">Rail</option></select></label></section>
         <section><h3>Agent</h3>
           <label><span>Model</span><select value={selectedModel} onChange={(event) => { const modelId = event.target.value; setSelectedModel(modelId); const model = codexState.catalog.models.find((item: any) => (item.id ?? item.model) === modelId) as any; if (model?.defaultReasoningEffort) setReasoningEffort(model.defaultReasoningEffort); }}>{codexState.catalog.models.map((model: any) => <option key={model.id ?? model.model} value={model.id ?? model.model}>{model.displayName ?? model.name ?? model.id ?? model.model}</option>)}</select></label>
           <label><span>Reasoning</span><select value={reasoningEffort} onChange={(event) => setReasoningEffort(event.target.value)}>{availableEfforts.map((effort: string) => <option key={effort}>{effort}</option>)}</select></label>
@@ -1254,9 +1311,9 @@ export default function Home() {
     <main className={`weave-app ${theme}`} style={{ "--accent": accent } as React.CSSProperties} data-background={background}>
       <header className="topbar">
         <div className="traffic-lights" aria-hidden="true"><span /><span /><span /></div>
-        <button className="project-switcher" aria-label="Open project menu">
+        <button className="project-switcher" aria-label="Open project menu" aria-expanded={openPopover === "project"} aria-haspopup="menu" onClick={(event) => togglePopover("project", event.currentTarget)}>
           <span className="project-mark">W</span>
-          <span><strong>Northstar narrative</strong><small>weave / product-strategy</small></span>
+          <span><strong>{deckTitle}</strong><small>{project?.root.split("/").pop() ?? "Local project"}</small></span>
           <span className="chevron">⌄</span>
         </button>
         <div className="document-title">
@@ -1264,18 +1321,32 @@ export default function Home() {
           <small>Slide {activeSlide} of {slides.length}</small>
         </div>
         <div className="top-actions">
-          <button className="icon-button" onClick={undo} disabled={historyState.undo === 0} aria-label="Undo">↶</button>
-          <button className="icon-button" onClick={redo} disabled={historyState.redo === 0} aria-label="Redo">↷</button>
-          <button className="icon-button" onClick={() => setTheme(theme === "dark" ? "light" : "dark")} aria-label="Toggle color mode">{theme === "dark" ? "☼" : "◐"}</button>
-          <button className="share-button" onClick={openPresenter}>Present</button>
-          <button className="share-button" onClick={exportDeck}>Export</button>
-          <button className="share-button" onClick={printDeck}>PDF</button>
-          <button className="share-button" onClick={downloadBundle}>Bundle</button>
-          <button className="share-button" onClick={() => importRef.current?.click()}>Import</button>
+          <button className="delivery-button" onClick={(event) => togglePopover("delivery", event.currentTarget)} aria-expanded={openPopover === "delivery"} aria-haspopup="menu">Present &amp; export <span aria-hidden="true">⌄</span></button>
           <input ref={importRef} className="sr-only" type="file" accept=".json,.weave.json,application/json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importBundle(file); }} />
           <button className="save-button" onClick={() => void saveProject()} disabled={agentRunning}><span>{saved ? "✓" : "↑"}</span> {saved ? "Saved" : "Save"}</button>
         </div>
       </header>
+
+      {openPopover === "project" && (
+        <>
+          <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
+          <div className="topbar-popover project-menu" role="menu" aria-label="Project actions">
+            <header><strong>{deckTitle}</strong><small>{project?.branch ?? "Local project"} · {project?.commit ?? "unsaved"}</small></header>
+            <button role="menuitem" onClick={() => { dismissPopover(false); importRef.current?.click(); }}><span>Import project</span><small>Open a .weave.json bundle</small></button>
+          </div>
+        </>
+      )}
+      {openPopover === "delivery" && (
+        <>
+          <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
+          <div className="topbar-popover delivery-menu" role="menu" aria-label="Presentation and export actions">
+            <button role="menuitem" onClick={() => { dismissPopover(false); openPresenter(); }}><span>Present</span><small>Open the full-screen presenter</small></button>
+            <button role="menuitem" onClick={() => { dismissPopover(false); exportDeck(); }}><span>Export HTML</span><small>Download an offline presentation</small></button>
+            <button role="menuitem" onClick={() => { dismissPopover(false); printDeck(); }}><span>Print / PDF</span><small>Open the system print workflow</small></button>
+            <button role="menuitem" onClick={() => { dismissPopover(false); downloadBundle(); }}><span>Download bundle</span><small>Save an editable Weave project</small></button>
+          </div>
+        </>
+      )}
 
       <div className="workspace" data-slide-nav={slideNav} data-inspector={inspectorOpen ? "open" : "closed"}>
         <nav className="activity-rail" aria-label="Primary navigation">
@@ -1412,19 +1483,30 @@ export default function Home() {
                   onDragEnd={onCanvasDragEnd}
                 />
                 <div className="canvas-toolbar">
-                  <button onClick={(event) => togglePopover("addBlock", event.currentTarget)} className={openPopover === "addBlock" ? "active" : ""} aria-expanded={openPopover === "addBlock"} aria-haspopup="menu">＋ Add block</button>
-                  <button onClick={duplicateSlide} title="Duplicate slide">Duplicate</button>
-                  <button onClick={saveSlideTemplate}>Save template</button>
-                  <button onClick={() => setShowTemplates(true)}>Library</button>
-                  <button onClick={() => moveSlide(-1)} disabled={activeSlide === 1} aria-label="Move slide left">←</button>
-                  <button onClick={() => moveSlide(1)} disabled={activeSlide === slides.length} aria-label="Move slide right">→</button>
-                  <button onClick={deleteSlide} disabled={slides.length <= 1}>Delete slide</button>
-                  <span />
-                  <button aria-label="Zoom out" onClick={() => setManualZoom(Math.max(.25, (manualZoom ?? fitScale) - .1))}>−</button>
-                  <b>{Math.round(slideScale * 100)}%</b>
-                  <button aria-label="Zoom in" onClick={() => setManualZoom(Math.min(4, (manualZoom ?? fitScale) + .1))}>＋</button>
-                  <button aria-label="Actual size" onClick={() => setManualZoom(1)}>100</button>
-                  <button aria-label="Fit to screen" onClick={() => setManualZoom(null)}>⊡</button>
+                  <div className="canvas-tool-group history-tools" role="group" aria-label="Edit history">
+                    <button onClick={undo} disabled={historyState.undo === 0} aria-label="Undo" title="Undo">↶</button>
+                    <button onClick={redo} disabled={historyState.redo === 0} aria-label="Redo" title="Redo">↷</button>
+                  </div>
+                  <div className="canvas-tool-group content-tools" role="group" aria-label="Slide content">
+                    <button onClick={(event) => togglePopover("addBlock", event.currentTarget)} className={openPopover === "addBlock" ? "active" : ""} aria-expanded={openPopover === "addBlock"} aria-haspopup="menu">＋ Add block</button>
+                  </div>
+                  <div className="canvas-tool-group slide-tools" role="group" aria-label="Slide operations">
+                    <button onClick={duplicateSlide} title="Duplicate slide">Duplicate</button>
+                    <button onClick={() => moveSlide(-1)} disabled={activeSlide === 1} aria-label="Move slide left" title="Move slide left">←</button>
+                    <button onClick={() => moveSlide(1)} disabled={activeSlide === slides.length} aria-label="Move slide right" title="Move slide right">→</button>
+                    <button onClick={deleteSlide} disabled={slides.length <= 1}>Delete</button>
+                  </div>
+                  <div className="canvas-tool-group template-tools" role="group" aria-label="Slide templates">
+                    <button onClick={saveSlideTemplate}>Save template</button>
+                    <button onClick={() => setShowTemplates(true)}>Library</button>
+                  </div>
+                  <div className="canvas-tool-group zoom-tools" role="group" aria-label="Canvas zoom">
+                    <button aria-label="Zoom out" onClick={() => setManualZoom(Math.max(.25, (manualZoom ?? fitScale) - .1))}>−</button>
+                    <b>{Math.round(slideScale * 100)}%</b>
+                    <button aria-label="Zoom in" onClick={() => setManualZoom(Math.min(4, (manualZoom ?? fitScale) + .1))}>＋</button>
+                    <button aria-label="Actual size" onClick={() => setManualZoom(1)}>100</button>
+                    <button aria-label="Fit to screen" onClick={() => setManualZoom(null)}>⊡</button>
+                  </div>
                 </div>
                 {openPopover === "addBlock" && (
                   <>
@@ -1461,10 +1543,24 @@ export default function Home() {
           <div className="selection-path"><span>section.hero</span><b>›</b><strong>{sel ? `${sel.kind}.${sel.id}` : "no selection"}</strong></div>
           <section className="layer-tree">
             <div className="property-heading"><span>OBJECT TREE</span><span>{outline.length}</span></div>
-            <div>
-              <span className="tree-root">⌄ <b>section.hero</b></span>
+            <div className={treeDragId ? "dragging-tree" : ""} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setTreeDrop(null); }}>
+              <span
+                className={`tree-root ${treeDrop && treeDrop.id === null ? "drop-inside" : ""}`}
+                onDragOver={(event) => onTreeDragOver(event, null)}
+                onDrop={(event) => onTreeDrop(event, null)}
+              >⌄ <b>section.hero</b></span>
               {outline.map((item) => (
-                <button key={item.id} style={{ paddingLeft: 14 + item.depth * 14 }} className={selectedId === item.id ? "active" : ""} onClick={() => setSelectedId(item.id)}>
+                <button
+                  key={item.id}
+                  style={{ paddingLeft: 14 + item.depth * 14 }}
+                  className={[selectedId === item.id ? "active" : "", treeDragId === item.id ? "dragging" : "", treeDrop?.id === item.id ? `drop-${treeDrop.position}` : ""].filter(Boolean).join(" ")}
+                  draggable={!agentRunning}
+                  onClick={() => setSelectedId(item.id)}
+                  onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", item.id); setTreeDragId(item.id); setSelectedId(item.id); }}
+                  onDragOver={(event) => onTreeDragOver(event, item)}
+                  onDrop={(event) => onTreeDrop(event, item)}
+                  onDragEnd={() => { setTreeDragId(null); setTreeDrop(null); }}
+                >
                   <i>{blockIcons[item.kind] ?? "▦"}</i><span>{item.label}</span><small>{item.kind}</small>
                 </button>
               ))}
