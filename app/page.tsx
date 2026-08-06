@@ -18,6 +18,7 @@ type SlideDoc = { id: string; title: string; notes: string; html: string };
 
 type SlideNav = "filmstrip" | "rail";
 type ActivityView = "agent" | "history" | "shortcuts" | "settings";
+type OpenPopover = "threads" | "addBlock" | "backgrounds" | "quality" | null;
 
 type ServerState = {
   deck: { title: string; slides: SlideDoc[] };
@@ -159,14 +160,12 @@ export default function Home() {
   const [variations, setVariations] = useState<ServerState["variations"]>([]);
   const [showVariationPrompt, setShowVariationPrompt] = useState(false);
   const [variationPrompt, setVariationPrompt] = useState("Explore a bolder editorial hierarchy with a concise headline and stronger metric emphasis.");
-  const [showBackgrounds, setShowBackgrounds] = useState(false);
-  const [showAdd, setShowAdd] = useState(false);
+  const [openPopover, setOpenPopover] = useState<OpenPopover>(null);
   const [saved, setSaved] = useState(true);
   const [promptDraft, setPromptDraft] = useState("");
   const [codexState, dispatchCodex] = useReducer(codexReducer, initialCodexState);
   const slideNav = useSyncExternalStore(slideNavStore.subscribe, slideNavStore.read, slideNavStore.serverRead);
   const [threadSearch, setThreadSearch] = useState("");
-  const [showThreads, setShowThreads] = useState(false);
   const [showArchivedThreads, setShowArchivedThreads] = useState(false);
   const [activityView, setActivityView] = useState<ActivityView>("agent");
   const [selectedModel, setSelectedModel] = useState("");
@@ -182,7 +181,6 @@ export default function Home() {
   const [project, setProject] = useState<ServerState["project"] | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
   const [showPresenter, setShowPresenter] = useState(false);
-  const [showQuality, setShowQuality] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
   const slideTemplates = useSyncExternalStore(templateStore.subscribe, templateStore.read, templateStore.serverRead);
   const [inspectorOpen, setInspectorOpen] = useState(true);
@@ -212,6 +210,7 @@ export default function Home() {
   const activeRef = useRef(activeSlide);
   const selectedRef = useRef(selectedId);
   const blockDragRef = useRef<BlockDragSession | null>(null);
+  const popoverTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   const agentReady = codexState.connection.status === "connected";
   const agentRunning = selectThreadRunning(codexState, codexState.activeThreadId);
@@ -221,6 +220,14 @@ export default function Home() {
 
   const setSlidesSynced = (next: SlideDoc[]) => { slidesRef.current = next; setSlides(next); };
   const reinject = () => setInjectKey((value) => value + 1);
+  const dismissPopover = useCallback((restoreFocus = true) => {
+    setOpenPopover(null);
+    if (restoreFocus) requestAnimationFrame(() => popoverTriggerRef.current?.focus());
+  }, []);
+  const togglePopover = (value: Exclude<OpenPopover, null>, trigger: HTMLButtonElement) => {
+    popoverTriggerRef.current = trigger;
+    setOpenPopover((current) => current === value ? null : value);
+  };
   const slideRoot = () => canvasRef.current?.querySelector<HTMLElement>(".weave-slide") ?? null;
   const selectedNode = () => (selectedId ? canvasRef.current?.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(selectedId)}"]`) ?? null : null);
 
@@ -474,6 +481,17 @@ export default function Home() {
 
   useEffect(() => { if (showPresenter) presenterRef.current?.focus(); }, [showPresenter]);
 
+  useEffect(() => {
+    if (!openPopover) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      dismissPopover();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [dismissPopover, openPopover]);
+
   /* --- Live-DOM editing on the canvas -------------------------------------------------- */
 
   const onCanvasPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -670,7 +688,7 @@ export default function Home() {
     container.insertAdjacentHTML("beforeend", blockTemplates[kind](id));
     container.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(id)}"]`)?.setAttribute("draggable", "true");
     setSelectedId(id);
-    setShowAdd(false);
+    dismissPopover(false);
     syncFromDom();
   };
 
@@ -710,7 +728,7 @@ export default function Home() {
     root.classList.remove("text-slate-50", "text-slate-950");
     root.classList.add(`theme-${value}`, backgroundClasses[value], value === "plain" ? "text-slate-950" : "text-slate-50");
     setBackground(value);
-    setShowBackgrounds(false);
+    dismissPopover(false);
     syncFromDom();
   };
   const setSlideAccent = (value: string) => {
@@ -858,7 +876,7 @@ export default function Home() {
   const exportFragments = () => captureActive().map((slide) => slide.html);
 
   const exportDeck = () => {
-    if (!quality.ok) { setShowQuality(true); setApiError("Resolve quality errors before exporting."); return; }
+    if (!quality.ok) { popoverTriggerRef.current = null; setOpenPopover("quality"); setApiError("Resolve quality errors before exporting."); return; }
     const html = renderDeckDocument(exportFragments(), deckCss, deckTitle);
     const blob = new Blob([html], { type: "text/html;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -906,7 +924,7 @@ export default function Home() {
   const openPresenter = () => { setSlidesSynced(captureActive()); setPresentSlide(activeSlide); setShowPresenter(true); };
 
   const printDeck = () => {
-    if (!quality.ok) { setShowQuality(true); return; }
+    if (!quality.ok) { popoverTriggerRef.current = null; setOpenPopover("quality"); return; }
     const popup = window.open("", "_blank", "noopener,noreferrer");
     if (!popup) { setApiError("Allow pop-ups to print this deck."); return; }
     popup.document.write(renderDeckDocument(exportFragments(), deckCss, deckTitle));
@@ -1278,12 +1296,12 @@ export default function Home() {
           {activityView === "agent" ? <section className="agent-panel">
             <div className="agent-heading">
               <span><i aria-hidden="true" className={`agent-status ${agentReady ? "" : "offline"}`} /> AGENT</span>
-              <button className="thread-switcher" onClick={() => setShowThreads((value) => !value)} aria-expanded={showThreads} title="Switch conversation"><span>{activeThreadName}</span><em aria-hidden="true">⌄</em></button>
+              <button className="thread-switcher" onClick={(event) => togglePopover("threads", event.currentTarget)} aria-expanded={openPopover === "threads"} aria-haspopup="listbox" title="Switch conversation"><span>{activeThreadName}</span><em aria-hidden="true">⌄</em></button>
               <button onClick={() => void newThread()} aria-label="New conversation" title="New conversation" disabled={agentRunning}>＋</button>
             </div>
-            {showThreads && (
+            {openPopover === "threads" && (
               <>
-                <div className="thread-popover-backdrop" role="presentation" onMouseDown={() => setShowThreads(false)} />
+                <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
                 <div className="thread-popover">
                   <div className="thread-controls">
                     <input type="search" value={threadSearch} onChange={(event) => setThreadSearch(event.target.value)} placeholder="Search Threads" aria-label="Search Threads" />
@@ -1291,7 +1309,7 @@ export default function Home() {
                   </div>
                   <div className="thread-list" aria-label="Threads">
                     {codexState.threadOrder.map((id) => codexState.threads[id]).filter((thread) => thread && thread.archived === showArchivedThreads).slice(0, 12).map((thread) => (
-                      <button key={thread.id} className={codexState.activeThreadId === thread.id ? "active" : ""} onClick={() => { setShowThreads(false); void openThread(thread.id); }}>
+                      <button key={thread.id} className={codexState.activeThreadId === thread.id ? "active" : ""} onClick={() => { dismissPopover(false); void openThread(thread.id); }}>
                         <strong>{displayThreadName(thread.name) || thread.preview || "New conversation"}</strong>
                         <small>{thread.status}</small>
                       </button>
@@ -1394,7 +1412,7 @@ export default function Home() {
                   onDragEnd={onCanvasDragEnd}
                 />
                 <div className="canvas-toolbar">
-                  <button onClick={() => setShowAdd(!showAdd)} className={showAdd ? "active" : ""}>＋ Add block</button>
+                  <button onClick={(event) => togglePopover("addBlock", event.currentTarget)} className={openPopover === "addBlock" ? "active" : ""} aria-expanded={openPopover === "addBlock"} aria-haspopup="menu">＋ Add block</button>
                   <button onClick={duplicateSlide} title="Duplicate slide">Duplicate</button>
                   <button onClick={saveSlideTemplate}>Save template</button>
                   <button onClick={() => setShowTemplates(true)}>Library</button>
@@ -1408,16 +1426,19 @@ export default function Home() {
                   <button aria-label="Actual size" onClick={() => setManualZoom(1)}>100</button>
                   <button aria-label="Fit to screen" onClick={() => setManualZoom(null)}>⊡</button>
                 </div>
-                {showAdd && (
-                  <div className="block-picker">
-                    <small>{sel?.container ? `INSERT INTO ${sel.kind.toUpperCase()}` : "INSERT BLOCK"}</small>
-                    {blockKinds.map((kind) => (
-                      <button key={kind} onClick={() => addBlock(kind)}>
-                        <i>{blockIcons[kind]}</i>
-                        <span><strong>{kind === "paragraph" ? "Body text" : kind[0].toUpperCase() + kind.slice(1)}</strong><small>{sel?.container ? "Add inside this container" : "Add to slide flow"}</small></span>
-                      </button>
-                    ))}
-                  </div>
+                {openPopover === "addBlock" && (
+                  <>
+                    <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
+                    <div className="block-picker" role="menu">
+                      <small>{sel?.container ? `INSERT INTO ${sel.kind.toUpperCase()}` : "INSERT BLOCK"}</small>
+                      {blockKinds.map((kind) => (
+                        <button key={kind} role="menuitem" onClick={() => addBlock(kind)}>
+                          <i>{blockIcons[kind]}</i>
+                          <span><strong>{kind === "paragraph" ? "Body text" : kind[0].toUpperCase() + kind.slice(1)}</strong><small>{sel?.container ? "Add inside this container" : "Add to slide flow"}</small></span>
+                        </button>
+                      ))}
+                    </div>
+                  </>
                 )}
               </div>
             ) : (
@@ -1484,17 +1505,20 @@ export default function Home() {
           </section>
           <section className="property-section background-section">
             <div className="property-heading"><span>SLIDE BACKGROUND</span><span>⌃</span></div>
-            <button className="background-select" onClick={() => setShowBackgrounds(!showBackgrounds)}>
+            <button className="background-select" onClick={(event) => togglePopover("backgrounds", event.currentTarget)} aria-expanded={openPopover === "backgrounds"} aria-haspopup="listbox">
               <span className={`background-preview ${background}`} />
               <span><strong>{background === "orbit" ? "Orbit / Dark" : background === "grid" ? "Grid / Graphite" : "Plain / Ink"}</strong><small>Project theme</small></span>
               <b>⌄</b>
             </button>
-            {showBackgrounds && (
-              <div className="background-options">
-                {backgrounds.map((item) => (
-                  <button key={item} onClick={() => setSlideBackground(item)}><span className={`background-preview ${item}`} />{item[0].toUpperCase() + item.slice(1)}</button>
-                ))}
-              </div>
+            {openPopover === "backgrounds" && (
+              <>
+                <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
+                <div className="background-options" role="listbox" aria-label="Slide background">
+                  {backgrounds.map((item) => (
+                    <button key={item} role="option" aria-selected={background === item} onClick={() => setSlideBackground(item)}><span className={`background-preview ${item}`} />{item[0].toUpperCase() + item.slice(1)}</button>
+                  ))}
+                </div>
+              </>
             )}
           </section>
           <section className="accent-section">
@@ -1507,21 +1531,24 @@ export default function Home() {
 
       <footer className="statusbar">
         <div>
-          <button className={`quality-button ${quality.ok ? "ok" : "error"}`} onClick={() => setShowQuality(!showQuality)}>Quality {quality.ok ? "✓" : `${quality.errors} errors`}</button>
+          <button className={`quality-button ${quality.ok ? "ok" : "error"}`} onClick={(event) => togglePopover("quality", event.currentTarget)} aria-expanded={openPopover === "quality"}>Quality {quality.ok ? "✓" : `${quality.errors} errors`}</button>
           <span>{project ? `${project.branch} · ${project.commit}` : "Connecting…"}</span>
           {apiError && <span className="status-error">{apiError}</span>}
         </div>
         <div><span>HTML</span><span>UTF-8</span><span>Spaces: 2</span><button className={`connection ${agentReady ? "" : "offline"}`} onClick={() => setConnectionEpoch((value) => value + 1)} title="Reconnect"><i /> {agentReady ? "Agent connected" : "Reconnect Agent"}</button></div>
       </footer>
 
-      {showQuality && (
-        <aside className="quality-popover" aria-label="Deck quality report">
-          <header><strong>Deck quality</strong><button onClick={() => setShowQuality(false)}>×</button></header>
-          {quality.ok && <p className="quality-empty">No blocking quality issues.</p>}
-          {quality.diagnostics.map((item: any, index: number) => (
-            <div key={`${item.code}-${index}`} className="quality-row"><i className="error" /><span><strong>{item.message}</strong><small>{item.code} · {item.source}</small></span></div>
-          ))}
-        </aside>
+      {openPopover === "quality" && (
+        <>
+          <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
+          <aside className="quality-popover" aria-label="Deck quality report">
+            <header><strong>Deck quality</strong><button onClick={() => dismissPopover()}>×</button></header>
+            {quality.ok && <p className="quality-empty">No blocking quality issues.</p>}
+            {quality.diagnostics.map((item: any, index: number) => (
+              <div key={`${item.code}-${index}`} className="quality-row"><i className="error" /><span><strong>{item.message}</strong><small>{item.code} · {item.source}</small></span></div>
+            ))}
+          </aside>
+        </>
       )}
       {showPresenter && (
         <div className="presenter" role="dialog" aria-modal="true" aria-label="Presentation mode" tabIndex={-1} ref={presenterRef} onKeyDown={(event) => {

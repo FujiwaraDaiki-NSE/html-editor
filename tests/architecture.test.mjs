@@ -76,6 +76,22 @@ test("activity rail destinations render their details in the left sidebar", asyn
   assert.doesNotMatch(page, /showHistory|history-popover|showCodexSettings|showHelp/);
 });
 
+test("transient lists share one dismissible popover contract", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /type OpenPopover = "threads" \| "addBlock" \| "backgrounds" \| "quality" \| null/);
+  assert.match(page, /const \[openPopover, setOpenPopover\]/);
+  assert.match(page, /event\.key !== "Escape"/);
+  assert.match(page, /onPointerDown=\{\(\) => dismissPopover\(\)\}/);
+  assert.match(page, /requestAnimationFrame\(\(\) => popoverTriggerRef\.current\?\.focus\(\)\)/);
+  assert.match(css, /\.popover-backdrop \{ position: fixed;/);
+  for (const retiredState of ["showThreads", "showAdd", "showBackgrounds", "showQuality"]) {
+    assert.equal(page.includes(retiredState), false, `${retiredState} should use the shared popover state`);
+  }
+});
+
 test("block dragging previews reordering and separates move from text editing", async () => {
   const [page, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
