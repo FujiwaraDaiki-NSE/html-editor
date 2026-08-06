@@ -87,7 +87,8 @@ export const slideControlGroups = {
 /* Controls grouped by how widely each one applies. Width and Position sit above these: every block
    has them whatever it is, so the editor renders them itself rather than reading them from here.
    What follows is what changes with the block's kind, and then the details that only mean anything
-   once a particular choice has been made — kept out of sight until it has. */
+   once a particular choice has been made — hidden until it is, and shown beneath the choice that
+   asked for them rather than gathered into a section of their own. */
 export const textControlKeys = ["fontSize", "fontWeight", "lineHeight", "textAlign", "color"];
 export const containerControlKeys = ["gap", "padding", "justifyContent", "alignItems"];
 export const advancedControlKeys = ["maxWidth"];

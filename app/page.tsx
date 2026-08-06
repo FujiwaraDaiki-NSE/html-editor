@@ -113,12 +113,6 @@ const relayoutForParent = (node: Element, intent: string, fromLayout: string): s
   return layout;
 };
 
-/* What each advanced control is waiting for. A key missing from here never surfaces, which is the
-   one thing this tier must get right: a detail with no trigger is just a control in the wrong place. */
-const advancedConditions: Record<string, (read: Record<string, string>) => boolean> = {
-  maxWidth: (read) => read.size === "fixed",
-};
-
 type Control = { key: string; label: string; options: Array<{ label: string; className: string }> };
 const controlsFor = (keys: string[]): Control[] => keys.map((key) => ({ key, label: slideControlGroups[key].label, options: slideControlGroups[key].options }));
 const textSchema = controlsFor(textControlKeys);
@@ -1306,7 +1300,6 @@ export default function Home() {
       </div>
     );
   });
-  const advancedControls = sel ? advancedSchema.filter((ctl) => advancedConditions[ctl.key]?.(sel.read) ?? false) : [];
 
   const historySidebar = (
     <section className="activity-panel history-panel" aria-label="Git history">
@@ -1620,8 +1613,9 @@ export default function Home() {
           </section>
           {sel && (
             <>
-              {/* Tier one: what every block has, whatever it is. A block is a flex child before it
-                  is a heading or a row, so its width and its place in the parent come first. */}
+              {/* What every block has, whatever it is. A block is a flex child before it is a
+                  heading or a row, so its width and its place in the parent come first. Details a
+                  choice here calls for follow it inline, where the choice is still in view. */}
               <section className="property-section">
                 <div className="property-heading"><span>BLOCK</span><span>{sel.kind}</span></div>
                 {sel.read.parentLayout !== "grid" && (
@@ -1634,6 +1628,9 @@ export default function Home() {
                     </div>
                   </div>
                 )}
+                {/* Measure is the number Fixed stops at, so it belongs directly under the choice
+                    that calls for it — not filed away somewhere the trigger cannot be seen. */}
+                {propertyRows(sel.read.size === "fixed" ? advancedSchema : [])}
                 {/* Placing the block is its own business only when it stacks in a column; inside a
                     Row that is the parent's Justify, which lives under the parent's own heading. */}
                 {sel.read.parentLayout === "column" && sel.read.size !== "fill" && (
@@ -1647,8 +1644,8 @@ export default function Home() {
                   </div>
                 )}
               </section>
-              {/* Tier two: what this kind of block can do that others cannot — arrange children, or
-                  set type. Position and Align items stay under separate headings, as they must. */}
+              {/* What this kind of block can do that others cannot — arrange children, or set type.
+                  Position and Align items stay under separate headings, as they must. */}
               <section className="property-section">
                 <div className="property-heading"><span>{containerLike ? "CONTAINER" : "TEXT"}</span></div>
                 {containerLike && (
@@ -1663,15 +1660,6 @@ export default function Home() {
                 )}
                 {propertyRows(containerLike ? containerSchema : textSchema)}
               </section>
-              {/* Tier three: settings a choice above brought into being — Measure is the number
-                  Fixed stops at, and means nothing under Fill or Hug. The section is absent, not
-                  empty, when no choice has asked for one. */}
-              {advancedControls.length > 0 && (
-                <section className="property-section">
-                  <div className="property-heading"><span>ADVANCED</span></div>
-                  {propertyRows(advancedControls)}
-                </section>
-              )}
             </>
           )}
           <section className="property-section">
