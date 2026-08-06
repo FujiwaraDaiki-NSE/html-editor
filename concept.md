@@ -81,9 +81,8 @@
 ### 2.8 Codex app serverとの統合（認証まわりを含め、対応範囲は広く取る）
 公式ドキュメント（learn.chatgpt.com/docs/app-server, /auth, github.com/openai/codex）で確認済み。認証は2つのレイヤーに分かれる。
 
-網羅的な実装範囲、対象外API、アーキテクチャ、段階導入計画は
-[Codex app-server 統合実装計画](./docs/codex-app-server-implementation-plan.md)を参照。
-移行時は旧Chatデータと旧実装を保持せず、app-server Threadを正規データ源とする新構成へ完全に切り替える。
+移行は完了済み。旧Chatデータと旧実装は保持せず、app-server Threadが会話の唯一の正規データ源になっている
+（[リリースノート](./docs/release-notes.md)参照）。
 
 - **レイヤー1: html-editorの自作UI ⇄ ローカルのCodex app-serverプロセス**
   - JSON-RPC 2.0、stdio/WebSocket/Unixソケット経由
