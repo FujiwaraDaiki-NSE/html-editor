@@ -81,7 +81,7 @@ test("transient lists share one dismissible popover contract", async () => {
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
-  assert.match(page, /type OpenPopover = "threads" \| "addBlock" \| "backgrounds" \| "quality" \| null/);
+  assert.match(page, /type OpenPopover = "project" \| "delivery" \| "threads" \| "addBlock" \| "backgrounds" \| "quality" \| null/);
   assert.match(page, /const \[openPopover, setOpenPopover\]/);
   assert.match(page, /event\.key !== "Escape"/);
   assert.match(page, /onPointerDown=\{\(\) => dismissPopover\(\)\}/);
@@ -90,6 +90,22 @@ test("transient lists share one dismissible popover contract", async () => {
   for (const retiredState of ["showThreads", "showAdd", "showBackgrounds", "showQuality"]) {
     assert.equal(page.includes(retiredState), false, `${retiredState} should use the shared popover state`);
   }
+});
+
+test("commands are grouped by editing, project, and delivery intent", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  for (const group of ["history-tools", "content-tools", "slide-tools", "template-tools", "zoom-tools"]) {
+    assert.match(page, new RegExp(`className="canvas-tool-group ${group}"`));
+  }
+  assert.match(page, /className="topbar-popover project-menu"/);
+  assert.match(page, /className="topbar-popover delivery-menu"/);
+  assert.match(page, /<h3>Appearance<\/h3>/);
+  assert.doesNotMatch(page, /className="icon-button"/);
+  assert.doesNotMatch(page, /className="share-button"/);
+  assert.match(css, /\.canvas-tool-group \+ \.canvas-tool-group/);
 });
 
 test("block dragging previews reordering and separates move from text editing", async () => {
