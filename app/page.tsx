@@ -5,7 +5,7 @@ import { DragEvent, useCallback, useEffect, useLayoutEffect, useMemo, useReducer
 import { actionFromStreamEvent } from "./codex/actions";
 import { defaultDeckCss, designHeight, designWidth, renderDeckDocument } from "../shared/slide-design.mjs";
 import { auditContentPolicy } from "../shared/content-policy.mjs";
-import { applyBlockPosition, applySize, blockPositionOptions, containerControlKeys, defaultSlideClasses, migrateSlideHtmlToTailwind, readBlockPosition, readSize, sizeIntents, slideControlGroups, textControlKeys } from "../shared/tailwind-slide.mjs";
+import { allControlKeys, applyBlockPosition, applySize, blockControlKeys, blockPositionOptions, containerBlockKeys, containerChildKeys, contentControlKeys, defaultSlideClasses, migrateSlideHtmlToTailwind, readBlockPosition, readSize, sizeIntents, slideControlGroups } from "../shared/tailwind-slide.mjs";
 import { ItemCard } from "./codex/components/ItemCard";
 import { ServerRequestCard } from "./codex/components/ServerRequestCard";
 import { codexReducer, initialCodexState } from "./codex/reducer";
@@ -115,8 +115,10 @@ const relayoutForParent = (node: Element, intent: string, fromLayout: string): s
 
 type Control = { key: string; label: string; options: Array<{ label: string; className: string }> };
 const controlsFor = (keys: string[]): Control[] => keys.map((key) => ({ key, label: slideControlGroups[key].label, options: slideControlGroups[key].options }));
-const textSchema = controlsFor(textControlKeys);
-const containerSchema = controlsFor(containerControlKeys);
+const blockSchema = controlsFor(blockControlKeys);
+const contentSchema = controlsFor(contentControlKeys);
+const containerBlockSchema = controlsFor(containerBlockKeys);
+const containerChildSchema = controlsFor(containerChildKeys);
 
 type SelState = { id: string; kind: string; container: boolean; read: Record<string, string> };
 
@@ -255,7 +257,7 @@ export default function Home() {
   const readSelection = (node: HTMLElement): SelState => {
     const kind = ["heading", "paragraph", "eyebrow", "note", "metrics", "row", "column", "grid"].find((cls) => node.classList.contains(cls)) ?? node.tagName.toLowerCase();
     const read: Record<string, string> = {};
-    for (const key of [...textControlKeys, ...containerControlKeys]) {
+    for (const key of allControlKeys) {
       read[key] = slideControlGroups[key].options.find((item: { className: string }) => node.classList.contains(item.className))?.className ?? "";
     }
     read.direction = node.classList.contains("column") ? "column" : "row";
@@ -1286,7 +1288,19 @@ export default function Home() {
 
   const presenterScale = typeof window === "undefined" ? 1 : Math.min((window.innerWidth - 80) / designWidth, (window.innerHeight - 120) / designHeight);
   const containerLike = !!sel && (sel.container || sel.kind === "metrics");
-  const inspectorSchema = containerLike ? containerSchema : textSchema;
+  const propertyRows = (schema: Control[]) => schema.map((ctl) => {
+    const current = sel?.read[ctl.key] ?? "";
+    return (
+      <div className="property-row" key={ctl.key}>
+        <span>{ctl.label}</span>
+        <div className="scale-options">
+          {ctl.options.map((opt) => (
+            <button key={`${ctl.key}-${opt.label}`} className={current === opt.className ? "active" : ""} onClick={() => setUtility(ctl.key, opt.className)}>{opt.label}</button>
+          ))}
+        </div>
+      </div>
+    );
+  });
 
   const historySidebar = (
     <section className="activity-panel history-panel" aria-label="Git history">
@@ -1599,56 +1613,51 @@ export default function Home() {
             </div>
           </section>
           {sel && (
-            <section className="property-section">
-              <div className="property-heading"><span>{containerLike ? "LAYOUT" : "TEXT"}</span><span>{sel.kind}</span></div>
-              {containerLike && (
-                <div className="property-row">
-                  <span>Direction</span>
-                  <div className="scale-options">
-                    {[{ label: "Row", value: "row" }, { label: "Column", value: "column" }].map((opt) => (
-                      <button key={opt.value} className={(sel.read.direction || "row") === opt.value ? "active" : ""} onClick={() => setDirection(opt.value)}>{opt.label}</button>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {/* Every block is a flex child, so how it is sized and placed is not a container's
-                  privilege — only a grid cell is exempt, being sized by its parent's template. */}
-              {sel.read.parentLayout !== "grid" && (
-                <div className="property-row">
-                  <span>Width</span>
-                  <div className="scale-options">
-                    {sizeIntents.map((opt: { value: string; label: string }) => (
-                      <button key={opt.value} className={sel.read.size === opt.value ? "active" : ""} onClick={() => setSize(opt.value)}>{opt.label}</button>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {/* Placing the block is its own business only when it stacks in a column; inside a Row
-                  that is the parent's Justify. Distinct from Align, which moves the text within. */}
-              {sel.read.parentLayout === "column" && sel.read.size !== "fill" && (
-                <div className="property-row">
-                  <span>Position</span>
-                  <div className="scale-options">
-                    {blockPositionOptions.map((opt: { value: string; label: string }) => (
-                      <button key={opt.value} className={sel.read.blockPosition === opt.value ? "active" : ""} onClick={() => setBlockPosition(opt.value)}>{opt.label}</button>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {inspectorSchema.map((ctl) => {
-                const current = sel.read[ctl.key] ?? "";
-                return (
-                  <div className="property-row" key={ctl.key}>
-                    <span>{ctl.label}</span>
+            <>
+              {/* How the block sits in its parent. Every block is a flex child, so this is not a
+                  container's privilege — only a grid cell is exempt, sized by its parent's template. */}
+              <section className="property-section">
+                <div className="property-heading"><span>BLOCK</span><span>{sel.kind}</span></div>
+                {sel.read.parentLayout !== "grid" && (
+                  <div className="property-row">
+                    <span>Width</span>
                     <div className="scale-options">
-                      {ctl.options.map((opt) => (
-                        <button key={`${ctl.key}-${opt.label}`} className={current === opt.className ? "active" : ""} onClick={() => setUtility(ctl.key, opt.className)}>{opt.label}</button>
+                      {sizeIntents.map((opt: { value: string; label: string }) => (
+                        <button key={opt.value} className={sel.read.size === opt.value ? "active" : ""} onClick={() => setSize(opt.value)}>{opt.label}</button>
                       ))}
                     </div>
                   </div>
-                );
-              })}
-            </section>
+                )}
+                {/* Placing the block is its own business only when it stacks in a column; inside a
+                    Row that is the parent's Justify, which lives under the parent's own heading. */}
+                {sel.read.parentLayout === "column" && sel.read.size !== "fill" && (
+                  <div className="property-row">
+                    <span>Position</span>
+                    <div className="scale-options">
+                      {blockPositionOptions.map((opt: { value: string; label: string }) => (
+                        <button key={opt.value} className={sel.read.blockPosition === opt.value ? "active" : ""} onClick={() => setBlockPosition(opt.value)}>{opt.label}</button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {propertyRows(containerLike ? containerBlockSchema : blockSchema)}
+              </section>
+              {/* What the block holds: the text inside it, or the children it arranges. */}
+              <section className="property-section">
+                <div className="property-heading"><span>{containerLike ? "CHILDREN" : "CONTENT"}</span></div>
+                {containerLike && (
+                  <div className="property-row">
+                    <span>Direction</span>
+                    <div className="scale-options">
+                      {[{ label: "Row", value: "row" }, { label: "Column", value: "column" }].map((opt) => (
+                        <button key={opt.value} className={(sel.read.direction || "row") === opt.value ? "active" : ""} onClick={() => setDirection(opt.value)}>{opt.label}</button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {propertyRows(containerLike ? containerChildSchema : contentSchema)}
+              </section>
+            </>
           )}
           <section className="property-section">
             <div className="property-heading"><span>SLIDE</span><span>⌃</span></div>

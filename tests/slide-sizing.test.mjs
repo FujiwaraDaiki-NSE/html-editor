@@ -2,13 +2,18 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  allControlKeys,
   applyBlockPosition,
   applySize,
   auditTailwindSlideHtml,
+  blockControlKeys,
   buildTailwindSlideCss,
-  containerControlKeys,
+  containerBlockKeys,
+  containerChildKeys,
+  contentControlKeys,
   readBlockPosition,
   readSize,
+  slideControlGroups,
 } from "../shared/tailwind-slide.mjs";
 
 const classesOf = (value) => value.split(" ").filter(Boolean);
@@ -77,8 +82,21 @@ test("every class the sizing model emits is a registered utility", () => {
   }
 });
 
-test("containers can set their own measure, which is what makes Fixed reachable", () => {
-  assert.equal(containerControlKeys.includes("maxWidth"), true);
+test("every control is filed under the thing it actually moves", () => {
+  // Fixed is only reachable if a block can set its own measure, container or not.
+  assert.equal(blockControlKeys.includes("maxWidth"), true);
+  assert.equal(containerBlockKeys.includes("maxWidth"), true);
+  // Padding sizes the block's own box; gap and the alignments arrange what sits inside it.
+  assert.equal(containerBlockKeys.includes("padding"), true);
+  assert.deepEqual(containerChildKeys, ["gap", "justifyContent", "alignItems"]);
+  assert.equal(contentControlKeys.includes("textAlign"), true, "textAlign moves the text, not the box");
+  for (const keys of [blockControlKeys, contentControlKeys, containerBlockKeys, containerChildKeys]) {
+    for (const key of keys) assert.ok(slideControlGroups[key], `${key} must name a real control group`);
+  }
+  // The inspector reads state for every key it can render, whichever section renders it.
+  for (const key of [...blockControlKeys, ...contentControlKeys, ...containerBlockKeys, ...containerChildKeys]) {
+    assert.ok(allControlKeys.includes(key), `${key} is rendered but never read back`);
+  }
 });
 
 test("a grid cell is sized by its parent's template, not by a class of its own", () => {
