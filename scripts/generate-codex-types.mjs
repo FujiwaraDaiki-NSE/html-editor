@@ -1,3 +1,18 @@
+/* Regenerates the app-server bindings from whichever Codex CLI is on PATH.
+
+   The app-server API grows and shifts with each CLI release, so running this is one step of a
+   longer procedure. When bumping the CLI version:
+
+   1. Update the Codex CLI.
+   2. Run this script.
+   3. Read the generated diff.
+   4. Sort what changed into stable / beta / experimental / deprecated.
+   5. Update the reducer's unknown-event fixtures for anything new.
+   6. Turn on only the APIs Weave actually adopts.
+
+   Anything the official docs mark as under development or experimental does not become a
+   production dependency just because it appeared in the generated types. */
+
 import { execFileSync } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
