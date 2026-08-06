@@ -521,6 +521,23 @@ export default function Home() {
     }
     return target;
   };
+  const nearestContainerChild = (container: HTMLElement, dragged: HTMLElement, clientX: number, clientY: number) => {
+    const children = Array.from(container.children).filter((child): child is HTMLElement => child instanceof HTMLElement && child !== dragged && child.hasAttribute("data-weave-id"));
+    const horizontal = container.classList.contains("flex-row");
+    const grid = container.classList.contains("grid");
+    return children.reduce<HTMLElement | null>((nearest, child) => {
+      if (!nearest) return child;
+      const childRect = child.getBoundingClientRect();
+      const nearestRect = nearest.getBoundingClientRect();
+      const childX = clientX - (childRect.left + childRect.width / 2);
+      const childY = clientY - (childRect.top + childRect.height / 2);
+      const nearestX = clientX - (nearestRect.left + nearestRect.width / 2);
+      const nearestY = clientY - (nearestRect.top + nearestRect.height / 2);
+      const childDistance = grid ? childX ** 2 + childY ** 2 : Math.abs(horizontal ? childX : childY);
+      const nearestDistance = grid ? nearestX ** 2 + nearestY ** 2 : Math.abs(horizontal ? nearestX : nearestY);
+      return childDistance < nearestDistance ? child : nearest;
+    }, null);
+  };
   const animateDomReorder = (mutate: () => void) => {
     const host = canvasRef.current;
     if (!host) return mutate();
@@ -566,19 +583,26 @@ export default function Home() {
     if (now - session.lastReorderAt < 110) return;
     host.querySelectorAll<HTMLElement>("[data-weave-id]").forEach((node) => node.getAnimations().forEach((animation) => animation.finish()));
     const hit = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null;
-    const target = resolveAtomicContainerTarget(session, hit);
+    let target = resolveAtomicContainerTarget(session, hit);
     if (!target || target === session.node || session.node.contains(target)) return;
     clearDropMarkers();
 
-    if (target.classList.contains("weave-container")) {
-      target.classList.add("weave-drop-after");
-      if (session.node.parentNode !== target || session.node.nextSibling) {
-        animateDomReorder(() => target.appendChild(session.node));
-        session.lastReorderAt = now;
+    if (target.classList.contains("weave-container") && !session.node.classList.contains("weave-container")) {
+      const container = target;
+      const nearestChild = nearestContainerChild(container, session.node, event.clientX, event.clientY);
+      if (nearestChild) {
+        target = nearestChild;
+      } else {
+        container.classList.add("weave-drop-after");
+        if (session.node.parentNode !== container || session.node.nextSibling) {
+          animateDomReorder(() => container.appendChild(session.node));
+          session.lastReorderAt = now;
+        }
+        return;
       }
-      return;
     }
 
+    if (target === session.node || session.node.contains(target)) return;
     const parent = target.parentElement;
     if (!parent) return;
     const rect = target.getBoundingClientRect();
