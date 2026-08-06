@@ -5,7 +5,7 @@ import { DragEvent, useCallback, useEffect, useLayoutEffect, useMemo, useReducer
 import { actionFromStreamEvent } from "./codex/actions";
 import { defaultDeckCss, designHeight, designWidth, renderDeckDocument } from "../shared/slide-design.mjs";
 import { auditContentPolicy } from "../shared/content-policy.mjs";
-import { applyBlockAlign, applySize, blockAlignOptions, containerControlKeys, defaultSlideClasses, migrateSlideHtmlToTailwind, readBlockAlign, readSize, sizeIntents, slideControlGroups, textControlKeys } from "../shared/tailwind-slide.mjs";
+import { applyBlockPosition, applySize, blockPositionOptions, containerControlKeys, defaultSlideClasses, migrateSlideHtmlToTailwind, readBlockPosition, readSize, sizeIntents, slideControlGroups, textControlKeys } from "../shared/tailwind-slide.mjs";
 import { ItemCard } from "./codex/components/ItemCard";
 import { ServerRequestCard } from "./codex/components/ServerRequestCard";
 import { codexReducer, initialCodexState } from "./codex/reducer";
@@ -104,8 +104,13 @@ const containerClasses = new Set(["row", "column", "grid"]);
 const layoutOf = (node: Element | null): string => !node ? "column" : node.classList.contains("grid") ? "grid" : node.classList.contains("flex-row") ? "row" : "column";
 const writeClasses = (node: Element, classes: string[]) => { node.className = classes.join(" "); };
 const sizeOf = (node: Element): string => readSize([...node.classList], layoutOf(node.parentElement), [...(node.parentElement?.classList ?? [])]);
-const resizeForParent = (node: Element, intent: string | null) => {
-  if (intent) writeClasses(node, applySize([...node.classList], intent, layoutOf(node.parentElement)));
+const applySizeTo = (node: Element, intent: string) => writeClasses(node, applySize([...node.classList], intent, layoutOf(node.parentElement)));
+/* Only a move that crosses into a different axis needs new classes — reordering within one parent
+   leaves the markup alone, so dragging never churns the saved HTML. */
+const relayoutForParent = (node: Element, intent: string, fromLayout: string): string => {
+  const layout = layoutOf(node.parentElement);
+  if (layout !== fromLayout) applySizeTo(node, intent);
+  return layout;
 };
 
 type Control = { key: string; label: string; options: Array<{ label: string; className: string }> };
@@ -136,7 +141,8 @@ type Snapshot = { title: string; slides: SlideDoc[]; activeSlide: number; select
 type BlockDragSession = {
   id: string;
   node: HTMLElement;
-  sizeIntent: string | null;
+  sizeIntent: string;
+  sizeLayout: string;
   originParent: Node;
   originNext: ChildNode | null;
   before: Snapshot;
@@ -255,7 +261,7 @@ export default function Home() {
     read.direction = node.classList.contains("column") ? "column" : "row";
     read.parentLayout = layoutOf(node.parentElement);
     read.size = sizeOf(node);
-    read.blockAlign = readBlockAlign([...node.classList]);
+    read.blockPosition = readBlockPosition([...node.classList]);
     return { id: node.getAttribute("data-weave-id") ?? "", kind, container: node.classList.contains("weave-container"), read };
   };
 
@@ -607,9 +613,9 @@ export default function Home() {
     setDraggedId(id);
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("text/plain", id);
-    // A container's intent survives the move; the class expressing it is rewritten for each new parent.
-    const sizeIntent = target.classList.contains("weave-container") ? sizeOf(target) : null;
-    blockDragRef.current = { id, node: target, sizeIntent, originParent: target.parentNode, originNext: target.nextSibling, before: snapshot(), committed: false, lastReorderAt: 0, lastReorderX: event.clientX, lastReorderY: event.clientY };
+    // A block's sizing intent survives the move; the class expressing it is rewritten whenever the
+    // block lands on a parent that runs the other way.
+    blockDragRef.current = { id, node: target, sizeIntent: sizeOf(target), sizeLayout: layoutOf(target.parentElement), originParent: target.parentNode, originNext: target.nextSibling, before: snapshot(), committed: false, lastReorderAt: 0, lastReorderX: event.clientX, lastReorderY: event.clientY };
     requestAnimationFrame(() => target.classList.add("weave-dragging"));
   };
 
@@ -639,7 +645,7 @@ export default function Home() {
       } else {
         container.classList.add("weave-drop-after");
         if (session.node.parentNode !== container || session.node.nextSibling) {
-          animateDomReorder(() => { container.appendChild(session.node); resizeForParent(session.node, session.sizeIntent); });
+          animateDomReorder(() => { container.appendChild(session.node); session.sizeLayout = relayoutForParent(session.node, session.sizeIntent, session.sizeLayout); });
           markReorder(session, event);
         }
         return;
@@ -667,7 +673,7 @@ export default function Home() {
     if (horizontal) target.classList.add("weave-drop-horizontal");
     const reference = after ? target.nextSibling : target;
     if (reference === session.node || (!after && session.node.nextSibling === target) || (after && target.nextSibling === session.node)) return;
-    animateDomReorder(() => { parent.insertBefore(session.node, reference); resizeForParent(session.node, session.sizeIntent); });
+    animateDomReorder(() => { parent.insertBefore(session.node, reference); session.sizeLayout = relayoutForParent(session.node, session.sizeIntent, session.sizeLayout); });
     markReorder(session, event);
   };
 
@@ -742,8 +748,9 @@ export default function Home() {
     if (!parent || reference === node) return;
     if (parent === node.parentNode && (reference ?? null) === node.nextSibling) return;
     checkpoint();
-    const treeIntent = node.classList.contains("weave-container") ? sizeOf(node) : null;
-    animateDomReorder(() => { parent.insertBefore(node, reference); resizeForParent(node, treeIntent); });
+    const treeIntent = sizeOf(node);
+    const treeLayout = layoutOf(node.parentElement);
+    animateDomReorder(() => { parent.insertBefore(node, reference); relayoutForParent(node, treeIntent, treeLayout); });
     setSelectedId(dragId);
     syncFromDom();
     setAnnouncement("Block moved");
@@ -761,7 +768,7 @@ export default function Home() {
     const inserted = container.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(id)}"]`);
     inserted?.setAttribute("draggable", "true");
     // A new container starts as Fill: hugging content would make an empty one zero-width.
-    if (inserted?.classList.contains("weave-container")) resizeForParent(inserted, "fill");
+    if (inserted?.classList.contains("weave-container")) applySizeTo(inserted, "fill");
     setSelectedId(id);
     dismissPopover(false);
     syncFromDom();
@@ -798,8 +805,8 @@ export default function Home() {
     node.classList.add(value, value === "column" ? "flex-col" : "flex-row");
     children.forEach((child, index) => writeClasses(child, applySize([...child.classList], intents[index], value)));
   });
-  const setSize = (intent: string) => applyClasses((node) => resizeForParent(node, intent));
-  const setBlockAlign = (className: string) => applyClasses((node) => writeClasses(node, applyBlockAlign([...node.classList], className)));
+  const setSize = (intent: string) => applyClasses((node) => applySizeTo(node, intent));
+  const setBlockPosition = (className: string) => applyClasses((node) => writeClasses(node, applyBlockPosition([...node.classList], className)));
 
   const setSlideBackground = (value: Background) => {
     const root = slideRoot();
@@ -1604,9 +1611,11 @@ export default function Home() {
                   </div>
                 </div>
               )}
-              {containerLike && sel.read.parentLayout !== "grid" && (
+              {/* Every block is a flex child, so how it is sized and placed is not a container's
+                  privilege — only a grid cell is exempt, being sized by its parent's template. */}
+              {sel.read.parentLayout !== "grid" && (
                 <div className="property-row">
-                  <span>Size</span>
+                  <span>Width</span>
                   <div className="scale-options">
                     {sizeIntents.map((opt: { value: string; label: string }) => (
                       <button key={opt.value} className={sel.read.size === opt.value ? "active" : ""} onClick={() => setSize(opt.value)}>{opt.label}</button>
@@ -1614,14 +1623,14 @@ export default function Home() {
                   </div>
                 </div>
               )}
-              {/* Horizontal placement is the child's own business only when it stacks in a column;
-                  inside a Row it is the parent's Justify, so the control stays hidden there. */}
-              {containerLike && sel.read.parentLayout === "column" && sel.read.size !== "fill" && (
+              {/* Placing the block is its own business only when it stacks in a column; inside a Row
+                  that is the parent's Justify. Distinct from Align, which moves the text within. */}
+              {sel.read.parentLayout === "column" && sel.read.size !== "fill" && (
                 <div className="property-row">
-                  <span>Align</span>
+                  <span>Position</span>
                   <div className="scale-options">
-                    {blockAlignOptions.map((opt: { value: string; label: string }) => (
-                      <button key={opt.value} className={sel.read.blockAlign === opt.value ? "active" : ""} onClick={() => setBlockAlign(opt.value)}>{opt.label}</button>
+                    {blockPositionOptions.map((opt: { value: string; label: string }) => (
+                      <button key={opt.value} className={sel.read.blockPosition === opt.value ? "active" : ""} onClick={() => setBlockPosition(opt.value)}>{opt.label}</button>
                     ))}
                   </div>
                 </div>

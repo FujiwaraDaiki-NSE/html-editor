@@ -97,7 +97,8 @@ const alignSelfClasses = ["self-stretch", "self-start", "self-center", "self-end
 const sizeClasses = [...new Set([...Object.values(mainAxisSize), ...alignSelfClasses, "w-full"])];
 
 export const sizeIntents = [{ value: "fill", label: "Fill" }, { value: "hug", label: "Hug" }, { value: "fixed", label: "Fixed" }];
-export const blockAlignOptions = [{ value: "self-start", label: "Start" }, { value: "self-center", label: "Center" }, { value: "self-end", label: "End" }];
+/* Where the block itself sits — distinct from textAlign, which only moves the text inside it. */
+export const blockPositionOptions = [{ value: "self-start", label: "Start" }, { value: "self-center", label: "Center" }, { value: "self-end", label: "End" }];
 
 const isMeasured = (list) => [...list].some((name) => name.startsWith("max-w-") && name !== "max-w-none" && name !== "max-w-full");
 
@@ -107,8 +108,10 @@ export function readSize(classes, parentDirection, parentClasses = []) {
   if (list.has("w-full")) return "fill";
   if (parentDirection === "column") {
     if (list.has("self-stretch")) return "fill";
-    // An unaligned block inherits the parent's align-items, which stretches unless it says otherwise.
-    if (!alignSelfClasses.some((name) => list.has(name))) return [...parentClasses].some((name) => name.startsWith("items-") && name !== "items-stretch") ? "hug" : "fill";
+    // An unplaced block inherits the parent's align-items, which stretches unless it says otherwise.
+    const stretched = !alignSelfClasses.some((name) => list.has(name))
+      && ![...parentClasses].some((name) => name.startsWith("items-") && name !== "items-stretch");
+    if (stretched) return "fill";
     return isMeasured(list) ? "fixed" : "hug";
   }
   if (list.has("flex-1")) return "fill";
@@ -125,8 +128,8 @@ export function applySize(classes, intent, parentDirection) {
   return [...kept, classes.find((name) => name === "self-center" || name === "self-end") ?? crossAxisSize[intent] ?? crossAxisSize.hug];
 }
 
-export const readBlockAlign = (classes) => classes.find((name) => name !== "self-stretch" && alignSelfClasses.includes(name)) ?? "";
-export const applyBlockAlign = (classes, className) => [...classes.filter((name) => !alignSelfClasses.includes(name)), className];
+export const readBlockPosition = (classes) => classes.find((name) => name !== "self-stretch" && alignSelfClasses.includes(name)) ?? "";
+export const applyBlockPosition = (classes, className) => [...classes.filter((name) => !alignSelfClasses.includes(name)), className];
 
 const extraUtilities = {
   relative: "position: relative", absolute: "position: absolute", "inset-0": "inset: 0", "inset-x-0": "left: 0; right: 0",

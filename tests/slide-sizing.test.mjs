@@ -2,12 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  applyBlockAlign,
+  applyBlockPosition,
   applySize,
   auditTailwindSlideHtml,
   buildTailwindSlideCss,
   containerControlKeys,
-  readBlockAlign,
+  readBlockPosition,
   readSize,
 } from "../shared/tailwind-slide.mjs";
 
@@ -34,6 +34,18 @@ test("width is the cross axis in a Column, so the same intents map to align-self
   assert.equal(readSize(classesOf("self-center max-w-3xl"), "column"), "fixed");
 });
 
+test("a text block sizes the same way a container does", () => {
+  const hero = classesOf("hero flex flex-1 flex-col items-start justify-center gap-6");
+  const paragraph = classesOf("paragraph max-w-3xl text-lg leading-normal text-slate-300");
+  assert.equal(readSize(paragraph, "column", hero), "fixed", "the seeded measure already makes it Fixed");
+  assert.equal(readSize(classesOf("heading text-6xl font-semibold"), "column", hero), "hug");
+  // Centring the paragraph is the case text-align could never reach: the box itself moves.
+  const centred = applyBlockPosition(paragraph, "self-center");
+  assert.equal(centred.join(" "), "paragraph max-w-3xl text-lg leading-normal text-slate-300 self-center");
+  assert.equal(readSize(centred, "column", hero), "fixed");
+  assert.deepEqual(auditTailwindSlideHtml(`<main class="weave-slide"><p class="${centred.join(" ")}"></p></main>`), []);
+});
+
 test("sizing a centred block keeps it centred", () => {
   const centred = classesOf("weave-container column flex flex-col self-center max-w-3xl gap-4");
   assert.equal(readSize(centred, "column"), "fixed");
@@ -48,11 +60,11 @@ test("legacy w-full reads as Fill and is dropped the moment sizing is set", () =
 });
 
 test("alignment replaces whichever align-self is already there", () => {
-  assert.equal(applyBlockAlign(classesOf("weave-container self-stretch gap-4"), "self-center").join(" "), "weave-container gap-4 self-center");
-  assert.equal(applyBlockAlign(classesOf("weave-container self-start gap-4"), "self-end").join(" "), "weave-container gap-4 self-end");
-  assert.equal(readBlockAlign(classesOf("weave-container self-center")), "self-center");
-  assert.equal(readBlockAlign(classesOf("weave-container self-stretch")), "", "stretching is not a horizontal placement");
-  assert.equal(readBlockAlign(classesOf("weave-container gap-4")), "");
+  assert.equal(applyBlockPosition(classesOf("weave-container self-stretch gap-4"), "self-center").join(" "), "weave-container gap-4 self-center");
+  assert.equal(applyBlockPosition(classesOf("weave-container self-start gap-4"), "self-end").join(" "), "weave-container gap-4 self-end");
+  assert.equal(readBlockPosition(classesOf("weave-container self-center")), "self-center");
+  assert.equal(readBlockPosition(classesOf("weave-container self-stretch")), "", "stretching is not a horizontal placement");
+  assert.equal(readBlockPosition(classesOf("weave-container gap-4")), "");
 });
 
 test("every class the sizing model emits is a registered utility", () => {
