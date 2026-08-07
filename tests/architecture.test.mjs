@@ -97,7 +97,7 @@ test("commands are grouped by editing, project, and delivery intent", async () =
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
-  for (const group of ["history-tools", "content-tools", "slide-tools", "template-tools", "zoom-tools"]) {
+  for (const group of ["history-tools", "content-tools", "slide-tools", "zoom-tools"]) {
     assert.match(page, new RegExp(`className="canvas-tool-group ${group}"`));
   }
   assert.match(page, /className="topbar-popover project-menu"/);
@@ -106,6 +106,16 @@ test("commands are grouped by editing, project, and delivery intent", async () =
   assert.doesNotMatch(page, /className="icon-button"/);
   assert.doesNotMatch(page, /className="share-button"/);
   assert.match(css, /\.canvas-tool-group \+ \.canvas-tool-group/);
+});
+
+test("the content-bearing local slide library is removed", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  for (const legacy of ["weave.slideTemplates", "templateStore", "slideTemplates", "showTemplates", "saveSlideTemplate", "insertTemplate", "Save template", "template-library"]) {
+    assert.equal(`${page}\n${css}`.includes(legacy), false, `legacy slide library remains: ${legacy}`);
+  }
 });
 
 test("the slide canvas opens at 100% zoom", async () => {

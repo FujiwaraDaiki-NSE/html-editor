@@ -66,24 +66,6 @@ const slideNavStore = {
   write(value: SlideNav) { window.localStorage.setItem(slideNavKey, value); slideNavListeners.forEach((listener) => listener()); },
 };
 
-const templateKey = "weave.slideTemplates";
-const emptyTemplates: SlideDoc[] = [];
-let templateCacheRaw = "";
-let templateCache: SlideDoc[] = [];
-const templateListeners = new Set<() => void>();
-const templateStore = {
-  subscribe(listener: () => void) { templateListeners.add(listener); return () => templateListeners.delete(listener); },
-  read(): SlideDoc[] {
-    const raw = window.localStorage.getItem(templateKey) ?? "";
-    if (raw === templateCacheRaw) return templateCache;
-    templateCacheRaw = raw;
-    try { templateCache = raw ? JSON.parse(raw) : []; } catch { templateCache = []; }
-    return templateCache;
-  },
-  serverRead: (): SlideDoc[] => emptyTemplates,
-  write(value: SlideDoc[]) { templateCache = value; templateCacheRaw = JSON.stringify(value); window.localStorage.setItem(templateKey, templateCacheRaw); templateListeners.forEach((listener) => listener()); },
-};
-
 const createMessageId = () => `weave-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 const retryDelay = (attempt: number) => Math.min(10_000, 400 * (2 ** Math.min(attempt, 5))) + Math.random() * 250;
 const displayThreadName = (name: string | null | undefined) => name?.replace(/^Weave · /, "") || null;
@@ -218,8 +200,6 @@ export default function Home() {
   const [project, setProject] = useState<ServerState["project"] | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
   const [showPresenter, setShowPresenter] = useState(false);
-  const [showTemplates, setShowTemplates] = useState(false);
-  const slideTemplates = useSyncExternalStore(templateStore.subscribe, templateStore.read, templateStore.serverRead);
   const [inspectorOpen, setInspectorOpen] = useState(false);
   const [canvasFocused, setCanvasFocused] = useState(false);
   const [announcement, setAnnouncement] = useState("Editor ready");
@@ -1071,27 +1051,6 @@ export default function Home() {
     reinject();
   };
 
-  const saveSlideTemplate = () => {
-    const slide = captureActive()[activeRef.current - 1];
-    const next = [...slideTemplates.filter((item) => item.title !== slide.title), slide].slice(-30);
-    templateStore.write(next);
-    setAnnouncement(`Saved ${slide.title} to the slide library`);
-  };
-  const insertTemplate = (template: SlideDoc) => {
-    checkpoint();
-    const captured = captureActive();
-    const slide = slideFromHtml({ ...template, id: `${template.id}-${createMessageId().slice(6)}` });
-    const next = [...captured];
-    next.splice(activeRef.current, 0, slide);
-    setSlidesSynced(next);
-    activeRef.current += 1;
-    setActiveSlideSynced(activeRef.current);
-    setSelectedId(null);
-    setShowTemplates(false);
-    setSaved(false);
-    reinject();
-  };
-
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
@@ -1526,7 +1485,7 @@ export default function Home() {
   );
 
   return (
-    <main className={`weave-app ${theme}`} style={{ "--accent": accent } as React.CSSProperties} data-background={background}>
+    <main className={`weave-app ${theme}`} style={{ "--accent": accent } as React.CSSProperties}>
       <header className="topbar">
         <div className="traffic-lights" aria-hidden="true"><span /><span /><span /></div>
         <button className="project-switcher" aria-label="Open project menu" aria-expanded={openPopover === "project"} aria-haspopup="menu" onClick={(event) => togglePopover("project", event.currentTarget)}>
@@ -1715,10 +1674,6 @@ export default function Home() {
                     <button onClick={() => moveSlide(-1)} disabled={activeSlide === 1} aria-label="Move slide left" title="Move slide left">←</button>
                     <button onClick={() => moveSlide(1)} disabled={activeSlide === slides.length} aria-label="Move slide right" title="Move slide right">→</button>
                     <button onClick={deleteSlide} disabled={slides.length <= 1}>Delete</button>
-                  </div>
-                  <div className="canvas-tool-group template-tools" role="group" aria-label="Slide templates">
-                    <button onClick={saveSlideTemplate}>Save template</button>
-                    <button onClick={() => setShowTemplates(true)}>Library</button>
                   </div>
                   <div className="canvas-tool-group zoom-tools" role="group" aria-label="Canvas zoom">
                     <button aria-label="Zoom out" onClick={() => setManualZoom(Math.max(.25, (manualZoom ?? fitScale) - .1))}>−</button>
@@ -1934,16 +1889,6 @@ export default function Home() {
             <button onClick={() => document.documentElement.requestFullscreen?.()}>Fullscreen</button>
             <button onClick={() => setShowPresenter(false)}>Exit</button>
           </footer>
-        </div>
-      )}
-      {showTemplates && (
-        <div className="help-backdrop" role="presentation" onMouseDown={() => setShowTemplates(false)}>
-          <section className="shortcut-help template-library" role="dialog" aria-modal="true" aria-label="Slide library" onMouseDown={(event) => event.stopPropagation()}>
-            <header><strong>Slide library</strong><button onClick={() => setShowTemplates(false)}>×</button></header>
-            {slideTemplates.length === 0 ? <p>No saved templates yet. Save the current slide to reuse it.</p> : slideTemplates.map((template) => (
-              <button key={`${template.id}-${template.title}`} onClick={() => insertTemplate(template)}><span className="background-preview orbit" /><span><strong>{template.title}</strong><small>Saved slide</small></span></button>
-            ))}
-          </section>
         </div>
       )}
       <div className="sr-only" aria-live="polite">{announcement}</div>
