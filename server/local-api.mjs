@@ -17,6 +17,7 @@ import {
   projectState,
   readProject,
   readDeckCss,
+  readTemplates,
   writeProject,
 } from "./project.mjs";
 import { CodexService } from "./codex/service.mjs";
@@ -65,6 +66,7 @@ async function statePayload() {
   return {
     deck: await readProject(),
     css: await readDeckCss(),
+    templates: await readTemplates(),
     ...state,
     variations: state.variations.map((variation) => ({
       ...variation,

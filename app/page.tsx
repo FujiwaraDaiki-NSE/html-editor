@@ -17,6 +17,7 @@ import { selectThreadRunning, selectThreadTurns, selectTurnItems } from "./codex
    truth. The editor renders that fragment as live DOM and edits it in place; nothing is
    modelled as tokens any more (concept 2.10). */
 type SlideDoc = { id: string; title: string; notes: string; html: string };
+type TemplateDoc = { id: string; name: string; html: string };
 
 type SlideNav = "filmstrip" | "rail";
 type ActivityView = "agent" | "history" | "shortcuts" | "settings";
@@ -25,6 +26,7 @@ type OpenPopover = "project" | "delivery" | "threads" | "addBlock" | "background
 type ServerState = {
   deck: { title: string; slides: SlideDoc[] };
   css: string;
+  templates: TemplateDoc[];
   history: HistoryEntry[];
   variations: Array<{ branch: string; label: string; commit: string; message: string; status: "ready" | "generating" }>;
   project: { root: string; branch: string; commit: string; revision?: string; clean: boolean };
@@ -132,7 +134,7 @@ const marginSchema = controlsFor(["marginTop"]);
 type SelState = { id: string; kind: string; container: boolean; read: Record<string, string> };
 
 const blankSlideHtml = (background: Background = "orbit", accent = "#f6b84b", title = "A clear, compelling headline.") =>
-  `<main class="${defaultSlideClasses} theme-${background} ${backgroundClasses[background]}" data-weave-slide>
+  `<main class="${defaultSlideClasses} theme-${background} ${backgroundClasses[background]}" data-weave-slide data-weave-template="${background}">
     <div class="brand flex items-center gap-2 text-xs font-bold tracking-widest text-slate-400">WEAVE<span class="${accents.find((item) => item.color === accent)?.className ?? "text-amber-400"}">●</span></div>
     <section class="hero flex flex-1 flex-col items-start justify-center gap-6" data-weave-slot="content">
       ${blockTemplates.eyebrow(`eyebrow-${createMessageId().slice(6)}`)}
@@ -180,6 +182,7 @@ const markReorder = (session: BlockDragSession, event: { timeStamp: number; clie
 export default function Home() {
   const [deckTitle, setDeckTitle] = useState("Q3 Strategy Deck");
   const [slides, setSlides] = useState<SlideDoc[]>(initialSlides);
+  const [, setTemplates] = useState<TemplateDoc[]>([]);
   const [activeSlide, setActiveSlide] = useState(1);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [deckCss, setDeckCss] = useState<string>(defaultDeckCss);
@@ -366,6 +369,7 @@ export default function Home() {
       slidesRef.current = nextSlides;
       setSlides(nextSlides);
       setDeckCss(state.css?.includes("weave-tailwind-slide-v1") ? state.css : defaultDeckCss);
+      setTemplates(state.templates ?? []);
       setHistory(state.history);
       setVariations(state.variations ?? []);
       setProject(state.project);

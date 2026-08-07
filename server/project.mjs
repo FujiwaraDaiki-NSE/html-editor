@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { defaultDeckCss, slideFragmentFromBlocks } from "../shared/slide-design.mjs";
 import { formatDeckCss, formatSlideHtml } from "../shared/html-format.mjs";
 import { auditContentPolicy, auditHtmlSafety } from "../shared/content-policy.mjs";
-import { migrateSlideHtmlToTailwind } from "../shared/tailwind-slide.mjs";
+import { defaultSlideClasses, migrateSlideHtmlToTailwind } from "../shared/tailwind-slide.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 export const projectRoot = process.env.WEAVE_PROJECT_ROOT
@@ -18,7 +18,33 @@ const bufferPath = join(projectRoot, ".weave", "current-buffer.json");
 const slidesRoot = join(projectRoot, "slides");
 const stylesRoot = join(projectRoot, "styles");
 const assetsRoot = join(projectRoot, "assets");
+export const templatesRoot = join(projectRoot, "templates");
 const deckCssPath = join(stylesRoot, "deck.css");
+
+const templateThemes = [
+  { id: "orbit", name: "Orbit / Dark", background: "bg-slate-950", text: "text-slate-50" },
+  { id: "grid", name: "Grid / Graphite", background: "bg-slate-900", text: "text-slate-50" },
+  { id: "plain", name: "Plain / Ink", background: "bg-white", text: "text-slate-950" },
+];
+const templateRootClasses = ({ id, background, text }) => [
+  ...defaultSlideClasses.split(" ").filter((name) => name !== "bg-slate-950" && name !== "text-slate-50"),
+  `theme-${id}`,
+  background,
+  text,
+].join(" ");
+
+export const builtInTemplates = templateThemes.map((theme) => ({
+  id: theme.id,
+  name: theme.name,
+  filename: `${theme.id}.html`,
+  html: `<main class="${templateRootClasses(theme)}" data-weave-slide data-weave-template="${theme.id}" data-weave-template-name="${theme.name}">
+    <div class="brand flex items-center gap-2 text-xs font-bold tracking-widest text-slate-400">WEAVE<span class="text-amber-400">●</span></div>
+    <section class="hero flex flex-1 flex-col items-start justify-center gap-6" data-weave-slot="content">
+      <h1 class="heading text-6xl font-semibold leading-none tracking-tight" data-weave-slot="title" data-weave-id="title"></h1>
+    </section>
+    <div class="page-number absolute top-0 right-0 p-8 text-xs font-semibold tracking-widest text-slate-400">01 / 01</div>
+  </main>`,
+}));
 
 export const agentInstructions = `You are the editing agent embedded in Weave, a visual HTML slide editor.
 The truth of every slide is its own file: slides/<id>.html holds a <main class="weave-slide"> fragment.
@@ -183,6 +209,44 @@ export async function readDeckCss() {
   }
 }
 
+const templateAttribute = (opening, name) => opening.match(new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>]+))`, "i"))?.slice(1).find((value) => value !== undefined)?.trim() ?? "";
+
+export async function readTemplates() {
+  const entries = await readdir(templatesRoot, { withFileTypes: true }).catch(() => []);
+  const templates = [];
+  for (const entry of entries.filter((item) => item.isFile() && item.name.endsWith(".html")).sort((a, b) => a.name.localeCompare(b.name))) {
+    try {
+      const html = await readFile(join(templatesRoot, entry.name), "utf8");
+      const policy = auditContentPolicy({ html });
+      if (!policy.ok) continue;
+      const opening = html.match(/<main\b[^>]*>/i)?.[0] ?? "";
+      const fallback = entry.name.slice(0, -".html".length);
+      const id = templateAttribute(opening, "data-weave-template") || fallback;
+      const name = templateAttribute(opening, "data-weave-template-name") || id;
+      templates.push({ id, name, html });
+    } catch {
+      // A broken template must not prevent the rest of the project from loading.
+    }
+  }
+  return templates;
+}
+
+export async function ensureTemplates() {
+  await mkdir(templatesRoot, { recursive: true });
+  const canonical = await Promise.all(builtInTemplates.map(async (template) => ({
+    ...template,
+    html: await formatSlideHtml(template.html),
+  })));
+  const touched = [];
+  for (const template of canonical) {
+    const path = join(templatesRoot, template.filename);
+    if (await readFile(path, "utf8").catch(() => "") === template.html) continue;
+    await writeFile(path, template.html);
+    touched.push(`templates/${template.filename}`);
+  }
+  return touched;
+}
+
 const slugify = (value, fallback) =>
   String(value ?? "").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || fallback;
 
@@ -329,7 +393,7 @@ export async function writeProject(input, bufferOnly = false, expectedRevision =
 }
 
 export function commitIfChanged(message) {
-  runGit(["add", ".weave/deck.json", "slides", "styles", "AGENTS.md", ...(existsSync(assetsRoot) ? ["assets"] : [])]);
+  runGit(["add", ".weave/deck.json", "slides", "styles", "AGENTS.md", ...(existsSync(assetsRoot) ? ["assets"] : []), ...(existsSync(templatesRoot) ? ["templates"] : [])]);
   if (!runGit(["diff", "--cached", "--name-only"])) return null;
   runGit(["-c", "user.name=Weave", "-c", "user.email=weave@localhost", "commit", "-m", message.slice(0, 180)]);
   return runGit(["rev-parse", "HEAD"]);
@@ -383,6 +447,7 @@ export async function checkoutHistory(commit) {
   if (runGit(["branch", "--show-current"]) !== "main") runGit(["checkout", "main"]);
   runGit(["restore", "--source", commit, "--staged", "--worktree", "--", ".weave/deck.json", "slides", "styles", "AGENTS.md"]);
   if (runGit(["ls-tree", "-d", "--name-only", commit, "assets"])) runGit(["restore", "--source", commit, "--staged", "--worktree", "--", "assets"]);
+  if (runGit(["ls-tree", "-d", "--name-only", commit, "templates"])) runGit(["restore", "--source", commit, "--staged", "--worktree", "--", "templates"]);
   const restored = commitIfChanged(`Restore history ${commit.slice(0, 12)}`);
   const project = await readProject();
   await atomicWriteFile(bufferPath, `${JSON.stringify(project, null, 2)}\n`);
@@ -536,6 +601,7 @@ export async function ensureProject() {
     await writeFile(deckCssPath, canonicalCss);
     migrationPaths.push("styles/deck.css");
   }
+  migrationPaths.push(...await ensureTemplates());
 
   let seededOrMigrated = false;
   try {
