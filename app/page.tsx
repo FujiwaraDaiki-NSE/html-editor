@@ -41,6 +41,7 @@ type ServerState = {
 type HistoryEntry = { id: string; shortId: string; message: string; date: string };
 
 const apiBase = "http://127.0.0.1:4317/api";
+const defaultCanvasZoom = 1;
 
 const backgrounds = ["orbit", "grid", "plain"] as const;
 type Background = (typeof backgrounds)[number];
@@ -182,7 +183,7 @@ export default function Home() {
   const [background, setBackground] = useState<Background>("orbit");
   const [accent, setAccent] = useState("#f6b84b");
   const [fitScale, setFitScale] = useState(0.68);
-  const [manualZoom, setManualZoom] = useState<number | null>(null);
+  const [manualZoom, setManualZoom] = useState<number | null>(defaultCanvasZoom);
   const [injectKey, setInjectKey] = useState(0);
   const [activeVariation, setActiveVariation] = useState("main");
   const [variations, setVariations] = useState<ServerState["variations"]>([]);
