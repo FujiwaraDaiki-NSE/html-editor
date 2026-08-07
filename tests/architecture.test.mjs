@@ -81,7 +81,7 @@ test("transient lists share one dismissible popover contract", async () => {
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
-  assert.match(page, /type OpenPopover = "project" \| "delivery" \| "threads" \| "addBlock" \| "backgrounds" \| "quality" \| null/);
+  assert.match(page, /type OpenPopover = "project" \| "delivery" \| "threads" \| "addBlock" \| "layouts" \| "newSlide" \| "quality" \| null/);
   assert.match(page, /const \[openPopover, setOpenPopover\]/);
   assert.match(page, /event\.key !== "Escape"/);
   assert.match(page, /onPointerDown=\{\(\) => dismissPopover\(\)\}/);

@@ -165,6 +165,8 @@ body {
 .slide-nav .new-slide { flex: 0 0 auto; display: grid; place-items: center; border: 1px dashed var(--line-strong); border-radius: 5px; background: transparent; color: var(--muted); font-size: 13px; cursor: pointer; }
 .slide-nav .new-slide:disabled { cursor: not-allowed; opacity: .5; }
 .slide-nav .new-slide:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+.new-slide-wrap { position: relative; flex: 0 0 auto; display: grid; }
+.slide-nav:has(.new-slide-options) { overflow: visible; }
 .slide-number { color: var(--soft); font: 8px/1 var(--font-geist-mono), monospace; text-align: center; }
 .slide-item.active .slide-number { color: var(--accent); }
 .slide-name { min-width: 0; overflow: hidden; font-size: 9px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
@@ -474,19 +476,27 @@ body {
 .spacing-grid label > span { margin: 0; text-align: center; }
 .spacing-grid input { width: 100%; border: 0; outline: 0; background: transparent; color: var(--text); font-size: 8px; }
 .spacing-grid small { font-size: 7px; }
-.background-section { position: relative; }
-.background-select { width: 100%; height: 43px; padding: 5px; display: grid; grid-template-columns: 48px 1fr auto; align-items: center; gap: 7px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--panel-2); text-align: left; cursor: pointer; }
+.layout-section { position: relative; }
+.layout-select { width: 100%; height: 43px; padding: 5px; display: grid; grid-template-columns: 48px 1fr auto; align-items: center; gap: 7px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--panel-2); text-align: left; cursor: pointer; }
+.layout-select strong, .layout-select small { display: block; }
+.layout-select strong { font-size: 8px; }
+.layout-select small { margin-top: 3px; color: var(--muted); font-size: 7px; }
+.layout-select b { color: var(--muted); font-size: 9px; }
+.template-preview { position: relative; width: 48px; height: 27px; display: block; flex: 0 0 auto; overflow: hidden; border: 1px solid var(--line-strong); background: #171a20; pointer-events: none; }
+.weave-app .template-preview > .weave-slide { width: 1280px; height: 720px; transform: scale(.0375); transform-origin: top left; }
+.template-preview-empty { background: repeating-linear-gradient(135deg, var(--panel-3), var(--panel-3) 4px, var(--panel-2) 4px, var(--panel-2) 8px); }
+.template-options { z-index: 31; width: 190px; padding: 5px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--panel-2); box-shadow: var(--shadow); }
+.template-options button { width: 100%; padding: 4px; display: grid; grid-template-columns: 48px minmax(0, 1fr); align-items: center; gap: 7px; border: 0; border-radius: 4px; background: transparent; color: var(--text); font-size: 8px; text-align: left; cursor: pointer; }
+.template-options button:hover, .template-options button:focus-visible { background: var(--panel-3); outline: none; }
+.template-options button[aria-selected="true"] { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent); }
+.layout-options { position: absolute; left: 10px; top: 82px; }
+.new-slide-options { position: absolute; }
+.filmstrip .new-slide-options { left: 0; bottom: 44px; }
+.slide-rail .new-slide-options { left: 50px; bottom: 0; }
 .background-preview { position: relative; width: 45px; height: 28px; display: block; overflow: hidden; border: 1px solid var(--line-strong); background: #171a20; }
 .background-preview.orbit::after { content: ""; position: absolute; width: 20px; height: 20px; right: -8px; bottom: -8px; border: 3px solid var(--accent); border-radius: 50%; }
 .background-preview.grid { background-color: #1a1e24; background-image: linear-gradient(#343942 1px, transparent 1px), linear-gradient(90deg, #343942 1px, transparent 1px); background-size: 7px 7px; }
 .background-preview.plain { background: #20242a; }
-.background-select strong, .background-select small { display: block; }
-.background-select strong { font-size: 8px; }
-.background-select small { margin-top: 3px; color: var(--muted); font-size: 7px; }
-.background-select b { color: var(--muted); font-size: 9px; }
-.background-options { position: absolute; z-index: 31; left: 10px; right: 10px; top: 82px; padding: 5px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--panel-2); box-shadow: var(--shadow); }
-.background-options button { width: 100%; padding: 4px; display: flex; align-items: center; gap: 7px; border: 0; border-radius: 4px; background: transparent; font-size: 8px; cursor: pointer; }
-.background-options button:hover { background: var(--panel-3); }
 .accent-section { padding: 11px 10px 13px; }
 .accent-section > span { display: block; margin-bottom: 9px; color: var(--muted); font-size: 8px; font-weight: 700; letter-spacing: .07em; }
 .accent-section > div { display: flex; gap: 8px; }
