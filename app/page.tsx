@@ -200,7 +200,8 @@ export default function Home() {
   const [project, setProject] = useState<ServerState["project"] | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
   const [showPresenter, setShowPresenter] = useState(false);
-  const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(true);
+  const [objectTreeOpen, setObjectTreeOpen] = useState(true);
   const [canvasFocused, setCanvasFocused] = useState(false);
   const [announcement, setAnnouncement] = useState("Editor ready");
   const [saveMessage, setSaveMessage] = useState("");
@@ -1724,8 +1725,10 @@ export default function Home() {
           <div className="inspector-heading"><span>INSPECTOR</span><button aria-label="Close inspector" onClick={() => setInspectorOpen(false)}>×</button></div>
           <div className="selection-path"><span>content</span><b>›</b><strong>{sel ? `${sel.kind}.${sel.id}` : "no selection"}</strong></div>
           <section className="layer-tree">
-            <div className="property-heading"><span>OBJECT TREE</span><span>{outline.length}</span></div>
-            <div className={treeDragId ? "dragging-tree" : ""} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setTreeDrop(null); }}>
+            <button type="button" className="property-heading" aria-expanded={objectTreeOpen} onClick={() => setObjectTreeOpen((open) => !open)}>
+              <span>OBJECT TREE</span><span className="tree-heading-summary"><span>{outline.length}</span><span className="tree-toggle-glyph" aria-hidden="true">⌃</span></span>
+            </button>
+            {objectTreeOpen && <div className={`layer-tree-body ${treeDragId ? "dragging-tree" : ""}`} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setTreeDrop(null); }}>
               <span
                 className={`tree-root ${treeDrop && treeDrop.id === null ? "drop-inside" : ""}`}
                 onDragOver={(event) => onTreeDragOver(event, null)}
@@ -1746,7 +1749,7 @@ export default function Home() {
                   <i>{blockIcons[item.kind] ?? "▦"}</i><span>{item.label}</span><small>{item.kind}</small>
                 </button>
               ))}
-            </div>
+            </div>}
           </section>
           {sel && (
             <>
