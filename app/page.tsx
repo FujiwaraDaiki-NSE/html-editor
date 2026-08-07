@@ -573,7 +573,10 @@ export default function Home() {
   const onCanvasKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     const node = selectedNode();
     if (!node) return;
-    if ((event.key === "Enter" || event.key === "F2") && node.getAttribute("contenteditable") !== "true") {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "b" && node.getAttribute("contenteditable") === "true") {
+      event.preventDefault();
+      formatSelection("strong");
+    } else if ((event.key === "Enter" || event.key === "F2") && node.getAttribute("contenteditable") !== "true") {
       event.preventDefault();
       beginEdit(node);
     } else if (event.key === "Escape" && node.getAttribute("contenteditable") === "true") {
@@ -871,6 +874,12 @@ export default function Home() {
     const node = selectedNode(); const selection = window.getSelection();
     if (!node || !selection || selection.rangeCount === 0 || selection.isCollapsed || !node.contains(selection.anchorNode)) return;
     checkpoint();
+    const anchor = selection.anchorNode instanceof Element ? selection.anchorNode : selection.anchorNode?.parentElement;
+    const existing = anchor?.closest(tag);
+    if (existing && node.contains(existing) && (tag === "strong" || existing.classList.contains("text-amber-400"))) {
+      existing.replaceWith(...Array.from(existing.childNodes));
+      selection.removeAllRanges(); syncFromDom(); return;
+    }
     const range = selection.getRangeAt(0); const wrapper = document.createElement(tag);
     if (tag === "span") wrapper.className = "text-amber-400";
     try { range.surroundContents(wrapper); } catch { const fragment = range.extractContents(); wrapper.appendChild(fragment); range.insertNode(wrapper); }

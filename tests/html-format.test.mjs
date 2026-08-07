@@ -26,6 +26,12 @@ test("preserves <br> line breaks (the canonical break inside slide text)", async
   assert.match(formatted, /Make ideas visible,<br \/>\s*while they move\./);
 });
 
+test("preserves spaces around inline emphasis across formatting", async () => {
+  const formatted = await formatSlideHtml(`<p class="paragraph">A <strong>bold</strong> and <span class="text-amber-400">accented</span> phrase.</p>`);
+  assert.match(formatted, /A <strong>bold<\/strong> and <span class="text-amber-400">accented<\/span> phrase\./);
+  assert.equal(await formatSlideHtml(formatted), formatted);
+});
+
 test("formats and is idempotent for the project stylesheet", async () => {
   const once = await formatDeckCss(`.weave-slide{color:red;font-size:64px}.weave-slide .hero{gap:18px}`);
   assert.match(once, /\.weave-slide \{/);
