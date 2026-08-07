@@ -4,8 +4,9 @@
 
 import { DragEvent, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import { actionFromStreamEvent } from "./codex/actions";
-import { defaultDeckCss, designHeight, designWidth, renderDeckDocument } from "../shared/slide-design.mjs";
+import { defaultDeckCss, designHeight, designWidth, escapeHtml, renderDeckDocument } from "../shared/slide-design.mjs";
 import { auditContentPolicy } from "../shared/content-policy.mjs";
+import { contentSlotSelector, titleFromSlideHtml, titleSlotSelector } from "../shared/slide-slots.mjs";
 import { advancedControlKeys, allControlKeys, applyBlockPosition, applySize, blockPositionOptions, containerControlKeys, decorationControlKeys, defaultSlideClasses, imageControlKeys, listControlKeys, migrateSlideHtmlToTailwind, ratioOptions, readBlockPosition, readSize, sizeIntents, slideControlGroups, textControlKeys } from "../shared/tailwind-slide.mjs";
 import { ItemCard } from "./codex/components/ItemCard";
 import { ServerRequestCard } from "./codex/components/ServerRequestCard";
@@ -130,20 +131,24 @@ const marginSchema = controlsFor(["marginTop"]);
 
 type SelState = { id: string; kind: string; container: boolean; read: Record<string, string> };
 
-const blankSlideHtml = (background: Background = "orbit", accent = "#f6b84b") =>
+const blankSlideHtml = (background: Background = "orbit", accent = "#f6b84b", title = "A clear, compelling headline.") =>
   `<main class="${defaultSlideClasses} theme-${background} ${backgroundClasses[background]}" data-weave-slide>
     <div class="brand flex items-center gap-2 text-xs font-bold tracking-widest text-slate-400">WEAVE<span class="${accents.find((item) => item.color === accent)?.className ?? "text-amber-400"}">●</span></div>
-    <section class="hero flex flex-1 flex-col items-start justify-center gap-6">
+    <section class="hero flex flex-1 flex-col items-start justify-center gap-6" data-weave-slot="content">
       ${blockTemplates.eyebrow(`eyebrow-${createMessageId().slice(6)}`)}
-      ${blockTemplates.heading(`heading-${createMessageId().slice(6)}`)}
+      <h1 class="heading text-6xl font-semibold leading-none tracking-tight text-slate-50" data-weave-slot="title" data-weave-id="heading-${createMessageId().slice(6)}">${escapeHtml(title)}</h1>
       ${blockTemplates.paragraph(`body-${createMessageId().slice(6)}`)}
     </section>
     <div class="page-number absolute top-0 right-0 p-8 text-xs font-semibold tracking-widest text-slate-400">01 / 01</div>
   </main>`;
 
-const initialSlides: SlideDoc[] = [{ id: "opportunity", title: "The opportunity", notes: "", html: blankSlideHtml() }];
+const slideFromHtml = (slide: SlideDoc): SlideDoc => {
+  const html = migrateSlideHtmlToTailwind(slide.html);
+  return { ...slide, title: titleFromSlideHtml(html) ?? slide.title, html };
+};
+const initialSlides: SlideDoc[] = [slideFromHtml({ id: "opportunity", title: "", notes: "", html: blankSlideHtml("orbit", "#f6b84b", "The opportunity") })];
 
-type OutlineItem = { id: string; label: string; kind: string; depth: number; container: boolean };
+type OutlineItem = { id: string; label: string; kind: string; depth: number; container: boolean; locked: boolean };
 /* Where a tree row drop lands: beside the target, or as the last child when the target is a container. */
 type TreeDrop = { id: string | null; position: "before" | "after" | "inside" };
 
@@ -224,6 +229,8 @@ export default function Home() {
   const [treeDragId, setTreeDragId] = useState<string | null>(null);
   const [treeDrop, setTreeDrop] = useState<TreeDrop | null>(null);
   const [sel, setSel] = useState<SelState | null>(null);
+  // Keep raw input while focused because the derived title trims whitespace after every DOM sync.
+  const [titleDraft, setTitleDraft] = useState<string | null>(null);
 
   const canvasRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -253,6 +260,7 @@ export default function Home() {
   const slideScale = manualZoom ?? fitScale;
 
   const setSlidesSynced = (next: SlideDoc[]) => { slidesRef.current = next; setSlides(next); };
+  const setActiveSlideSynced = (next: number) => { setTitleDraft(null); setActiveSlide(next); };
   const reinject = () => setInjectKey((value) => value + 1);
   const dismissPopover = useCallback((restoreFocus = true) => {
     setOpenPopover(null);
@@ -263,6 +271,9 @@ export default function Home() {
     setOpenPopover((current) => current === value ? null : value);
   };
   const slideRoot = () => canvasRef.current?.querySelector<HTMLElement>(".weave-slide") ?? null;
+  const contentSlot = () => canvasRef.current?.querySelector<HTMLElement>(contentSlotSelector) ?? canvasRef.current?.querySelector<HTMLElement>(".hero") ?? null;
+  const isTitleSlot = (node: Element) => node.matches(titleSlotSelector);
+  const destroysTitleSlot = (node: Element) => isTitleSlot(node) || !!node.querySelector(titleSlotSelector);
   const selectedNode = () => (selectedId ? canvasRef.current?.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(selectedId)}"]`) ?? null : null);
 
   const readSelection = (node: HTMLElement): SelState => {
@@ -299,7 +310,8 @@ export default function Home() {
   const captureActive = (list: SlideDoc[] = slidesRef.current): SlideDoc[] => {
     const html = serializeCanvas();
     if (html == null) return list;
-    return list.map((slide, index) => (index === activeRef.current - 1 ? { ...slide, html } : slide));
+    const title = titleFromSlideHtml(html);
+    return list.map((slide, index) => (index === activeRef.current - 1 ? { ...slide, title: title ?? slide.title, html } : slide));
   };
 
   const syncFromDom = () => { setSlidesSynced(captureActive()); setSaved(false); };
@@ -309,7 +321,7 @@ export default function Home() {
     setDeckTitle(value.title);
     setSlidesSynced(value.slides.map((slide) => ({ ...slide })));
     activeRef.current = value.activeSlide;
-    setActiveSlide(value.activeSlide);
+    setActiveSlideSynced(value.activeSlide);
     selectedRef.current = value.selectedId;
     setSelectedId(value.selectedId);
     setSaved(false);
@@ -350,7 +362,7 @@ export default function Home() {
     if (applyDeck) {
       setDeckTitle(state.deck.title);
       const sourceSlides = state.deck.slides?.length ? state.deck.slides : initialSlides;
-      const nextSlides = sourceSlides.map((slide) => ({ ...slide, html: migrateSlideHtmlToTailwind(slide.html) }));
+      const nextSlides = sourceSlides.map(slideFromHtml);
       slidesRef.current = nextSlides;
       setSlides(nextSlides);
       setDeckCss(state.css?.includes("weave-tailwind-slide-v1") ? state.css : defaultDeckCss);
@@ -469,7 +481,7 @@ export default function Home() {
     setEditingId(null);
     host.innerHTML = slidesRef.current[activeSlide - 1]?.html ?? "";
     host.querySelectorAll<HTMLImageElement>('img[src^="assets/"]').forEach((node) => { const path = node.getAttribute("src") ?? ""; node.dataset.assetPath = path; node.src = `${apiBase}/${path}`; });
-    host.querySelectorAll<HTMLElement>("[data-weave-id]").forEach((node) => { node.draggable = !agentRunning; });
+    host.querySelectorAll<HTMLElement>("[data-weave-id]").forEach((node) => { node.draggable = !agentRunning && !isTitleSlot(node); });
     const root = host.querySelector<HTMLElement>(".weave-slide");
     if (root) {
       const bg = backgrounds.find((item) => root.classList.contains(`theme-${item}`)) ?? "orbit";
@@ -488,20 +500,26 @@ export default function Home() {
     node?.classList.add("weave-selected");
     setSel(node ? readSelection(node) : null);
     // Rebuild the object tree from the live DOM.
-    const hero = host.querySelector(".hero");
+    const content = host.querySelector(contentSlotSelector) ?? host.querySelector(".hero");
     const list: OutlineItem[] = [];
-    if (hero) {
+    const itemFrom = (child: Element, depth: number): OutlineItem | null => {
+      const id = child.getAttribute("data-weave-id");
+      if (!id) return null;
+      const kind = child.className.split(" ").find((cls) => cls && cls !== "weave-container" && cls !== "weave-selected") ?? child.tagName.toLowerCase();
+      const locked = isTitleSlot(child);
+      return { id, label: locked ? "title" : kind, kind, depth, container: child.classList.contains("weave-container"), locked };
+    };
+    if (content) {
       const walk = (element: Element, depth: number) => {
         for (const child of Array.from(element.children)) {
-          const id = child.getAttribute("data-weave-id");
-          if (id) {
-            const kind = child.className.split(" ").find((cls) => cls && cls !== "weave-container" && cls !== "weave-selected") ?? child.tagName.toLowerCase();
-            list.push({ id, label: kind, kind, depth, container: child.classList.contains("weave-container") });
+          const item = itemFrom(child, depth);
+          if (item) {
+            list.push(item);
             walk(child, depth + 1);
           }
         }
       };
-      walk(hero, 0);
+      walk(content, 0);
     }
     setOutline(list);
     // `slides` is a dependency because every DOM edit flows back through it: without it the tree
@@ -566,7 +584,7 @@ export default function Home() {
     if (node.getAttribute?.("contenteditable") === "true") {
       node.removeAttribute("contenteditable");
       node.removeAttribute("data-editing");
-      node.draggable = !agentRunning;
+      node.draggable = !agentRunning && !isTitleSlot(node);
       setEditingId(null);
       syncFromDom();
     }
@@ -626,7 +644,7 @@ export default function Home() {
   const onCanvasDragStart = (event: DragEvent<HTMLDivElement>) => {
     const target = (event.target as HTMLElement).closest<HTMLElement>("[data-weave-id]");
     const id = target?.getAttribute("data-weave-id");
-    if (!target || !id || target.getAttribute("contenteditable") === "true" || !target.parentNode) {
+    if (!target || !id || isTitleSlot(target) || target.getAttribute("contenteditable") === "true" || !target.parentNode) {
       event.preventDefault();
       return;
     }
@@ -751,7 +769,7 @@ export default function Home() {
     const host = canvasRef.current;
     if (!host || !dragId) return false;
     const node = host.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(dragId)}"]`);
-    if (!node) return false;
+    if (!node || isTitleSlot(node)) return false;
     if (targetId == null) return true;
     if (targetId === dragId) return false;
     const target = host.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(targetId)}"]`);
@@ -781,8 +799,8 @@ export default function Home() {
     if (!host || !dragId || !drop || drop.id !== (item?.id ?? null)) return;
     if (!canDropInTree(dragId, drop.id)) return;
     const node = host.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(dragId)}"]`);
-    const target = drop.id ? host.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(drop.id)}"]`) : host.querySelector<HTMLElement>(".hero");
-    if (!node || !target) return;
+    const target = drop.id ? host.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(drop.id)}"]`) : contentSlot();
+    if (!node || !target || isTitleSlot(node) || (drop.position === "inside" && isTitleSlot(target))) return;
     const parent = drop.position === "inside" ? target : target.parentElement;
     const reference = drop.position === "inside" ? null : drop.position === "after" ? target.nextSibling : target;
     if (!parent || reference === node) return;
@@ -799,13 +817,13 @@ export default function Home() {
   const addBlock = (kind: string, assetPath = "", placement?: { id: string; after: boolean }) => {
     if (kind === "image" && !assetPath) { replacingImageRef.current = false; imageInputRef.current?.click(); return; }
     const host = canvasRef.current;
-    const hero = host?.querySelector(".hero");
-    if (!hero) return;
+    const content = contentSlot();
+    if (!host || !content) return;
     checkpoint();
     const id = `${kind}-${createMessageId().slice(6)}`;
     const node = selectedNode();
     const target = placement?.id ? host.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(placement.id)}"]`) : null;
-    const container = target?.parentElement ?? (node?.classList.contains("weave-container") ? node : hero);
+    const container = target?.parentElement ?? (node?.classList.contains("weave-container") ? node : content);
     if (target) target.insertAdjacentHTML(placement?.after ? "afterend" : "beforebegin", blockTemplates[kind](id));
     else container.insertAdjacentHTML("beforeend", blockTemplates[kind](id));
     const inserted = host.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(id)}"]`);
@@ -840,7 +858,7 @@ export default function Home() {
 
   const deleteSelected = () => {
     const node = selectedNode();
-    if (!node || outline.length <= 1) return;
+    if (!node || destroysTitleSlot(node) || outline.length <= 1) return;
     checkpoint();
     node.remove();
     setSelectedId(null);
@@ -933,15 +951,17 @@ export default function Home() {
     if (slideNumber < 1 || slideNumber > captured.length) return;
     setSlidesSynced(captured);
     activeRef.current = slideNumber;
-    setActiveSlide(slideNumber);
+    setActiveSlideSynced(slideNumber);
     setSelectedId(null);
     reinject();
   };
 
-  const renameSlide = (title: string) => {
+  const setSlideTitle = (title: string) => {
+    const node = slideRoot()?.querySelector<HTMLElement>(titleSlotSelector);
+    if (!node) return;
     checkpoint();
-    setSlidesSynced(slidesRef.current.map((slide, index) => (index === activeRef.current - 1 ? { ...slide, title } : slide)));
-    setSaved(false);
+    node.textContent = title;
+    syncFromDom();
   };
   const setSlideNotes = (notes: string) => {
     checkpoint();
@@ -952,11 +972,11 @@ export default function Home() {
   const addSlide = () => {
     checkpoint();
     const captured = captureActive();
-    const slide: SlideDoc = { id: `slide-${createMessageId().slice(6)}`, title: `Untitled ${captured.length + 1}`, notes: "", html: blankSlideHtml(background, accent) };
+    const slide = slideFromHtml({ id: `slide-${createMessageId().slice(6)}`, title: "", notes: "", html: blankSlideHtml(background, accent) });
     const next = [...captured, slide];
     setSlidesSynced(next);
     activeRef.current = next.length;
-    setActiveSlide(next.length);
+    setActiveSlideSynced(next.length);
     setSelectedId(null);
     setSaved(false);
     reinject();
@@ -966,12 +986,12 @@ export default function Home() {
     checkpoint();
     const captured = captureActive();
     const source = captured[activeRef.current - 1];
-    const copy: SlideDoc = { ...source, id: `${source.id}-${createMessageId().slice(6)}`, title: `${source.title} copy` };
+    const copy: SlideDoc = { ...source, id: `${source.id}-${createMessageId().slice(6)}` };
     const next = [...captured];
     next.splice(activeRef.current, 0, copy);
     setSlidesSynced(next);
     activeRef.current += 1;
-    setActiveSlide(activeRef.current);
+    setActiveSlideSynced(activeRef.current);
     setSelectedId(null);
     setSaved(false);
     reinject();
@@ -984,7 +1004,7 @@ export default function Home() {
     const nextNumber = Math.min(activeRef.current, captured.length);
     setSlidesSynced(captured);
     activeRef.current = nextNumber;
-    setActiveSlide(nextNumber);
+    setActiveSlideSynced(nextNumber);
     setSelectedId(null);
     setSaved(false);
     reinject();
@@ -998,7 +1018,7 @@ export default function Home() {
     [next[activeRef.current - 1], next[target]] = [next[target], next[activeRef.current - 1]];
     setSlidesSynced(next);
     activeRef.current = target + 1;
-    setActiveSlide(target + 1);
+    setActiveSlideSynced(target + 1);
     setSaved(false);
     reinject();
   };
@@ -1012,12 +1032,12 @@ export default function Home() {
   const insertTemplate = (template: SlideDoc) => {
     checkpoint();
     const captured = captureActive();
-    const slide: SlideDoc = { ...template, id: `${template.id}-${createMessageId().slice(6)}` };
+    const slide = slideFromHtml({ ...template, id: `${template.id}-${createMessageId().slice(6)}` });
     const next = [...captured];
     next.splice(activeRef.current, 0, slide);
     setSlidesSynced(next);
     activeRef.current += 1;
-    setActiveSlide(activeRef.current);
+    setActiveSlideSynced(activeRef.current);
     setSelectedId(null);
     setShowTemplates(false);
     setSaved(false);
@@ -1087,10 +1107,10 @@ export default function Home() {
       if (!window.confirm(`Replace the editor buffer with “${bundle.deck.title}”? You can Undo this import.`)) return;
       checkpoint();
       setDeckTitle(String(bundle.deck.title));
-      setSlidesSynced(bundle.deck.slides.map((slide: SlideDoc) => ({ ...slide, html: migrateSlideHtmlToTailwind(slide.html) })));
+      setSlidesSynced(bundle.deck.slides.map(slideFromHtml));
       setDeckCss(bundle.css.includes("weave-tailwind-slide-v1") ? bundle.css : defaultDeckCss);
       activeRef.current = 1;
-      setActiveSlide(1);
+      setActiveSlideSynced(1);
       setSelectedId(null);
       setSaved(false);
       reinject();
@@ -1347,7 +1367,7 @@ export default function Home() {
               className={`slide-item ${activeSlide === slideNumber ? "active" : ""}`}
               onClick={() => switchSlide(slideNumber)}
               disabled={agentRunning}
-              title={slide.title}
+              title={slide.title || "Untitled"}
               draggable={!agentRunning}
               onDragStart={() => setDraggedSlide(index)}
               onDragOver={(event) => event.preventDefault()}
@@ -1359,7 +1379,7 @@ export default function Home() {
                 next.splice(index, 0, moved);
                 setSlidesSynced(next);
                 activeRef.current = index + 1;
-                setActiveSlide(index + 1);
+                setActiveSlideSynced(index + 1);
                 setDraggedSlide(null);
                 setSaved(false);
                 reinject();
@@ -1367,7 +1387,7 @@ export default function Home() {
             >
               <span className="slide-number">{String(slideNumber).padStart(2, "0")}</span>
               <span className={`mini-slide mini-${(index % 4) + 1}`}><i /><b /><em /></span>
-              <span className="slide-name">{slide.title}</span>
+              <span className="slide-name">{slide.title || "Untitled"}</span>
             </button>
           </div>
         );
@@ -1685,7 +1705,7 @@ export default function Home() {
 
         {inspectorOpen ? <aside className="inspector">
           <div className="inspector-heading"><span>INSPECTOR</span><button aria-label="Close inspector" onClick={() => setInspectorOpen(false)}>×</button></div>
-          <div className="selection-path"><span>section.hero</span><b>›</b><strong>{sel ? `${sel.kind}.${sel.id}` : "no selection"}</strong></div>
+          <div className="selection-path"><span>content</span><b>›</b><strong>{sel ? `${sel.kind}.${sel.id}` : "no selection"}</strong></div>
           <section className="layer-tree">
             <div className="property-heading"><span>OBJECT TREE</span><span>{outline.length}</span></div>
             <div className={treeDragId ? "dragging-tree" : ""} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setTreeDrop(null); }}>
@@ -1693,15 +1713,15 @@ export default function Home() {
                 className={`tree-root ${treeDrop && treeDrop.id === null ? "drop-inside" : ""}`}
                 onDragOver={(event) => onTreeDragOver(event, null)}
                 onDrop={(event) => onTreeDrop(event, null)}
-              >⌄ <b>section.hero</b></span>
+              >⌄ <b>content</b></span>
               {outline.map((item) => (
                 <button
                   key={item.id}
                   style={{ paddingLeft: 14 + item.depth * 14 }}
                   className={[selectedId === item.id ? "active" : "", treeDragId === item.id ? "dragging" : "", treeDrop?.id === item.id ? `drop-${treeDrop.position}` : ""].filter(Boolean).join(" ")}
-                  draggable={!agentRunning}
+                  draggable={!agentRunning && !item.locked}
                   onClick={() => setSelectedId(item.id)}
-                  onDragStart={(event) => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", item.id); setTreeDragId(item.id); setSelectedId(item.id); }}
+                  onDragStart={(event) => { if (item.locked) { event.preventDefault(); return; } event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", item.id); setTreeDragId(item.id); setSelectedId(item.id); }}
                   onDragOver={(event) => onTreeDragOver(event, item)}
                   onDrop={(event) => onTreeDrop(event, item)}
                   onDragEnd={() => { setTreeDragId(null); setTreeDrop(null); }}
@@ -1777,7 +1797,7 @@ export default function Home() {
           )}
           <section className="property-section">
             <div className="property-heading"><span>SLIDE</span><span>⌃</span></div>
-            <label><span>Title</span><input value={slides[activeSlide - 1]?.title ?? ""} onChange={(event) => renameSlide(event.target.value)} /></label>
+            <label><span>Title</span><input value={titleDraft ?? slides[activeSlide - 1]?.title ?? ""} onFocus={(event) => setTitleDraft(event.currentTarget.value)} onChange={(event) => { setTitleDraft(event.target.value); setSlideTitle(event.target.value); }} onBlur={() => setTitleDraft(null)} /></label>
             <label><span>Speaker notes</span><textarea value={slides[activeSlide - 1]?.notes ?? ""} onChange={(event) => setSlideNotes(event.target.value)} /></label>
           </section>
           <section className="property-section background-section">
@@ -1802,7 +1822,7 @@ export default function Home() {
             <span>ACCENT</span>
             <div>{accents.map((item) => <button key={item.color} style={{ background: item.color }} className={accent === item.color ? "active" : ""} onClick={() => setSlideAccent(item.color)} aria-label={`Use accent ${item.color}`} />)}</div>
           </section>
-          <button className="delete-block" onClick={deleteSelected} disabled={!sel || outline.length <= 1}>Delete selected block</button>
+          <button className="delete-block" onClick={deleteSelected} disabled={!sel || outline.length <= 1 || outline.some((item) => item.id === selectedId && item.locked)}>Delete selected block</button>
         </aside> : <button className="open-inspector" onClick={() => setInspectorOpen(true)}>Inspector</button>}
       </div>
 
