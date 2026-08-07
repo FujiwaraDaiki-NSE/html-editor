@@ -1,7 +1,7 @@
 /* Tailwind-standard utilities supported by slide HTML. This one registry drives the
    inspector, the precompiled slide stylesheet, and the save-time design audit. */
 
-import { contentSlotName, titleSlotName } from "./slide-slots.mjs";
+import { closingTagEnd, contentSlotName, directChildWithClass, openingTagWithClass, titleSlotName, withAttribute } from "./slide-slots.mjs";
 
 const option = (label, className, css) => ({ label, className, css });
 
@@ -286,47 +286,6 @@ const legacyUtilities = {
   metrics: "grid grid-cols-4 items-center gap-x-5 mt-2",
 };
 
-// Migration runs in both Node and the browser, so slot discovery stays string-only.
-const openingTagWithClass = (html, className) => {
-  const tags = /<([a-z][\w:-]*)\b[^>]*>/gi;
-  for (const match of html.matchAll(tags)) {
-    const classes = match[0].match(/\bclass\s*=\s*(["'])(.*?)\1/i)?.[2].split(/\s+/) ?? [];
-    if (classes.includes(className)) return { index: match.index, end: match.index + match[0].length, tag: match[1], opening: match[0] };
-  }
-  return null;
-};
-
-const voidTags = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
-const directChildWithClass = (html, parent, className) => {
-  const tags = /<\/?([a-z][\w:-]*)\b[^>]*>/gi;
-  tags.lastIndex = parent.end;
-  let depth = 0;
-  for (let match = tags.exec(html); match; match = tags.exec(html)) {
-    if (match[0][1] === "/") {
-      if (depth === 0) return null;
-      depth -= 1;
-      continue;
-    }
-    const classes = match[0].match(/\bclass\s*=\s*(["'])(.*?)\1/i)?.[2].split(/\s+/) ?? [];
-    if (depth === 0 && classes.includes(className)) return { index: match.index, end: tags.lastIndex, tag: match[1], opening: match[0] };
-    if (!voidTags.has(match[1].toLowerCase()) && !/\/\s*>$/.test(match[0])) depth += 1;
-  }
-  return null;
-};
-
-const closingTagEnd = (html, opening) => {
-  const tags = new RegExp(`<\\/?${opening.tag}\\b[^>]*>`, "gi");
-  tags.lastIndex = opening.end;
-  let depth = 1;
-  for (let match = tags.exec(html); match; match = tags.exec(html)) {
-    if (match[0][1] === "/") depth -= 1;
-    else if (!/\/\s*>$/.test(match[0])) depth += 1;
-    if (depth === 0) return { start: match.index, end: tags.lastIndex };
-  }
-  return null;
-};
-
-const withAttribute = (opening, name, value) => opening.replace(/(\s*\/?>)$/, ` ${name}="${value}"$1`);
 const stableHash = (value) => {
   let hash = 0x811c9dc5;
   for (let index = 0; index < value.length; index += 1) hash = Math.imul(hash ^ value.charCodeAt(index), 0x01000193);

@@ -6,7 +6,7 @@ import { DragEvent, useCallback, useEffect, useLayoutEffect, useMemo, useReducer
 import { actionFromStreamEvent } from "./codex/actions";
 import { defaultDeckCss, designHeight, designWidth, escapeHtml, renderDeckDocument } from "../shared/slide-design.mjs";
 import { auditContentPolicy } from "../shared/content-policy.mjs";
-import { contentSlotSelector, titleFromSlideHtml, titleSlotSelector } from "../shared/slide-slots.mjs";
+import { applyTemplateToSlideHtml, contentSlotSelector, titleFromSlideHtml, titleSlotSelector } from "../shared/slide-slots.mjs";
 import { advancedControlKeys, allControlKeys, applyBlockPosition, applySize, applyUtilityClass, blockPositionOptions, containerControlKeys, decorationControlKeys, defaultSlideClasses, imageControlKeys, listControlKeys, migrateSlideHtmlToTailwind, ratioOptions, readBlockPosition, readSize, readUtilityClass, sizeIntents, slideControlGroups, textControlKeys } from "../shared/tailwind-slide.mjs";
 import { ItemCard } from "./codex/components/ItemCard";
 import { ServerRequestCard } from "./codex/components/ServerRequestCard";
@@ -21,7 +21,7 @@ type TemplateDoc = { id: string; name: string; html: string };
 
 type SlideNav = "filmstrip" | "rail";
 type ActivityView = "agent" | "history" | "shortcuts" | "settings";
-type OpenPopover = "project" | "delivery" | "threads" | "addBlock" | "backgrounds" | "quality" | null;
+type OpenPopover = "project" | "delivery" | "threads" | "addBlock" | "layouts" | "newSlide" | "quality" | null;
 
 type ServerState = {
   deck: { title: string; slides: SlideDoc[] };
@@ -182,7 +182,7 @@ const markReorder = (session: BlockDragSession, event: { timeStamp: number; clie
 export default function Home() {
   const [deckTitle, setDeckTitle] = useState("Q3 Strategy Deck");
   const [slides, setSlides] = useState<SlideDoc[]>(initialSlides);
-  const [, setTemplates] = useState<TemplateDoc[]>([]);
+  const [templates, setTemplates] = useState<TemplateDoc[]>([]);
   const [activeSlide, setActiveSlide] = useState(1);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [deckCss, setDeckCss] = useState<string>(defaultDeckCss);
@@ -232,6 +232,7 @@ export default function Home() {
   const [treeDragId, setTreeDragId] = useState<string | null>(null);
   const [treeDrop, setTreeDrop] = useState<TreeDrop | null>(null);
   const [sel, setSel] = useState<SelState | null>(null);
+  const [currentTemplateId, setCurrentTemplateId] = useState("");
   // Keep raw input while focused because the derived title trims whitespace after every DOM sync.
   const [titleDraft, setTitleDraft] = useState<string | null>(null);
 
@@ -255,6 +256,9 @@ export default function Home() {
   const selectedRef = useRef(selectedId);
   const blockDragRef = useRef<BlockDragSession | null>(null);
   const popoverTriggerRef = useRef<HTMLButtonElement | null>(null);
+  // Preview stays outside slide state so save, sync, and undo cannot observe a candidate frame.
+  const templatePreviewHtmlRef = useRef<string | null>(null);
+  const templatePreviewSourceHtmlRef = useRef<string | null>(null);
 
   const agentReady = codexState.connection.status === "connected";
   const agentRunning = selectThreadRunning(codexState, codexState.activeThreadId);
@@ -263,13 +267,20 @@ export default function Home() {
   const slideScale = manualZoom ?? fitScale;
 
   const setSlidesSynced = (next: SlideDoc[]) => { slidesRef.current = next; setSlides(next); };
-  const setActiveSlideSynced = (next: number) => { setTitleDraft(null); setActiveSlide(next); };
-  const reinject = () => setInjectKey((value) => value + 1);
+  const setActiveSlideSynced = (next: number) => { templatePreviewHtmlRef.current = null; templatePreviewSourceHtmlRef.current = null; setTitleDraft(null); setActiveSlide(next); };
+  const reinject = useCallback(() => setInjectKey((value) => value + 1), []);
+  const cancelTemplatePreview = useCallback(() => {
+    if (templatePreviewHtmlRef.current == null && templatePreviewSourceHtmlRef.current == null) return;
+    templatePreviewHtmlRef.current = null;
+    reinject();
+  }, [reinject]);
   const dismissPopover = useCallback((restoreFocus = true) => {
+    cancelTemplatePreview();
     setOpenPopover(null);
     if (restoreFocus) requestAnimationFrame(() => popoverTriggerRef.current?.focus());
-  }, []);
+  }, [cancelTemplatePreview]);
   const togglePopover = (value: Exclude<OpenPopover, null>, trigger: HTMLButtonElement) => {
+    cancelTemplatePreview();
     popoverTriggerRef.current = trigger;
     setOpenPopover((current) => current === value ? null : value);
   };
@@ -311,8 +322,15 @@ export default function Home() {
   };
 
   const captureActive = (list: SlideDoc[] = slidesRef.current): SlideDoc[] => {
+    if (templatePreviewHtmlRef.current != null) {
+      const html = templatePreviewSourceHtmlRef.current;
+      if (html == null) return list;
+      const title = titleFromSlideHtml(html);
+      return list.map((slide, index) => index === activeRef.current - 1 ? { ...slide, title: title ?? slide.title, html } : slide);
+    }
     const html = serializeCanvas();
     if (html == null) return list;
+    templatePreviewSourceHtmlRef.current = null;
     const title = titleFromSlideHtml(html);
     return list.map((slide, index) => (index === activeRef.current - 1 ? { ...slide, title: title ?? slide.title, html } : slide));
   };
@@ -363,6 +381,8 @@ export default function Home() {
      buffer stays authoritative until a real project change (save, history/variation, agent turn). */
   const applyServerState = useCallback((state: ServerState, applyDeck = true) => {
     if (applyDeck) {
+      templatePreviewHtmlRef.current = null;
+      templatePreviewSourceHtmlRef.current = null;
       setDeckTitle(state.deck.title);
       const sourceSlides = state.deck.slides?.length ? state.deck.slides : initialSlides;
       const nextSlides = sourceSlides.map(slideFromHtml);
@@ -384,7 +404,7 @@ export default function Home() {
     dispatchCodex({ type: "activeTurns", activeTurns: state.codex.activeTurns });
     setSelectedModel((current) => { if (current) return current; const firstModel = state.codex.catalog.models?.[0]; return firstModel?.id ?? firstModel?.model ?? ""; });
     setReasoningEffort((current) => { const firstModel = state.codex.catalog.models?.[0]; const supported = firstModel?.supportedReasoningEfforts?.map((option: any) => option.reasoningEffort) ?? []; return supported.length > 0 && !supported.includes(current) ? firstModel.defaultReasoningEffort ?? supported[0] : current; });
-  }, []);
+  }, [reinject]);
 
   useEffect(() => {
     let canceled = false;
@@ -476,18 +496,20 @@ export default function Home() {
 
   /* Inject the active slide's HTML as live DOM. Keyed on the slide index and an explicit
      inject counter — never on the slide's html — so ordinary edits mutate the DOM in place
-     without React wiping the caret. Slide switches, undo, and server updates bump the counter. */
+     without React wiping the caret. A template preview wins here without entering slide state. */
   useLayoutEffect(() => {
     const host = canvasRef.current;
     if (!host || mode !== "preview") return;
     blockDragRef.current = null;
     setDraggedId(null);
     setEditingId(null);
-    host.innerHTML = slidesRef.current[activeSlide - 1]?.html ?? "";
+    const previewHtml = templatePreviewHtmlRef.current;
+    host.innerHTML = previewHtml ?? templatePreviewSourceHtmlRef.current ?? slidesRef.current[activeSlide - 1]?.html ?? "";
     host.querySelectorAll<HTMLImageElement>('img[src^="assets/"]').forEach((node) => { const path = node.getAttribute("src") ?? ""; node.dataset.assetPath = path; node.src = `${apiBase}/${path}`; });
     host.querySelectorAll<HTMLElement>("[data-weave-id]").forEach((node) => { node.draggable = !agentRunning && !isTitleSlot(node); });
     const root = host.querySelector<HTMLElement>(".weave-slide");
     if (root) {
+      setCurrentTemplateId(root.dataset.weaveTemplate ?? "");
       const bg = backgrounds.find((item) => root.classList.contains(`theme-${item}`)) ?? "orbit";
       setBackground(bg);
       const activeAccent = accents.find((item) => root.querySelector(`.${item.className}`));
@@ -921,17 +943,35 @@ export default function Home() {
   };
   const setBlockPosition = (className: string) => applyClasses((node) => writeClasses(node, applyBlockPosition([...node.classList], className)));
 
-  const setSlideBackground = (value: Background) => {
-    const root = slideRoot();
-    if (!root) return;
+  const previewTemplate = (templateId: string) => {
+    const template = templates.find((item) => item.id === templateId);
+    const index = activeRef.current - 1;
+    templatePreviewHtmlRef.current = null;
+    if (templatePreviewSourceHtmlRef.current && canvasRef.current) canvasRef.current.innerHTML = templatePreviewSourceHtmlRef.current;
+    const captured = captureActive();
+    const slide = captured[index];
+    if (!template || !slide) return;
+    templatePreviewSourceHtmlRef.current = slide.html;
+    templatePreviewHtmlRef.current = applyTemplateToSlideHtml(slide.html, template.html, { position: activeRef.current, total: slidesRef.current.length, accent });
+    reinject();
+  };
+  const applyTemplate = (templateId: string) => {
+    const template = templates.find((item) => item.id === templateId);
+    const index = activeRef.current - 1;
+    if (!template) return;
+    templatePreviewHtmlRef.current = null;
+    if (templatePreviewSourceHtmlRef.current && canvasRef.current) canvasRef.current.innerHTML = templatePreviewSourceHtmlRef.current;
+    const captured = captureActive();
+    templatePreviewSourceHtmlRef.current = null;
+    const slide = captured[index];
+    if (!slide) return;
     checkpoint();
-    backgrounds.forEach((item) => root.classList.remove(`theme-${item}`));
-    Object.values(backgroundClasses).forEach((item) => root.classList.remove(item));
-    root.classList.remove("text-slate-50", "text-slate-950");
-    root.classList.add(`theme-${value}`, backgroundClasses[value], value === "plain" ? "text-slate-950" : "text-slate-50");
-    setBackground(value);
+    const html = applyTemplateToSlideHtml(slide.html, template.html, { position: activeRef.current, total: captured.length, accent });
+    const title = titleFromSlideHtml(html);
+    setSlidesSynced(captured.map((item, itemIndex) => itemIndex === index ? { ...item, title: title ?? item.title, html } : item));
+    setSaved(false);
     dismissPopover(false);
-    syncFromDom();
+    reinject();
   };
   const setSlideAccent = (value: string) => {
     const root = slideRoot();
@@ -972,16 +1012,21 @@ export default function Home() {
     setSaved(false);
   };
 
-  const addSlide = () => {
+  const addSlide = (templateId?: string) => {
     checkpoint();
     const captured = captureActive();
-    const slide = slideFromHtml({ id: `slide-${createMessageId().slice(6)}`, title: "", notes: "", html: blankSlideHtml(background, accent) });
+    const template = templates.find((item) => item.id === templateId);
+    const empty = '<main class="weave-slide"><section data-weave-slot="content"><h1 data-weave-slot="title" data-weave-id="title"></h1></section></main>';
+    const framed = template ? applyTemplateToSlideHtml(empty, template.html, { position: captured.length + 1, total: captured.length + 1, accent }) : blankSlideHtml(background, accent);
+    const html = framed.replace(/\bdata-weave-id\s*=\s*(["'])(.*?)\1/gi, (_, quote) => `data-weave-id=${quote}block-${createMessageId().slice(6)}${quote}`);
+    const slide = slideFromHtml({ id: `slide-${createMessageId().slice(6)}`, title: "", notes: "", html });
     const next = [...captured, slide];
     setSlidesSynced(next);
     activeRef.current = next.length;
     setActiveSlideSynced(next.length);
     setSelectedId(null);
     setSaved(false);
+    dismissPopover(false);
     reinject();
   };
 
@@ -1358,6 +1403,8 @@ export default function Home() {
   /* Switching to Code mode captures the live DOM into `slides` first, so the code view can
      read the fresh HTML straight from state without touching a ref during render. */
   const codeView = mode === "code" ? slides[activeSlide - 1]?.html ?? "" : "";
+  const templatePreview = (template: TemplateDoc) => <span className="template-preview" aria-hidden="true" dangerouslySetInnerHTML={{ __html: template.html }} />;
+  const currentTemplate = templates.find((template) => template.id === currentTemplateId);
 
   const slideNavigator = (
     <>
@@ -1395,7 +1442,19 @@ export default function Home() {
           </div>
         );
       })}
-      <button className="new-slide" onClick={addSlide} disabled={agentRunning} aria-label="New slide" title="New slide">＋</button>
+      <span className="new-slide-wrap">
+        <button className="new-slide" onClick={(event) => templates.length ? togglePopover("newSlide", event.currentTarget) : addSlide()} disabled={agentRunning} aria-label="New slide" title="New slide">＋</button>
+        {openPopover === "newSlide" && (
+          <>
+            <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
+            <div className="template-options new-slide-options" role="listbox" aria-label="New slide layout">
+              {templates.map((template) => (
+                <button key={template.id} role="option" aria-selected="false" onClick={() => addSlide(template.id)}>{templatePreview(template)}<span>{template.name}</span></button>
+              ))}
+            </div>
+          </>
+        )}
+      </span>
     </>
   );
 
@@ -1803,19 +1862,28 @@ export default function Home() {
             <label><span>Title</span><input value={titleDraft ?? slides[activeSlide - 1]?.title ?? ""} onFocus={(event) => setTitleDraft(event.currentTarget.value)} onChange={(event) => { setTitleDraft(event.target.value); setSlideTitle(event.target.value); }} onBlur={() => setTitleDraft(null)} /></label>
             <label><span>Speaker notes</span><textarea value={slides[activeSlide - 1]?.notes ?? ""} onChange={(event) => setSlideNotes(event.target.value)} /></label>
           </section>
-          <section className="property-section background-section">
-            <div className="property-heading"><span>SLIDE BACKGROUND</span><span>⌃</span></div>
-            <button className="background-select" onClick={(event) => togglePopover("backgrounds", event.currentTarget)} aria-expanded={openPopover === "backgrounds"} aria-haspopup="listbox">
-              <span className={`background-preview ${background}`} />
-              <span><strong>{background === "orbit" ? "Orbit / Dark" : background === "grid" ? "Grid / Graphite" : "Plain / Ink"}</strong><small>Project theme</small></span>
+          <section className="property-section layout-section">
+            <div className="property-heading"><span>SLIDE LAYOUT</span><span>⌃</span></div>
+            <button className="layout-select" onClick={(event) => togglePopover("layouts", event.currentTarget)} aria-expanded={openPopover === "layouts"} aria-haspopup="listbox">
+              {currentTemplate ? templatePreview(currentTemplate) : <span className="template-preview template-preview-empty" />}
+              <span><strong>{currentTemplate?.name ?? "Custom"}</strong><small>{currentTemplate ? "Project template" : "No matching template"}</small></span>
               <b>⌄</b>
             </button>
-            {openPopover === "backgrounds" && (
+            {openPopover === "layouts" && (
               <>
                 <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
-                <div className="background-options" role="listbox" aria-label="Slide background">
-                  {backgrounds.map((item) => (
-                    <button key={item} role="option" aria-selected={background === item} onClick={() => setSlideBackground(item)}><span className={`background-preview ${item}`} />{item[0].toUpperCase() + item.slice(1)}</button>
+                <div className="template-options layout-options" role="listbox" aria-label="Slide layout">
+                  {templates.map((template) => (
+                    <button
+                      key={template.id}
+                      role="option"
+                      aria-selected={currentTemplateId === template.id}
+                      onPointerEnter={() => previewTemplate(template.id)}
+                      onPointerLeave={cancelTemplatePreview}
+                      onFocus={() => previewTemplate(template.id)}
+                      onBlur={cancelTemplatePreview}
+                      onClick={() => applyTemplate(template.id)}
+                    >{templatePreview(template)}<span>{template.name}</span></button>
                   ))}
                 </div>
               </>
