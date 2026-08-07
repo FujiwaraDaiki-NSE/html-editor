@@ -1,6 +1,8 @@
 /* Tailwind-standard utilities supported by slide HTML. This one registry drives the
    inspector, the precompiled slide stylesheet, and the save-time design audit. */
 
+import { contentSlotName, titleSlotName } from "./slide-slots.mjs";
+
 const option = (label, className, css) => ({ label, className, css });
 
 export const slideControlGroups = {
@@ -271,6 +273,65 @@ const legacyUtilities = {
   metrics: "grid grid-cols-4 items-center gap-x-5 mt-2",
 };
 
+// Migration runs in both Node and the browser, so slot discovery stays string-only.
+const openingTagWithClass = (html, className) => {
+  const tags = /<([a-z][\w:-]*)\b[^>]*>/gi;
+  for (const match of html.matchAll(tags)) {
+    const classes = match[0].match(/\bclass\s*=\s*(["'])(.*?)\1/i)?.[2].split(/\s+/) ?? [];
+    if (classes.includes(className)) return { index: match.index, end: match.index + match[0].length, tag: match[1], opening: match[0] };
+  }
+  return null;
+};
+
+const closingTagEnd = (html, opening) => {
+  const tags = new RegExp(`<\\/?${opening.tag}\\b[^>]*>`, "gi");
+  tags.lastIndex = opening.end;
+  let depth = 1;
+  for (let match = tags.exec(html); match; match = tags.exec(html)) {
+    if (match[0][1] === "/") depth -= 1;
+    else if (!/\/\s*>$/.test(match[0])) depth += 1;
+    if (depth === 0) return { start: match.index, end: tags.lastIndex };
+  }
+  return null;
+};
+
+const withAttribute = (opening, name, value) => opening.replace(/(\s*\/?>)$/, ` ${name}="${value}"$1`);
+const stableHash = (value) => {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) hash = Math.imul(hash ^ value.charCodeAt(index), 0x01000193);
+  return (hash >>> 0).toString(36);
+};
+const uniqueTitleId = (html) => {
+  const ids = new Set([...html.matchAll(/\bdata-weave-id\s*=\s*(["'])(.*?)\1/gi)].map((match) => match[2]));
+  const base = `title-${stableHash(html)}`;
+  let id = base;
+  for (let suffix = 2; ids.has(id); suffix += 1) id = `${base}-${suffix}`;
+  return id;
+};
+
+const migrateSlideSlots = (html) => {
+  if (/\bdata-weave-slot\s*=/i.test(html)) return html;
+  const hero = openingTagWithClass(html, "hero");
+  if (!hero) return html;
+  const closing = closingTagEnd(html, hero);
+  if (!closing) return html;
+  const inner = html.slice(hero.end, closing.start);
+  const headings = /<h1\b[^>]*>[\s\S]*?<\/h1\s*>/gi;
+  let heading = null;
+  for (const match of inner.matchAll(headings)) {
+    const classes = match[0].match(/^<h1\b[^>]*\bclass\s*=\s*(["'])(.*?)\1/i)?.[2].split(/\s+/) ?? [];
+    if (classes.includes("heading")) { heading = match; break; }
+  }
+  const title = heading
+    ? heading[0].replace(/^<h1\b[^>]*>/i, (opening) => withAttribute(opening, "data-weave-slot", titleSlotName))
+    : `<h1 class="heading text-6xl font-semibold leading-none tracking-tight text-slate-50" data-weave-slot="${titleSlotName}" data-weave-id="${uniqueTitleId(html)}"></h1>`;
+  const content = withAttribute(hero.opening, "data-weave-slot", contentSlotName)
+    + (heading ? `${inner.slice(0, heading.index)}${inner.slice(heading.index + heading[0].length)}` : inner)
+    + html.slice(closing.start, closing.end);
+  const indent = html.slice(0, hero.index).match(/(^|\n)([ \t]*)$/)?.[2] ?? "";
+  return `${html.slice(0, hero.index)}${title}\n${indent}${content}${html.slice(closing.end)}`;
+};
+
 /** One-way migration for decks created before Tailwind classes became the source of truth. */
 export function migrateSlideHtmlToTailwind(input) {
   let html = String(input).replace(/\sstyle\s*=\s*(?:"[^"]*"|'[^']*')/gi, "");
@@ -296,5 +357,5 @@ export function migrateSlideHtmlToTailwind(input) {
   });
   html = html.replace(/<strong(?![^>]*\bclass=)/gi, '<strong class="text-3xl font-semibold tracking-tight text-amber-400"');
   html = html.replace(/<span(?![^>]*\bclass=)/gi, '<span class="text-xs text-slate-400"');
-  return html;
+  return migrateSlideSlots(html);
 }
