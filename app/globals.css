@@ -448,6 +448,8 @@ body {
 .property-section textarea { width: 100%; height: 58px; padding: 7px; resize: vertical; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--panel-2); color: var(--text); font-size: 9px; line-height: 1.4; outline: none; }
 .property-section textarea:focus { border-color: var(--accent); }
 .property-section input, .property-section select { width: 100%; min-height: 27px; margin-bottom: 7px; padding: 0 7px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--panel-2); color: var(--text); font-size: 8px; }
+.inspector-action, .table-actions button { min-height: 25px; padding: 0 7px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--panel-2); color: var(--text); font-size: 8px; cursor: pointer; }
+.table-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
 .control-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
 .select-control { width: 100%; height: 27px; padding: 0 7px; display: flex; align-items: center; justify-content: space-between; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--panel-2); font-size: 8px; text-align: left; cursor: pointer; }
 .select-control i { color: var(--muted); font-style: normal; }

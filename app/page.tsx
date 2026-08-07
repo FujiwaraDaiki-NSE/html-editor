@@ -1,11 +1,12 @@
 "use client";
 /* eslint-disable @typescript-eslint/no-explicit-any -- app-server catalog/request payloads are rendered defensively for forward compatibility. */
+/* eslint-disable react-hooks/refs -- the editor intentionally treats the live canvas DOM as its source of truth. */
 
 import { DragEvent, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import { actionFromStreamEvent } from "./codex/actions";
 import { defaultDeckCss, designHeight, designWidth, renderDeckDocument } from "../shared/slide-design.mjs";
 import { auditContentPolicy } from "../shared/content-policy.mjs";
-import { advancedControlKeys, allControlKeys, applyBlockPosition, applySize, blockPositionOptions, containerControlKeys, defaultSlideClasses, migrateSlideHtmlToTailwind, readBlockPosition, readSize, sizeIntents, slideControlGroups, textControlKeys } from "../shared/tailwind-slide.mjs";
+import { advancedControlKeys, allControlKeys, applyBlockPosition, applySize, blockPositionOptions, containerControlKeys, decorationControlKeys, defaultSlideClasses, imageControlKeys, listControlKeys, migrateSlideHtmlToTailwind, ratioOptions, readBlockPosition, readSize, sizeIntents, slideControlGroups, textControlKeys } from "../shared/tailwind-slide.mjs";
 import { ItemCard } from "./codex/components/ItemCard";
 import { ServerRequestCard } from "./codex/components/ServerRequestCard";
 import { codexReducer, initialCodexState } from "./codex/reducer";
@@ -95,9 +96,12 @@ const blockTemplates: Record<string, (id: string) => string> = {
   row: (id) => `<div class="weave-container row flex flex-row gap-4" data-weave-id="${id}"></div>`,
   column: (id) => `<div class="weave-container column flex flex-col gap-4" data-weave-id="${id}"></div>`,
   grid: (id) => `<div class="weave-container grid grid-cols-2 gap-4" data-weave-id="${id}"></div>`,
+  image: (id) => `<img class="image w-full object-cover object-center aspect-video rounded-lg" src="" alt="" data-weave-id="${id}">`,
+  list: (id) => `<ul class="list list-disc pl-6 text-lg leading-normal text-slate-300" data-weave-id="${id}"><li>First point</li><li>Second point</li><li>Third point</li></ul>`,
+  table: (id) => `<table class="table w-full border-collapse text-sm" data-weave-id="${id}"><thead><tr><th class="p-2 border-b border-slate-300 text-left">Heading</th><th class="p-2 border-b border-slate-300 text-left">Heading</th></tr></thead><tbody><tr><td class="p-2 border-b border-slate-700">Value</td><td class="p-2 border-b border-slate-700">Value</td></tr><tr><td class="p-2 border-b border-slate-700">Value</td><td class="p-2 border-b border-slate-700">Value</td></tr></tbody></table>`,
 };
 const blockKinds = Object.keys(blockTemplates);
-const blockIcons: Record<string, string> = { eyebrow: "T", heading: "H", paragraph: "¶", metrics: "▦", note: "≡", row: "↔", column: "↕", grid: "▦" };
+const blockIcons: Record<string, string> = { eyebrow: "T", heading: "H", paragraph: "¶", metrics: "▦", note: "≡", row: "↔", column: "↕", grid: "▦", image: "▧", list: "•", table: "▤" };
 const containerClasses = new Set(["row", "column", "grid"]);
 
 /* Which axis a parent lays its children out on — the context every sizing decision resolves against. */
@@ -118,6 +122,10 @@ const controlsFor = (keys: string[]): Control[] => keys.map((key) => ({ key, lab
 const textSchema = controlsFor(textControlKeys);
 const containerSchema = controlsFor(containerControlKeys);
 const advancedSchema = controlsFor(advancedControlKeys);
+const listSchema = controlsFor(listControlKeys);
+const imageSchema = controlsFor(imageControlKeys);
+const decorationSchema = controlsFor(decorationControlKeys);
+const marginSchema = controlsFor(["marginTop"]);
 
 type SelState = { id: string; kind: string; container: boolean; read: Record<string, string> };
 
@@ -220,6 +228,8 @@ export default function Home() {
   const presenterRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const replacingImageRef = useRef(false);
   const messagesRef = useRef<HTMLDivElement>(null);
   const compositionRef = useRef(false);
   const turnInFlightRef = useRef(false);
@@ -254,12 +264,16 @@ export default function Home() {
   const selectedNode = () => (selectedId ? canvasRef.current?.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(selectedId)}"]`) ?? null : null);
 
   const readSelection = (node: HTMLElement): SelState => {
-    const kind = ["heading", "paragraph", "eyebrow", "note", "metrics", "row", "column", "grid"].find((cls) => node.classList.contains(cls)) ?? node.tagName.toLowerCase();
+    const kind = blockKinds.find((cls) => node.classList.contains(cls)) ?? node.tagName.toLowerCase();
     const read: Record<string, string> = {};
     for (const key of allControlKeys) {
       read[key] = slideControlGroups[key].options.find((item: { className: string }) => node.classList.contains(item.className))?.className ?? "";
     }
-    read.direction = node.classList.contains("column") ? "column" : "row";
+    read.direction = node.classList.contains("grid") ? "grid" : node.classList.contains("column") ? "column" : "row";
+    read.columns = ["grid-cols-2", "grid-cols-3", "grid-cols-4"].find((name) => node.classList.contains(name)) ?? "grid-cols-2";
+    read.span = ["col-span-2", "col-span-3", "row-span-2"].find((name) => node.classList.contains(name)) ?? "";
+    read.ratio = ratioOptions.find((item: { value: string }) => node.classList.contains(item.value))?.value ?? "basis-1/2";
+    read.alt = node.getAttribute("alt") ?? "";
     read.parentLayout = layoutOf(node.parentElement);
     read.size = sizeOf(node);
     read.blockPosition = readBlockPosition([...node.classList]);
@@ -276,6 +290,7 @@ export default function Home() {
     clone.querySelectorAll("[data-editing]").forEach((node) => node.removeAttribute("data-editing"));
     clone.querySelectorAll(".weave-selected, .weave-dragging, .weave-drop-before, .weave-drop-after, .weave-drop-horizontal").forEach((node) => node.classList.remove("weave-selected", "weave-dragging", "weave-drop-before", "weave-drop-after", "weave-drop-horizontal"));
     clone.querySelectorAll("[draggable]").forEach((node) => node.removeAttribute("draggable"));
+    clone.querySelectorAll<HTMLImageElement>('img[data-asset-path]').forEach((node) => { node.src = node.dataset.assetPath ?? node.getAttribute("src") ?? ""; node.removeAttribute("data-asset-path"); });
     return clone.outerHTML;
   };
 
@@ -451,6 +466,7 @@ export default function Home() {
     setDraggedId(null);
     setEditingId(null);
     host.innerHTML = slidesRef.current[activeSlide - 1]?.html ?? "";
+    host.querySelectorAll<HTMLImageElement>('img[src^="assets/"]').forEach((node) => { const path = node.getAttribute("src") ?? ""; node.dataset.assetPath = path; node.src = `${apiBase}/${path}`; });
     host.querySelectorAll<HTMLElement>("[data-weave-id]").forEach((node) => { node.draggable = !agentRunning; });
     const root = host.querySelector<HTMLElement>(".weave-slide");
     if (root) {
@@ -529,7 +545,7 @@ export default function Home() {
   };
 
   const beginEdit = (node: HTMLElement) => {
-    if (containerClasses.has(node.className.split(" ").find((cls) => containerClasses.has(cls)) ?? "")) return;
+    if (node instanceof HTMLImageElement || containerClasses.has(node.className.split(" ").find((cls) => containerClasses.has(cls)) ?? "")) return;
     checkpoint();
     node.draggable = false;
     node.setAttribute("contenteditable", "true");
@@ -680,6 +696,8 @@ export default function Home() {
 
   const onCanvasDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
+    const image = Array.from(event.dataTransfer.files).find((file) => file.type.startsWith("image/"));
+    if (image) { void uploadImage(image); return; }
     const session = blockDragRef.current;
     if (!session) return;
     session.committed = true;
@@ -694,6 +712,13 @@ export default function Home() {
     setHistoryState({ undo: undoRef.current.length, redo: 0 });
     syncFromDom();
     setAnnouncement("Block moved");
+  };
+
+  const onCanvasPaste = (event: React.ClipboardEvent<HTMLDivElement>) => {
+    const image = Array.from(event.clipboardData.files).find((file) => file.type.startsWith("image/"));
+    if (!image) return;
+    event.preventDefault();
+    void uploadImage(image);
   };
 
   const onCanvasDragEnd = () => {
@@ -757,7 +782,8 @@ export default function Home() {
     setAnnouncement("Block moved");
   };
 
-  const addBlock = (kind: string) => {
+  const addBlock = (kind: string, assetPath = "") => {
+    if (kind === "image" && !assetPath) { replacingImageRef.current = false; imageInputRef.current?.click(); return; }
     const host = canvasRef.current;
     const hero = host?.querySelector(".hero");
     if (!hero) return;
@@ -767,12 +793,33 @@ export default function Home() {
     const container = node?.classList.contains("weave-container") ? node : hero;
     container.insertAdjacentHTML("beforeend", blockTemplates[kind](id));
     const inserted = container.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(id)}"]`);
+    if (kind === "image" && inserted instanceof HTMLImageElement) {
+      inserted.dataset.assetPath = assetPath;
+      inserted.src = `${apiBase}/${assetPath}`;
+    }
     inserted?.setAttribute("draggable", "true");
     // A new container starts as Fill: hugging content would make an empty one zero-width.
     if (inserted?.classList.contains("weave-container")) applySizeTo(inserted, "fill");
     setSelectedId(id);
     dismissPopover(false);
     syncFromDom();
+  };
+
+  const uploadImage = async (file: File) => {
+    try {
+      if (file.size > 10 * 1024 * 1024) throw new Error("Image must be 10 MB or smaller.");
+      const dataUrl = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file); });
+      const response = await fetch(`${apiBase}/assets`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ mimeType: file.type, data: dataUrl.slice(dataUrl.indexOf(",") + 1) }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Image import failed.");
+      const selected = selectedNode();
+      if (replacingImageRef.current && selected instanceof HTMLImageElement) {
+        checkpoint(); selected.dataset.assetPath = result.path; selected.src = `${apiBase}/${result.path}`; syncFromDom(); setSel(readSelection(selected));
+      } else addBlock("image", result.path);
+      setAnnouncement("Image imported");
+      setApiError(null);
+    } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
+    finally { replacingImageRef.current = false; if (imageInputRef.current) imageInputRef.current.value = ""; }
   };
 
   const deleteSelected = () => {
@@ -802,11 +849,33 @@ export default function Home() {
   const setDirection = (value: string) => applyClasses((node) => {
     const children = Array.from(node.children);
     const intents = children.map(sizeOf);
-    node.classList.remove("row", "column", "flex-row", "flex-col");
-    node.classList.add(value, value === "column" ? "flex-col" : "flex-row");
+    node.classList.remove("row", "column", "grid", "flex", "flex-row", "flex-col", "grid-cols-2", "grid-cols-3", "grid-cols-4");
+    if (value === "grid") node.classList.add("grid", "grid-cols-2");
+    else node.classList.add("weave-container", value, "flex", value === "column" ? "flex-col" : "flex-row");
     children.forEach((child, index) => writeClasses(child, applySize([...child.classList], intents[index], value)));
   });
   const setSize = (intent: string) => applyClasses((node) => applySizeTo(node, intent));
+  const setRatio = (className: string) => applyClasses((node) => { node.classList.remove(...ratioOptions.map((item: { value: string }) => item.value)); node.classList.add("flex-none", className); });
+  const setColumns = (className: string) => applyClasses((node) => { node.classList.remove("grid-cols-2", "grid-cols-3", "grid-cols-4"); node.classList.add(className); });
+  const setSpan = (className: string) => applyClasses((node) => { node.classList.remove("col-span-2", "col-span-3", "row-span-2"); if (className) node.classList.add(className); });
+  const setAlt = (value: string) => applyClasses((node) => node.setAttribute("alt", value));
+  const editTable = (operation: "add-row" | "remove-row" | "add-column" | "remove-column") => applyClasses((node) => {
+    if (!(node instanceof HTMLTableElement)) return;
+    const rows = Array.from(node.rows);
+    if (operation === "add-row") { const row = node.tBodies[0]?.insertRow(); for (let i = 0; row && i < (rows[0]?.cells.length ?? 2); i += 1) { const cell = row.insertCell(); cell.className = "p-2 border-b border-slate-700"; cell.textContent = "Value"; } }
+    if (operation === "remove-row" && node.tBodies[0]?.rows.length) node.tBodies[0].deleteRow(-1);
+    if (operation === "add-column") rows.forEach((row, index) => { const cell = index === 0 ? document.createElement("th") : document.createElement("td"); cell.className = `p-2 border-b ${index === 0 ? "border-slate-300 text-left" : "border-slate-700"}`; cell.textContent = index === 0 ? "Heading" : "Value"; row.appendChild(cell); });
+    if (operation === "remove-column" && (rows[0]?.cells.length ?? 0) > 1) rows.forEach((row) => row.deleteCell(-1));
+  });
+  const formatSelection = (tag: "strong" | "span") => {
+    const node = selectedNode(); const selection = window.getSelection();
+    if (!node || !selection || selection.rangeCount === 0 || selection.isCollapsed || !node.contains(selection.anchorNode)) return;
+    checkpoint();
+    const range = selection.getRangeAt(0); const wrapper = document.createElement(tag);
+    if (tag === "span") wrapper.className = "text-amber-400";
+    try { range.surroundContents(wrapper); } catch { const fragment = range.extractContents(); wrapper.appendChild(fragment); range.insertNode(wrapper); }
+    selection.removeAllRanges(); const next = document.createRange(); next.selectNodeContents(wrapper); selection.addRange(next); syncFromDom();
+  };
   const setBlockPosition = (className: string) => applyClasses((node) => writeClasses(node, applyBlockPosition([...node.classList], className)));
 
   const setSlideBackground = (value: Background) => {
@@ -1525,6 +1594,7 @@ export default function Home() {
                   onDragStart={onCanvasDragStart}
                   onDragOver={onCanvasDragOver}
                   onDrop={onCanvasDrop}
+                  onPaste={onCanvasPaste}
                   onDragEnd={onCanvasDragEnd}
                 />
                 <div className="canvas-toolbar">
@@ -1534,6 +1604,7 @@ export default function Home() {
                   </div>
                   <div className="canvas-tool-group content-tools" role="group" aria-label="Slide content">
                     <button onClick={(event) => togglePopover("addBlock", event.currentTarget)} className={openPopover === "addBlock" ? "active" : ""} aria-expanded={openPopover === "addBlock"} aria-haspopup="menu">＋ Add block</button>
+                    <input ref={imageInputRef} className="sr-only" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml,image/gif" onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadImage(file); }} />
                   </div>
                   <div className="canvas-tool-group slide-tools" role="group" aria-label="Slide operations">
                     <button onClick={duplicateSlide} title="Duplicate slide">Duplicate</button>
@@ -1622,11 +1693,17 @@ export default function Home() {
                   <div className="property-row">
                     <span>Width</span>
                     <div className="scale-options">
-                      {sizeIntents.map((opt: { value: string; label: string }) => (
+                      {sizeIntents.filter((opt: { value: string }) => opt.value !== "ratio" || sel.read.parentLayout === "row").map((opt: { value: string; label: string }) => (
                         <button key={opt.value} className={sel.read.size === opt.value ? "active" : ""} onClick={() => setSize(opt.value)}>{opt.label}</button>
                       ))}
                     </div>
                   </div>
+                )}
+                {sel.read.size === "ratio" && sel.read.parentLayout === "row" && (
+                  <div className="property-row"><span>Ratio</span><div className="scale-options">{ratioOptions.map((opt: { value: string; label: string }) => <button key={opt.value} className={sel.read.ratio === opt.value ? "active" : ""} onClick={() => setRatio(opt.value)}>{opt.label}</button>)}</div></div>
+                )}
+                {sel.read.parentLayout === "grid" && (
+                  <div className="property-row"><span>Span</span><div className="scale-options">{[{ value: "", label: "1" }, { value: "col-span-2", label: "Col 2" }, { value: "col-span-3", label: "Col 3" }, { value: "row-span-2", label: "Row 2" }].map((opt) => <button key={opt.value || "one"} className={sel.read.span === opt.value ? "active" : ""} onClick={() => setSpan(opt.value)}>{opt.label}</button>)}</div></div>
                 )}
                 {/* Measure is the number Fixed stops at, so it belongs directly under the choice
                     that calls for it — not filed away somewhere the trigger cannot be seen. */}
@@ -1643,23 +1720,30 @@ export default function Home() {
                     </div>
                   </div>
                 )}
+                {propertyRows(marginSchema)}
               </section>
               {/* What this kind of block can do that others cannot — arrange children, or set type.
                   Position and Align items stay under separate headings, as they must. */}
               <section className="property-section">
-                <div className="property-heading"><span>{containerLike ? "CONTAINER" : "TEXT"}</span></div>
+                <div className="property-heading"><span>{containerLike ? "CONTAINER" : sel.kind === "image" ? "IMAGE SIZE" : "TEXT"}</span></div>
                 {containerLike && (
                   <div className="property-row">
                     <span>Direction</span>
                     <div className="scale-options">
-                      {[{ label: "Row", value: "row" }, { label: "Column", value: "column" }].map((opt) => (
+                      {[{ label: "Row", value: "row" }, { label: "Column", value: "column" }, { label: "Grid", value: "grid" }].map((opt) => (
                         <button key={opt.value} className={(sel.read.direction || "row") === opt.value ? "active" : ""} onClick={() => setDirection(opt.value)}>{opt.label}</button>
                       ))}
                     </div>
                   </div>
                 )}
-                {propertyRows(containerLike ? containerSchema : textSchema)}
+                {containerLike && sel.read.direction === "grid" && <div className="property-row"><span>Columns</span><div className="scale-options">{[2, 3, 4].map((count) => <button key={count} className={sel.read.columns === `grid-cols-${count}` ? "active" : ""} onClick={() => setColumns(`grid-cols-${count}`)}>{count}</button>)}</div></div>}
+                {propertyRows(containerLike ? containerSchema : sel.kind === "image" ? [] : textSchema)}
+                {sel.kind === "list" && propertyRows(listSchema)}
+                {!containerLike && sel.kind !== "image" && <div className="property-row"><span>Selection</span><div className="scale-options"><button onMouseDown={(event) => event.preventDefault()} onClick={() => formatSelection("strong")}>Bold</button><button onMouseDown={(event) => event.preventDefault()} onClick={() => formatSelection("span")}>Accent</button></div></div>}
               </section>
+              {sel.kind === "image" && <section className="property-section"><div className="property-heading"><span>IMAGE</span></div>{propertyRows(imageSchema)}<label><span>Alt text</span><input value={sel.read.alt} onChange={(event) => setAlt(event.target.value)} /></label><button className="inspector-action" onClick={() => { replacingImageRef.current = true; imageInputRef.current?.click(); }}>Replace image</button></section>}
+              {containerLike && <section className="property-section"><div className="property-heading"><span>DECORATION</span></div>{propertyRows(decorationSchema)}</section>}
+              {sel.kind === "table" && <section className="property-section"><div className="property-heading"><span>TABLE</span></div><div className="table-actions"><button onClick={() => editTable("add-row")}>＋ Row</button><button onClick={() => editTable("remove-row")}>− Row</button><button onClick={() => editTable("add-column")}>＋ Column</button><button onClick={() => editTable("remove-column")}>− Column</button></div></section>}
             </>
           )}
           <section className="property-section">
