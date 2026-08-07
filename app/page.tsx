@@ -92,7 +92,7 @@ const containerClasses = new Set(["row", "column", "grid"]);
 
 /* Which axis a parent lays its children out on — the context every sizing decision resolves against. */
 const layoutOf = (node: Element | null): string => !node ? "column" : node.classList.contains("grid") ? "grid" : node.classList.contains("flex-row") ? "row" : "column";
-const writeClasses = (node: Element, classes: string[]) => { node.className = classes.join(" "); };
+const writeClasses = (node: Element, classes: string[]) => { node.setAttribute("class", classes.join(" ")); };
 const sizeOf = (node: Element): string => readSize([...node.classList], layoutOf(node.parentElement), [...(node.parentElement?.classList ?? [])]);
 const applySizeTo = (node: Element, intent: string) => writeClasses(node, applySize([...node.classList], intent, layoutOf(node.parentElement)));
 /* Only a move that crosses into a different axis needs new classes — reordering within one parent
@@ -511,7 +511,7 @@ export default function Home() {
     const itemFrom = (child: Element, depth: number): OutlineItem | null => {
       const id = child.getAttribute("data-weave-id");
       if (!id) return null;
-      const kind = child.className.split(" ").find((cls) => cls && cls !== "weave-container" && cls !== "weave-selected") ?? child.tagName.toLowerCase();
+      const kind = [...child.classList].find((cls) => cls !== "weave-container" && cls !== "weave-selected") ?? child.tagName.toLowerCase();
       const locked = isTitleSlot(child);
       return { id, label: locked ? "title" : kind, kind, depth, container: child.classList.contains("weave-container"), locked };
     };
@@ -571,7 +571,7 @@ export default function Home() {
   };
 
   const beginEdit = (node: HTMLElement) => {
-    if (node instanceof HTMLImageElement || containerClasses.has(node.className.split(" ").find((cls) => containerClasses.has(cls)) ?? "")) return;
+    if (node instanceof HTMLImageElement || [...node.classList].some((cls) => containerClasses.has(cls))) return;
     checkpoint();
     node.draggable = false;
     node.setAttribute("contenteditable", "true");

@@ -151,6 +151,13 @@ test("block dragging previews reordering and separates move from text editing", 
   assert.match(css, /:has\(> \.weave-dragging:only-child\)/);
 });
 
+test("canvas class operations support SVG blocks", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  // SVG blocks expose className as SVGAnimatedString, so canvas nodes must use classList/setAttribute.
+  assert.doesNotMatch(page, /\.className\.split\(/);
+  assert.doesNotMatch(page, /\b(?:node|child|target|element)\.className\s*=/);
+});
+
 test("local API constrains origins and exposes reconnectable NDJSON events", async () => {
   const source = await readFile(new URL("../server/local-api.mjs", import.meta.url), "utf8");
   assert.match(source, /127\.0\.0\.1:3000/);
