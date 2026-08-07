@@ -20,5 +20,6 @@ test("server-renders the Weave editor shell", async () => {
   assert.match(html, /Q3 Strategy Deck/);
   assert.match(html, /Present &amp; export/);
   assert.match(html, /Waiting for local Codex/);
+  assert.match(html, /class="workspace"[^>]*data-inspector="open"/);
   assert.doesNotMatch(html, /react-loading-skeleton/i);
 });

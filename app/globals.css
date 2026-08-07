@@ -436,21 +436,25 @@ body {
 .selection-path strong { overflow: hidden; color: var(--accent); text-overflow: ellipsis; }
 .layer-tree { padding: 0 10px 9px; border-bottom: 1px solid var(--line); }
 .layer-tree .property-heading { height: 29px; }
-.layer-tree > div:last-child { padding: 5px; border: 1px solid var(--line); border-radius: 4px; background: color-mix(in srgb, var(--panel-2) 65%, transparent); }
+.layer-tree > .property-heading { width: 100%; padding: 0; border: 0; background: transparent; font-family: inherit; text-align: left; cursor: pointer; }
+.tree-heading-summary { display: flex; align-items: center; gap: 6px; }
+.tree-toggle-glyph { display: inline-block; transition: transform .15s ease; }
+.layer-tree > .property-heading[aria-expanded="false"] .tree-toggle-glyph { transform: rotate(180deg); }
+.layer-tree-body { padding: 5px; border: 1px solid var(--line); border-radius: 4px; background: color-mix(in srgb, var(--panel-2) 65%, transparent); }
 .tree-root { display: block; padding: 3px 4px 5px; color: var(--muted); font-size: 8px; }
 .tree-root b { color: var(--text); font-weight: 500; }
-.layer-tree button { width: 100%; height: 25px; padding: 0 5px 0 14px; display: grid; grid-template-columns: 18px 1fr auto; align-items: center; border: 0; border-radius: 3px; background: transparent; color: var(--muted); text-align: left; cursor: pointer; }
-.layer-tree button:hover { background: var(--panel-3); }
-.layer-tree button.active { background: color-mix(in srgb, var(--accent) 12%, var(--panel-3)); color: var(--text); }
-.layer-tree button i { width: 15px; height: 15px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 3px; color: var(--accent); font: 7px/1 var(--font-geist-mono), monospace; }
-.layer-tree button span { overflow: hidden; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
-.layer-tree button small { color: var(--soft); font-size: 7px; }
+.layer-tree-body button { width: 100%; height: 25px; padding: 0 5px 0 14px; display: grid; grid-template-columns: 18px 1fr auto; align-items: center; border: 0; border-radius: 3px; background: transparent; color: var(--muted); text-align: left; cursor: pointer; }
+.layer-tree-body button:hover { background: var(--panel-3); }
+.layer-tree-body button.active { background: color-mix(in srgb, var(--accent) 12%, var(--panel-3)); color: var(--text); }
+.layer-tree-body button i { width: 15px; height: 15px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 3px; color: var(--accent); font: 7px/1 var(--font-geist-mono), monospace; }
+.layer-tree-body button span { overflow: hidden; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.layer-tree-body button small { color: var(--soft); font-size: 7px; }
 /* Tree drag-and-drop: inset shadows mark the insertion point so no row shifts while dragging. */
-.layer-tree button[draggable="true"] { cursor: grab; }
-.layer-tree button.dragging { opacity: .4; cursor: grabbing; }
-.layer-tree button.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
-.layer-tree button.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
-.layer-tree button.drop-inside, .tree-root.drop-inside { background: color-mix(in srgb, var(--accent) 16%, transparent); box-shadow: inset 0 0 0 1px var(--accent); }
+.layer-tree-body button[draggable="true"] { cursor: grab; }
+.layer-tree-body button.dragging { opacity: .4; cursor: grabbing; }
+.layer-tree-body button.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
+.layer-tree-body button.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
+.layer-tree-body button.drop-inside, .tree-root.drop-inside { background: color-mix(in srgb, var(--accent) 16%, transparent); box-shadow: inset 0 0 0 1px var(--accent); }
 .tree-root.drop-inside { border-radius: 3px; }
 .property-section { padding: 0 10px 11px; border-bottom: 1px solid var(--line); }
 .property-heading { height: 32px; display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 8px; font-weight: 700; letter-spacing: .07em; }

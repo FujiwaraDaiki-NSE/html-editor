@@ -126,7 +126,7 @@ test("the slide canvas opens at 100% zoom", async () => {
   assert.match(page, /const defaultCanvasZoom = 1;/);
   assert.match(page, /useState<number \| null>\(defaultCanvasZoom\)/);
   assert.match(page, /aria-label="Fit to screen" onClick=\{\(\) => setManualZoom\(null\)\}/);
-  assert.match(page, /const \[inspectorOpen, setInspectorOpen\] = useState\(false\)/);
+  assert.match(page, /const \[inspectorOpen, setInspectorOpen\] = useState\(true\)/);
   assert.match(page, /data-focus=\{canvasFocused \? "canvas" : "workspace"\}/);
   assert.match(page, /aria-label=\{canvasFocused \? "Exit canvas focus" : "Focus canvas"\}/);
   assert.match(css, /\.canvas-area \{[^}]*container-type: size/);
@@ -149,6 +149,18 @@ test("block dragging previews reordering and separates move from text editing", 
   assert.doesNotMatch(page, /!session\.node\.classList\.contains\("weave-container"\)/);
   // A dropped block must not bounce: the container keeps its placeholder box around the ghost.
   assert.match(css, /:has\(> \.weave-dragging:only-child\)/);
+});
+
+test("the object tree is an accessible collapsible section with stable body styling", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /const \[objectTreeOpen, setObjectTreeOpen\] = useState\(true\)/);
+  assert.match(page, /className="property-heading" aria-expanded=\{objectTreeOpen\}/);
+  assert.match(page, /className=\{`layer-tree-body /);
+  assert.match(css, /\.layer-tree-body \{/);
+  assert.doesNotMatch(css, /\.layer-tree > div:last-child/);
 });
 
 test("canvas class operations support SVG blocks", async () => {
