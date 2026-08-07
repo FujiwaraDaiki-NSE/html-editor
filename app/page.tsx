@@ -7,7 +7,7 @@ import { actionFromStreamEvent } from "./codex/actions";
 import { defaultDeckCss, designHeight, designWidth, escapeHtml, renderDeckDocument } from "../shared/slide-design.mjs";
 import { auditContentPolicy } from "../shared/content-policy.mjs";
 import { contentSlotSelector, titleFromSlideHtml, titleSlotSelector } from "../shared/slide-slots.mjs";
-import { advancedControlKeys, allControlKeys, applyBlockPosition, applySize, blockPositionOptions, containerControlKeys, decorationControlKeys, defaultSlideClasses, imageControlKeys, listControlKeys, migrateSlideHtmlToTailwind, ratioOptions, readBlockPosition, readSize, sizeIntents, slideControlGroups, textControlKeys } from "../shared/tailwind-slide.mjs";
+import { advancedControlKeys, allControlKeys, applyBlockPosition, applySize, applyUtilityClass, blockPositionOptions, containerControlKeys, decorationControlKeys, defaultSlideClasses, imageControlKeys, listControlKeys, migrateSlideHtmlToTailwind, ratioOptions, readBlockPosition, readSize, readUtilityClass, sizeIntents, slideControlGroups, textControlKeys } from "../shared/tailwind-slide.mjs";
 import { ItemCard } from "./codex/components/ItemCard";
 import { ServerRequestCard } from "./codex/components/ServerRequestCard";
 import { codexReducer, initialCodexState } from "./codex/reducer";
@@ -90,8 +90,8 @@ const cssEscape = (value: string) => (typeof CSS !== "undefined" && CSS.escape ?
 /* Curated block registry: each entry is just an HTML fragment stamped into the slide.
    Adding a kind is data, not code — the natural shape once HTML is the truth. */
 const blockTemplates: Record<string, (id: string) => string> = {
-  heading: (id) => `<h1 class="heading text-6xl font-semibold leading-none tracking-tight text-slate-50" data-weave-id="${id}">A clear, compelling headline.</h1>`,
-  paragraph: (id) => `<p class="paragraph max-w-3xl text-lg leading-normal text-slate-300" data-weave-id="${id}">Add supporting detail that helps your audience understand the idea.</p>`,
+  heading: (id) => `<h1 class="heading font-semibold leading-none tracking-tight" data-weave-id="${id}">A clear, compelling headline.</h1>`,
+  paragraph: (id) => `<p class="paragraph max-w-3xl leading-normal" data-weave-id="${id}">Add supporting detail that helps your audience understand the idea.</p>`,
   eyebrow: (id) => `<div class="eyebrow text-sm font-bold uppercase tracking-widest text-amber-400" data-weave-id="${id}">NEW SECTION</div>`,
   note: (id) => `<div class="note mt-6 text-xs font-semibold uppercase tracking-widest text-slate-400" data-weave-id="${id}">SOURCE · INTERNAL RESEARCH</div>`,
   metrics: (id) => `<div class="metrics grid grid-cols-4 items-center gap-x-5 mt-2" data-weave-id="${id}"><strong class="text-3xl font-semibold tracking-tight text-amber-400">24%</strong><span class="text-xs text-slate-400">growth</span><strong class="text-3xl font-semibold tracking-tight text-amber-400">8 wk</strong><span class="text-xs text-slate-400">to launch</span></div>`,
@@ -280,7 +280,7 @@ export default function Home() {
     const kind = blockKinds.find((cls) => node.classList.contains(cls)) ?? node.tagName.toLowerCase();
     const read: Record<string, string> = {};
     for (const key of allControlKeys) {
-      read[key] = slideControlGroups[key].options.find((item: { className: string }) => node.classList.contains(item.className))?.className ?? "";
+      read[key] = readUtilityClass([...node.classList], key);
     }
     read.direction = node.classList.contains("grid") ? "grid" : node.classList.contains("column") ? "column" : "row";
     read.columns = ["grid-cols-2", "grid-cols-3", "grid-cols-4"].find((name) => node.classList.contains(name)) ?? "grid-cols-2";
@@ -875,8 +875,7 @@ export default function Home() {
     setSel(readSelection(node));
   };
   const setUtility = (key: string, className: string) => applyClasses((node) => {
-    node.classList.remove(...slideControlGroups[key].options.map((item: { className: string }) => item.className));
-    node.classList.add(className);
+    node.setAttribute("class", applyUtilityClass([...node.classList], key, className).join(" "));
   });
   /* Flipping a container's direction swaps which axis its children are sized on, so their intents
      are read under the old axis and re-expressed under the new one. */

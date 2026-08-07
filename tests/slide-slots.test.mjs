@@ -5,6 +5,11 @@ import { formatSlideHtml } from "../shared/html-format.mjs";
 import { titleFromSlideHtml } from "../shared/slide-slots.mjs";
 import { migrateSlideHtmlToTailwind } from "../shared/tailwind-slide.mjs";
 
+const classesFor = (html, id) => {
+  const opening = html.match(new RegExp(`<[^>]*data-weave-id="${id}"[^>]*>`))?.[0] ?? "";
+  return opening.match(/\bclass="([^"]*)"/)?.[1].split(/\s+/).filter(Boolean) ?? [];
+};
+
 test("slide migration tags the first hero heading in place without changing its classes", () => {
   const input = '<main class="weave-slide plain"><div class="brand">Brand</div><section class="hero"><p class="paragraph" data-weave-id="p1">Before</p><h1 class="custom-title text-7xl" data-weave-id="h1">A &amp; B</h1><h1 class="heading" data-weave-id="h2">Second</h1></section></main>';
   const migrated = migrateSlideHtmlToTailwind(input);
@@ -48,6 +53,20 @@ test("an agent-authored slide migrates without moving its title or changing titl
 test("slide migration leaves html without a hero or direct flex-1 region untouched", () => {
   const input = "<main><p>No slot target</p></main>";
   assert.equal(migrateSlideHtmlToTailwind(input), input);
+});
+
+test("inheritance migration strips only legacy paragraph and non-title heading defaults", () => {
+  const input = '<main class="weave-slide theme-orbit" data-weave-slide><section class="hero" data-weave-slot="content"><h1 class="heading text-6xl font-semibold leading-none tracking-tight text-slate-50" data-weave-slot="title" data-weave-id="title">Title</h1><h2 class="heading text-6xl font-semibold leading-none tracking-tight text-slate-50" data-weave-id="heading">Heading</h2><h2 class="heading text-5xl text-slate-400" data-weave-id="custom-heading">Custom heading</h2><p class="paragraph max-w-3xl text-lg leading-normal text-slate-300" data-weave-id="paragraph">Body</p><p class="paragraph text-5xl text-slate-400 text-amber-400" data-weave-id="custom">Custom</p><div class="eyebrow text-sm font-bold uppercase tracking-widest text-amber-400" data-weave-id="eyebrow">Label</div><div class="note mt-6 text-xs font-semibold uppercase tracking-widest text-slate-400" data-weave-id="note">Note</div><div class="metrics grid grid-cols-4" data-weave-id="metrics"><strong class="text-3xl text-amber-400" data-weave-id="metric">24%</strong><span class="text-xs text-slate-400" data-weave-id="caption">growth</span></div></section></main>';
+  const migrated = migrateSlideHtmlToTailwind(input);
+  assert.deepEqual(classesFor(migrated, "title"), ["heading", "text-6xl", "font-semibold", "leading-none", "tracking-tight", "text-slate-50"]);
+  assert.equal(classesFor(migrated, "heading").includes("text-6xl"), false);
+  assert.equal(classesFor(migrated, "heading").includes("text-slate-50"), false);
+  for (const className of ["text-5xl", "text-slate-400"]) assert.ok(classesFor(migrated, "custom-heading").includes(className));
+  assert.equal(classesFor(migrated, "paragraph").includes("text-lg"), false);
+  assert.equal(classesFor(migrated, "paragraph").includes("text-slate-300"), false);
+  for (const className of ["text-5xl", "text-slate-400", "text-amber-400"]) assert.ok(classesFor(migrated, "custom").includes(className));
+  for (const [id, className] of [["eyebrow", "text-sm"], ["eyebrow", "text-amber-400"], ["note", "text-xs"], ["metric", "text-amber-400"], ["caption", "text-xs"]]) assert.ok(classesFor(migrated, id).includes(className));
+  assert.equal(migrateSlideHtmlToTailwind(migrated), migrated);
 });
 
 test("titleFromSlideHtml returns plain decoded title text", () => {
