@@ -305,9 +305,9 @@ body {
 .view-toggle button.active { background: var(--panel-3); color: var(--text); box-shadow: 0 1px 4px rgba(0,0,0,.22); }
 .view-toggle span { margin-left: 3px; font-size: 8px; }
 
-.canvas-area { min-height: 0; position: relative; display: grid; place-items: center; overflow: hidden; background-color: #0c0e11; background-image: radial-gradient(#23272d 1px, transparent 1px); background-size: 18px 18px; }
+.canvas-area { min-height: 0; position: relative; container-type: size; display: grid; place-items: center; overflow: hidden; background-color: #0c0e11; background-image: radial-gradient(#23272d 1px, transparent 1px); background-size: 18px 18px; }
 .light .canvas-area { background-color: #dfe1e5; background-image: radial-gradient(#c8cbd0 1px, transparent 1px); }
-.slide-shell { position: relative; width: min(83%, 880px); aspect-ratio: 16 / 10; display: grid; place-items: center; }
+.slide-shell { position: relative; width: min(calc(100cqw - 24px), calc(160cqh - 19.2px), 1280px); aspect-ratio: 16 / 10; display: grid; place-items: center; }
 .canvas-interaction-status { position: absolute; z-index: 5; top: 4px; left: 50%; translate: -50% 0; min-height: 24px; padding: 0 9px; display: flex; align-items: center; border: 1px solid var(--line-strong); border-radius: 999px; background: color-mix(in srgb, var(--panel) 92%, transparent); color: var(--muted); box-shadow: 0 4px 12px rgb(0 0 0 / .18); font-size: 8px; white-space: nowrap; pointer-events: none; }
 .canvas-interaction-status.selected { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); color: var(--text); }
 .canvas-interaction-status.dragging { border-color: var(--accent); background: var(--accent); color: #211a0f; font-weight: 700; }

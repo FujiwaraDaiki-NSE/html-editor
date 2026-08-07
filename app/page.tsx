@@ -212,7 +212,7 @@ export default function Home() {
   const [showPresenter, setShowPresenter] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
   const slideTemplates = useSyncExternalStore(templateStore.subscribe, templateStore.read, templateStore.serverRead);
-  const [inspectorOpen, setInspectorOpen] = useState(true);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
   const [announcement, setAnnouncement] = useState("Editor ready");
   const [saveMessage, setSaveMessage] = useState("");
   const [presentSlide, setPresentSlide] = useState(1);

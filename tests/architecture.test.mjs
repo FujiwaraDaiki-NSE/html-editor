@@ -109,10 +109,17 @@ test("commands are grouped by editing, project, and delivery intent", async () =
 });
 
 test("the slide canvas opens at 100% zoom", async () => {
-  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
   assert.match(page, /const defaultCanvasZoom = 1;/);
   assert.match(page, /useState<number \| null>\(defaultCanvasZoom\)/);
   assert.match(page, /aria-label="Fit to screen" onClick=\{\(\) => setManualZoom\(null\)\}/);
+  assert.match(page, /const \[inspectorOpen, setInspectorOpen\] = useState\(false\)/);
+  assert.match(css, /\.canvas-area \{[^}]*container-type: size/);
+  assert.match(css, /\.slide-shell \{[^}]*width: min\(calc\(100cqw - 24px\), calc\(160cqh - 19\.2px\), 1280px\)/);
+  assert.doesNotMatch(css, /\.slide-shell \{[^}]*83%|\.slide-shell \{[^}]*880px/);
 });
 
 test("block dragging previews reordering and separates move from text editing", async () => {
