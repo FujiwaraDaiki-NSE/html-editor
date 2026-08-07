@@ -283,6 +283,24 @@ const openingTagWithClass = (html, className) => {
   return null;
 };
 
+const voidTags = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
+const directChildWithClass = (html, parent, className) => {
+  const tags = /<\/?([a-z][\w:-]*)\b[^>]*>/gi;
+  tags.lastIndex = parent.end;
+  let depth = 0;
+  for (let match = tags.exec(html); match; match = tags.exec(html)) {
+    if (match[0][1] === "/") {
+      if (depth === 0) return null;
+      depth -= 1;
+      continue;
+    }
+    const classes = match[0].match(/\bclass\s*=\s*(["'])(.*?)\1/i)?.[2].split(/\s+/) ?? [];
+    if (depth === 0 && classes.includes(className)) return { index: match.index, end: tags.lastIndex, tag: match[1], opening: match[0] };
+    if (!voidTags.has(match[1].toLowerCase()) && !/\/\s*>$/.test(match[0])) depth += 1;
+  }
+  return null;
+};
+
 const closingTagEnd = (html, opening) => {
   const tags = new RegExp(`<\\/?${opening.tag}\\b[^>]*>`, "gi");
   tags.lastIndex = opening.end;
@@ -311,25 +329,22 @@ const uniqueTitleId = (html) => {
 
 const migrateSlideSlots = (html) => {
   if (/\bdata-weave-slot\s*=/i.test(html)) return html;
-  const hero = openingTagWithClass(html, "hero");
-  if (!hero) return html;
-  const closing = closingTagEnd(html, hero);
+  const mainMatch = /<main\b[^>]*>/i.exec(html);
+  const main = mainMatch ? { index: mainMatch.index, end: mainMatch.index + mainMatch[0].length, tag: "main", opening: mainMatch[0] } : null;
+  const content = openingTagWithClass(html, "hero") ?? (main && directChildWithClass(html, main, "flex-1"));
+  if (!content) return html;
+  const closing = closingTagEnd(html, content);
   if (!closing) return html;
-  const inner = html.slice(hero.end, closing.start);
-  const headings = /<h1\b[^>]*>[\s\S]*?<\/h1\s*>/gi;
-  let heading = null;
-  for (const match of inner.matchAll(headings)) {
-    const classes = match[0].match(/^<h1\b[^>]*\bclass\s*=\s*(["'])(.*?)\1/i)?.[2].split(/\s+/) ?? [];
-    if (classes.includes("heading")) { heading = match; break; }
-  }
-  const title = heading
-    ? heading[0].replace(/^<h1\b[^>]*>/i, (opening) => withAttribute(opening, "data-weave-slot", titleSlotName))
-    : `<h1 class="heading text-6xl font-semibold leading-none tracking-tight text-slate-50" data-weave-slot="${titleSlotName}" data-weave-id="${uniqueTitleId(html)}"></h1>`;
-  const content = withAttribute(hero.opening, "data-weave-slot", contentSlotName)
-    + (heading ? `${inner.slice(0, heading.index)}${inner.slice(heading.index + heading[0].length)}` : inner)
+  const inner = html.slice(content.end, closing.start);
+  const heading = /<h1\b[^>]*>/i.exec(inner);
+  const title = `<h1 class="heading text-6xl font-semibold leading-none tracking-tight text-slate-50" data-weave-slot="${titleSlotName}" data-weave-id="${uniqueTitleId(html)}"></h1>`;
+  const slottedInner = heading
+    ? `${inner.slice(0, heading.index)}${withAttribute(heading[0], "data-weave-slot", titleSlotName)}${inner.slice(heading.index + heading[0].length)}`
+    : `${title}${inner}`;
+  const slottedContent = withAttribute(content.opening, "data-weave-slot", contentSlotName)
+    + slottedInner
     + html.slice(closing.start, closing.end);
-  const indent = html.slice(0, hero.index).match(/(^|\n)([ \t]*)$/)?.[2] ?? "";
-  return `${html.slice(0, hero.index)}${title}\n${indent}${content}${html.slice(closing.end)}`;
+  return `${html.slice(0, content.index)}${slottedContent}${html.slice(closing.end)}`;
 };
 
 /** One-way migration for decks created before Tailwind classes became the source of truth. */

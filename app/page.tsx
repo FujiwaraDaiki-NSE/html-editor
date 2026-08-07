@@ -134,9 +134,9 @@ type SelState = { id: string; kind: string; container: boolean; read: Record<str
 const blankSlideHtml = (background: Background = "orbit", accent = "#f6b84b", title = "A clear, compelling headline.") =>
   `<main class="${defaultSlideClasses} theme-${background} ${backgroundClasses[background]}" data-weave-slide>
     <div class="brand flex items-center gap-2 text-xs font-bold tracking-widest text-slate-400">WEAVE<span class="${accents.find((item) => item.color === accent)?.className ?? "text-amber-400"}">●</span></div>
-    <h1 class="heading text-6xl font-semibold leading-none tracking-tight text-slate-50" data-weave-slot="title" data-weave-id="heading-${createMessageId().slice(6)}">${escapeHtml(title)}</h1>
     <section class="hero flex flex-1 flex-col items-start justify-center gap-6" data-weave-slot="content">
       ${blockTemplates.eyebrow(`eyebrow-${createMessageId().slice(6)}`)}
+      <h1 class="heading text-6xl font-semibold leading-none tracking-tight text-slate-50" data-weave-slot="title" data-weave-id="heading-${createMessageId().slice(6)}">${escapeHtml(title)}</h1>
       ${blockTemplates.paragraph(`body-${createMessageId().slice(6)}`)}
     </section>
     <div class="page-number absolute top-0 right-0 p-8 text-xs font-semibold tracking-widest text-slate-400">01 / 01</div>
@@ -272,7 +272,8 @@ export default function Home() {
   };
   const slideRoot = () => canvasRef.current?.querySelector<HTMLElement>(".weave-slide") ?? null;
   const contentSlot = () => canvasRef.current?.querySelector<HTMLElement>(contentSlotSelector) ?? canvasRef.current?.querySelector<HTMLElement>(".hero") ?? null;
-  const isTitleSlot = (node: Element) => node.matches(titleSlotSelector) || !!node.querySelector(titleSlotSelector);
+  const isTitleSlot = (node: Element) => node.matches(titleSlotSelector);
+  const destroysTitleSlot = (node: Element) => isTitleSlot(node) || !!node.querySelector(titleSlotSelector);
   const selectedNode = () => (selectedId ? canvasRef.current?.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(selectedId)}"]`) ?? null : null);
 
   const readSelection = (node: HTMLElement): SelState => {
@@ -499,19 +500,15 @@ export default function Home() {
     node?.classList.add("weave-selected");
     setSel(node ? readSelection(node) : null);
     // Rebuild the object tree from the live DOM.
-    const title = host.querySelector(titleSlotSelector);
     const content = host.querySelector(contentSlotSelector) ?? host.querySelector(".hero");
     const list: OutlineItem[] = [];
-    const itemFrom = (child: Element, depth: number, locked = false): OutlineItem | null => {
+    const itemFrom = (child: Element, depth: number): OutlineItem | null => {
       const id = child.getAttribute("data-weave-id");
       if (!id) return null;
       const kind = child.className.split(" ").find((cls) => cls && cls !== "weave-container" && cls !== "weave-selected") ?? child.tagName.toLowerCase();
+      const locked = isTitleSlot(child);
       return { id, label: locked ? "title" : kind, kind, depth, container: child.classList.contains("weave-container"), locked };
     };
-    if (title) {
-      const item = itemFrom(title, 0, true);
-      if (item) list.push(item);
-    }
     if (content) {
       const walk = (element: Element, depth: number) => {
         for (const child of Array.from(element.children)) {
@@ -676,7 +673,7 @@ export default function Home() {
     // The dragged block and its whole subtree are pointer-events: none, so a hit is never inside
     // it; the contains() guard only catches the frame before .weave-dragging lands.
     let target = hit?.closest<HTMLElement>("[data-weave-id]") ?? null;
-    if (!target || isTitleSlot(target) || target === session.node || session.node.contains(target)) return;
+    if (!target || target === session.node || session.node.contains(target)) return;
     clearDropMarkers();
 
     // Containers nest: a Row carrying its children can be dropped into another Row, Column or Grid.
@@ -726,7 +723,7 @@ export default function Home() {
     if (image) {
       const target = (event.target as HTMLElement).closest<HTMLElement>("[data-weave-id]");
       let placement: { id: string; after: boolean } | undefined;
-      if (target && !isTitleSlot(target)) {
+      if (target) {
         const rect = target.getBoundingClientRect();
         const horizontal = target.parentElement?.classList.contains("flex-row");
         placement = { id: target.dataset.weaveId ?? "", after: horizontal ? event.clientX > rect.left + rect.width / 2 : event.clientY > rect.top + rect.height / 2 };
@@ -777,7 +774,7 @@ export default function Home() {
     if (targetId === dragId) return false;
     const target = host.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(targetId)}"]`);
     // A block can never be dropped inside itself, so its own subtree is not a valid target.
-    return !!target && !isTitleSlot(target) && !node.contains(target);
+    return !!target && !node.contains(target);
   };
 
   const onTreeDragOver = (event: DragEvent<HTMLElement>, item: OutlineItem | null) => {
@@ -803,7 +800,7 @@ export default function Home() {
     if (!canDropInTree(dragId, drop.id)) return;
     const node = host.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(dragId)}"]`);
     const target = drop.id ? host.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(drop.id)}"]`) : contentSlot();
-    if (!node || !target || isTitleSlot(node) || isTitleSlot(target)) return;
+    if (!node || !target || isTitleSlot(node) || (drop.position === "inside" && isTitleSlot(target))) return;
     const parent = drop.position === "inside" ? target : target.parentElement;
     const reference = drop.position === "inside" ? null : drop.position === "after" ? target.nextSibling : target;
     if (!parent || reference === node) return;
@@ -825,8 +822,7 @@ export default function Home() {
     checkpoint();
     const id = `${kind}-${createMessageId().slice(6)}`;
     const node = selectedNode();
-    const placed = placement?.id ? host.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(placement.id)}"]`) : null;
-    const target = placed && !isTitleSlot(placed) ? placed : null;
+    const target = placement?.id ? host.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(placement.id)}"]`) : null;
     const container = target?.parentElement ?? (node?.classList.contains("weave-container") ? node : content);
     if (target) target.insertAdjacentHTML(placement?.after ? "afterend" : "beforebegin", blockTemplates[kind](id));
     else container.insertAdjacentHTML("beforeend", blockTemplates[kind](id));
@@ -862,7 +858,7 @@ export default function Home() {
 
   const deleteSelected = () => {
     const node = selectedNode();
-    if (!node || isTitleSlot(node) || outline.length <= 1) return;
+    if (!node || destroysTitleSlot(node) || outline.length <= 1) return;
     checkpoint();
     node.remove();
     setSelectedId(null);
