@@ -81,3 +81,8 @@ test("legacy slide styling migrates to Tailwind classes idempotently", () => {
   assert.equal(migrated.includes("style="), false);
   assert.equal(migrateSlideHtmlToTailwind(migrated), migrated);
 });
+
+test("image, list, table, grid span, decoration, and static SVG vocabulary passes", () => {
+  const html = `<main class="weave-slide"><img class="image w-full object-cover object-center aspect-4/3 rounded-lg" src="assets/example.png" alt="Example"><ul class="list list-disc pl-6"><li>One</li></ul><table class="table w-full border-collapse"><tbody><tr><td class="p-2 border-b border-slate-700">Cell</td></tr></tbody></table><div class="grid grid-cols-3"><div class="col-span-2 row-span-2 bg-slate-800 border border-slate-300 rounded-xl shadow-lg"></div></div><svg class="w-full aspect-video text-amber-400"><circle fill="currentColor" /></svg></main>`;
+  assert.deepEqual(auditContentPolicy({ html }).diagnostics, []);
+});

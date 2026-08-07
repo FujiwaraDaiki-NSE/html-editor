@@ -11,6 +11,7 @@ import {
   containerControlKeys,
   readBlockPosition,
   readSize,
+  ratioOptions,
   slideControlGroups,
   textControlKeys,
 } from "../shared/tailwind-slide.mjs";
@@ -72,6 +73,17 @@ test("setting an intent makes it stick — every intent survives being read back
   }
 });
 
+test("Ratio is a Row-only sizing intent and preserves its selected fraction", () => {
+  for (const option of ratioOptions) {
+    const written = applySize(["max-w-3xl", option.value], "ratio", "row");
+    assert.equal(readSize(written, "row"), "ratio");
+    assert.ok(written.includes(option.value));
+    assert.equal(written.includes("max-w-3xl"), false);
+  }
+  assert.equal(applySize([], "ratio", "row").includes("basis-1/2"), true);
+  assert.equal(applySize([], "ratio", "column").includes("basis-1/2"), false);
+});
+
 test("Fixed brings a measure with it; Fill and Hug drop the one they find", () => {
   assert.equal(applySize(classesOf("heading text-6xl"), "fixed", "column").join(" "), "heading text-6xl max-w-3xl self-start", "Fixed without a cap would be indistinguishable from Hug");
   assert.equal(applySize(classesOf("paragraph max-w-sm"), "fixed", "column").join(" "), "paragraph max-w-sm self-start", "a measure already chosen is left alone");
@@ -101,7 +113,7 @@ test("alignment replaces whichever align-self is already there", () => {
 });
 
 test("every class the sizing model emits is a registered utility", () => {
-  const emitted = ["row", "column"].flatMap((direction) => ["fill", "hug", "fixed"].map((intent) => applySize([], intent, direction).join(" ")));
+  const emitted = ["row", "column"].flatMap((direction) => ["fill", "hug", "fixed", "ratio"].map((intent) => applySize([], intent, direction).join(" ")));
   const markup = `<main class="weave-slide">${emitted.map((className) => `<div class="${className}"></div>`).join("")}</main>`;
   assert.deepEqual(auditTailwindSlideHtml(markup), [], "unregistered classes would be rejected at save time");
   const css = buildTailwindSlideCss();

@@ -82,6 +82,42 @@ export const slideControlGroups = {
     label: "Align items",
     options: [option("Start", "items-start", "align-items: flex-start"), option("Center", "items-center", "align-items: center"), option("Stretch", "items-stretch", "align-items: stretch"), option("End", "items-end", "align-items: flex-end")],
   },
+  listMarker: {
+    label: "Marker",
+    options: [option("Bullet", "list-disc", "list-style-type: disc"), option("Number", "list-decimal", "list-style-type: decimal"), option("None", "list-none", "list-style-type: none")],
+  },
+  imageFit: {
+    label: "Fit",
+    options: [option("Cover", "object-cover", "object-fit: cover"), option("Contain", "object-contain", "object-fit: contain")],
+  },
+  aspectRatio: {
+    label: "Aspect",
+    options: [option("16:9", "aspect-video", "aspect-ratio: 16 / 9"), option("4:3", "aspect-4/3", "aspect-ratio: 4 / 3"), option("1:1", "aspect-square", "aspect-ratio: 1 / 1"), option("Auto", "aspect-auto", "aspect-ratio: auto")],
+  },
+  background: {
+    label: "Background",
+    options: [option("None", "bg-transparent", "background-color: transparent"), option("800", "bg-slate-800", "background-color: #1e293b"), option("900", "bg-slate-900", "background-color: #0f172a"), option("950", "bg-slate-950", "background-color: #020617"), option("White", "bg-white", "background-color: #fff")],
+  },
+  borderStyle: {
+    label: "Border",
+    options: [option("None", "border-transparent", "border-color: transparent"), option("All", "border", "border-width: 1px"), option("2px", "border-2", "border-width: 2px"), option("Top", "border-t", "border-top-width: 1px"), option("Bottom", "border-b", "border-bottom-width: 1px")],
+  },
+  borderColor: {
+    label: "Border color",
+    options: [option("Transparent", "border-transparent", "border-color: transparent"), option("Slate 700", "border-slate-700", "border-color: #334155"), option("Slate 300", "border-slate-300", "border-color: #cbd5e1")],
+  },
+  radius: {
+    label: "Radius",
+    options: [option("None", "rounded-none", "border-radius: 0"), option("md", "rounded-md", "border-radius: 0.375rem"), option("lg", "rounded-lg", "border-radius: 0.5rem"), option("xl", "rounded-xl", "border-radius: 0.75rem")],
+  },
+  shadow: {
+    label: "Shadow",
+    options: [option("None", "shadow-none", "box-shadow: none"), option("Large", "shadow-lg", "box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1)")],
+  },
+  marginTop: {
+    label: "Space above",
+    options: [option("0", "mt-0", "margin-top: 0"), ...[2, 4, 6, 8].map((n) => option(String(n), `mt-${n}`, `margin-top: ${n * 0.25}rem`))],
+  },
 };
 
 /* Controls grouped by how widely each one applies. Width and Position sit above these: every block
@@ -93,17 +129,22 @@ export const textControlKeys = ["fontSize", "fontWeight", "lineHeight", "textAli
 export const containerControlKeys = ["gap", "padding", "justifyContent", "alignItems"];
 export const advancedControlKeys = ["maxWidth"];
 export const allControlKeys = [...new Set([...textControlKeys, ...containerControlKeys, ...advancedControlKeys])];
+export const listControlKeys = ["listMarker"];
+export const imageControlKeys = ["imageFit", "aspectRatio", "radius"];
+export const decorationControlKeys = ["background", "borderStyle", "borderColor", "radius", "shadow"];
 
 /* Sizing is stated as an intent — Fill, Hug or Fixed — never as a class. Width is the main axis
    inside a Row but the cross axis inside a Column, so the same intent needs a different utility
    depending on the parent. The editor owns that mapping; nobody has to reason about flex axes. */
-const mainAxisSize = { fill: "flex-1", hug: "flex-none", fixed: "flex-none" };
+const mainAxisSize = { fill: "flex-1", hug: "flex-none", fixed: "flex-none", ratio: "flex-none" };
 const crossAxisSize = { fill: "self-stretch", hug: "self-start", fixed: "self-start" };
 const alignSelfClasses = ["self-stretch", "self-start", "self-center", "self-end"];
 /* w-full sized every container before intents existed: it reads as Fill and is dropped on write. */
-const sizeClasses = [...new Set([...Object.values(mainAxisSize), ...alignSelfClasses, "w-full"])];
+export const ratioOptions = ["1/4", "1/3", "1/2", "2/3", "3/4"].map((value) => ({ value: `basis-${value}`, label: value }));
+const ratioClasses = ratioOptions.map(({ value }) => value);
+const sizeClasses = [...new Set([...Object.values(mainAxisSize), ...alignSelfClasses, ...ratioClasses, "w-full"])];
 
-export const sizeIntents = [{ value: "fill", label: "Fill" }, { value: "hug", label: "Hug" }, { value: "fixed", label: "Fixed" }];
+export const sizeIntents = [{ value: "fill", label: "Fill" }, { value: "hug", label: "Hug" }, { value: "fixed", label: "Fixed" }, { value: "ratio", label: "Ratio" }];
 /* Where the block itself sits — distinct from textAlign, which only moves the text inside it. */
 export const blockPositionOptions = [{ value: "self-start", label: "Start" }, { value: "self-center", label: "Center" }, { value: "self-end", label: "End" }];
 
@@ -115,6 +156,7 @@ const defaultMeasure = "max-w-3xl";
 /** Which intent the classes already express, given the parent's layout direction and classes. */
 export function readSize(classes, parentDirection, parentClasses = []) {
   const list = new Set(classes);
+  if (parentDirection === "row" && ratioClasses.some((name) => list.has(name))) return "ratio";
   // A cap wins over flex-1 or self-stretch: the box stops at the measure however hard it was told
   // to grow, so Fixed is what it renders as and what the inspector has to say.
   if (isMeasured(list)) return "fixed";
@@ -141,6 +183,10 @@ export function applySize(classes, intent, parentDirection) {
   const kept = classes.filter((name) => !sizeClasses.includes(name));
   // A grid cell is sized by its parent's template, so it carries no sizing class of its own.
   if (parentDirection === "grid") return kept;
+  if (intent === "ratio" && parentDirection === "row") {
+    const basis = classes.find((name) => ratioClasses.includes(name)) ?? "basis-1/2";
+    return [...withMeasure(kept, "hug"), "flex-none", basis];
+  }
   const measured = withMeasure(kept, intent);
   if (parentDirection !== "column") return [...measured, mainAxisSize[intent] ?? mainAxisSize.fill];
   if (intent === "fill") return [...measured, crossAxisSize.fill];
@@ -157,14 +203,15 @@ const extraUtilities = {
   "self-stretch": "align-self: stretch", "self-start": "align-self: flex-start", "self-center": "align-self: center", "self-end": "align-self: flex-end",
   "flex-row": "flex-direction: row", "flex-col": "flex-direction: column", "flex-wrap": "flex-wrap: wrap",
   "grid-cols-2": "grid-template-columns: repeat(2, minmax(0, 1fr))", "grid-cols-3": "grid-template-columns: repeat(3, minmax(0, 1fr))", "grid-cols-4": "grid-template-columns: repeat(4, minmax(0, 1fr))",
-  "gap-x-5": "column-gap: 1.25rem", "gap-y-2": "row-gap: 0.5rem", "mt-2": "margin-top: 0.5rem", "mt-4": "margin-top: 1rem", "mt-6": "margin-top: 1.5rem", "mt-8": "margin-top: 2rem",
+  "col-span-2": "grid-column: span 2 / span 2", "col-span-3": "grid-column: span 3 / span 3", "row-span-2": "grid-row: span 2 / span 2",
+  "basis-1/4": "flex-basis: 25%", "basis-1/3": "flex-basis: 33.333333%", "basis-1/2": "flex-basis: 50%", "basis-2/3": "flex-basis: 66.666667%", "basis-3/4": "flex-basis: 75%",
+  "gap-x-5": "column-gap: 1.25rem", "gap-y-2": "row-gap: 0.5rem", "pl-6": "padding-left: 1.5rem", "pl-8": "padding-left: 2rem",
   "w-full": "width: 100%", "h-full": "height: 100%", "min-w-0": "min-width: 0", "overflow-hidden": "overflow: hidden",
-  "bg-slate-950": "background-color: #020617", "bg-slate-900": "background-color: #0f172a", "bg-slate-800": "background-color: #1e293b", "bg-white": "background-color: #fff",
+  "object-center": "object-position: center", "border-collapse": "border-collapse: collapse", "p-2": "padding: 0.5rem",
   "text-slate-950": "color: #020617", uppercase: "text-transform: uppercase", "tracking-tight": "letter-spacing: -0.025em", "tracking-wide": "letter-spacing: 0.025em", "tracking-widest": "letter-spacing: 0.1em",
-  "rounded-md": "border-radius: 0.375rem", "rounded-lg": "border-radius: 0.5rem", "rounded-xl": "border-radius: 0.75rem", "shadow-lg": "box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1)",
 };
 
-export const structuralSlideClasses = new Set(["weave-slide", "hero", "brand", "page-number", "heading", "paragraph", "eyebrow", "note", "metrics", "weave-container", "row", "column", "grid", "theme-orbit", "theme-grid", "theme-plain"]);
+export const structuralSlideClasses = new Set(["weave-slide", "hero", "brand", "page-number", "heading", "paragraph", "eyebrow", "note", "metrics", "image", "list", "table", "weave-container", "row", "column", "grid", "theme-orbit", "theme-grid", "theme-plain"]);
 export const utilityDeclarations = new Map([
   ...Object.values(slideControlGroups).flatMap((group) => group.options.map(({ className, css }) => [className, css])),
   ...Object.entries(extraUtilities),
