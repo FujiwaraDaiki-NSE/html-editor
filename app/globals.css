@@ -115,6 +115,14 @@ body {
 .workspace[data-slide-nav="rail"] { grid-template-columns: 46px 64px 245px minmax(540px, 1fr) 224px; }
 .workspace[data-inspector="closed"] { grid-template-columns: 46px 245px minmax(540px, 1fr); }
 .workspace[data-slide-nav="rail"][data-inspector="closed"] { grid-template-columns: 46px 64px 245px minmax(540px, 1fr); }
+.workspace[data-focus="canvas"] { grid-template-columns: minmax(540px, 1fr); }
+.workspace[data-focus="canvas"] > .activity-rail,
+.workspace[data-focus="canvas"] > .slide-rail,
+.workspace[data-focus="canvas"] > .left-panel,
+.workspace[data-focus="canvas"] > .inspector,
+.workspace[data-focus="canvas"] > .open-inspector,
+.workspace[data-focus="canvas"] .filmstrip { display: none; }
+.workspace[data-slide-nav][data-focus="canvas"] .center-stage { grid-template-rows: 38px minmax(0, 1fr); }
 .open-inspector { position: absolute; z-index: 8; right: 0; top: 88px; padding: 7px 9px; border: 1px solid var(--line); border-right: 0; border-radius: 5px 0 0 5px; background: var(--panel); color: var(--muted); font-size: 8px; cursor: pointer; }
 .activity-rail { display: flex; flex-direction: column; justify-content: space-between; align-items: center; padding: 8px 0; background: var(--panel); border-right: 1px solid var(--line); }
 .activity-top, .activity-bottom { display: grid; gap: 5px; }

@@ -213,6 +213,7 @@ export default function Home() {
   const [showTemplates, setShowTemplates] = useState(false);
   const slideTemplates = useSyncExternalStore(templateStore.subscribe, templateStore.read, templateStore.serverRead);
   const [inspectorOpen, setInspectorOpen] = useState(false);
+  const [canvasFocused, setCanvasFocused] = useState(false);
   const [announcement, setAnnouncement] = useState("Editor ready");
   const [saveMessage, setSaveMessage] = useState("");
   const [presentSlide, setPresentSlide] = useState(1);
@@ -1483,7 +1484,7 @@ export default function Home() {
         </>
       )}
 
-      <div className="workspace" data-slide-nav={slideNav} data-inspector={inspectorOpen ? "open" : "closed"}>
+      <div className="workspace" data-slide-nav={slideNav} data-inspector={inspectorOpen ? "open" : "closed"} data-focus={canvasFocused ? "canvas" : "workspace"}>
         <nav className="activity-rail" aria-label="Primary navigation">
           <div className="activity-top">
             <button className={`activity-button ${activityView === "agent" ? "active" : ""}`} aria-label="Agent" aria-pressed={activityView === "agent"} onClick={() => setActivityView("agent")}>◇</button>
@@ -1643,6 +1644,13 @@ export default function Home() {
                     <button aria-label="Zoom in" onClick={() => setManualZoom(Math.min(4, (manualZoom ?? fitScale) + .1))}>＋</button>
                     <button aria-label="Actual size" onClick={() => setManualZoom(1)}>100</button>
                     <button aria-label="Fit to screen" onClick={() => setManualZoom(null)}>⊡</button>
+                    <button
+                      className={canvasFocused ? "active" : ""}
+                      aria-label={canvasFocused ? "Exit canvas focus" : "Focus canvas"}
+                      aria-pressed={canvasFocused}
+                      title={canvasFocused ? "Show editor panels" : "Hide panels and focus the canvas"}
+                      onClick={() => setCanvasFocused((value) => !value)}
+                    >⛶</button>
                   </div>
                 </div>
                 {openPopover === "addBlock" && (

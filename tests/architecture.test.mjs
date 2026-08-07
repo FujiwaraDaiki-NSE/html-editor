@@ -117,8 +117,13 @@ test("the slide canvas opens at 100% zoom", async () => {
   assert.match(page, /useState<number \| null>\(defaultCanvasZoom\)/);
   assert.match(page, /aria-label="Fit to screen" onClick=\{\(\) => setManualZoom\(null\)\}/);
   assert.match(page, /const \[inspectorOpen, setInspectorOpen\] = useState\(false\)/);
+  assert.match(page, /data-focus=\{canvasFocused \? "canvas" : "workspace"\}/);
+  assert.match(page, /aria-label=\{canvasFocused \? "Exit canvas focus" : "Focus canvas"\}/);
   assert.match(css, /\.canvas-area \{[^}]*container-type: size/);
   assert.match(css, /\.slide-shell \{[^}]*width: min\(calc\(100cqw - 24px\), calc\(160cqh - 19\.2px\), 1280px\)/);
+  assert.match(css, /\.workspace\[data-focus="canvas"\] \{ grid-template-columns: minmax\(540px, 1fr\); \}/);
+  assert.match(css, /\.workspace\[data-focus="canvas"\] \.filmstrip \{ display: none; \}/);
+  assert.match(css, /\.workspace\[data-slide-nav\]\[data-focus="canvas"\] \.center-stage \{ grid-template-rows: 38px minmax\(0, 1fr\); \}/);
   assert.doesNotMatch(css, /\.slide-shell \{[^}]*83%|\.slide-shell \{[^}]*880px/);
 });
 
