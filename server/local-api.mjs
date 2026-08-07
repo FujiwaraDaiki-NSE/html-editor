@@ -10,6 +10,7 @@ import {
   createVariationBranch,
   discardVariation,
   ensureProject,
+  importImageAsset,
   projectRoot,
   projectState,
   readProject,
@@ -45,12 +46,12 @@ function sendJson(request, response, status, value) {
   response.end(`${JSON.stringify(value)}\n`);
 }
 
-async function readJson(request) {
+async function readJson(request, limit = 1_500_000) {
   const chunks = [];
   let size = 0;
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > 1_500_000) throw new Error("Request is too large.");
+    if (size > limit) throw new Error("Request is too large.");
     chunks.push(chunk);
   }
   return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
@@ -186,7 +187,11 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method !== "POST") return sendJson(request, response, 404, { error: "Not found." });
-    const payload = await readJson(request);
+    const payload = await readJson(request, url.pathname === "/api/assets" ? 14_000_000 : 1_500_000);
+
+    if (url.pathname === "/api/assets") {
+      return sendJson(request, response, 201, await importImageAsset(payload));
+    }
 
     if (url.pathname === "/api/save") {
       if (activeProjectTurn()) return sendJson(request, response, 409, { error: "An Agent turn is running." });

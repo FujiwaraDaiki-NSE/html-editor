@@ -1,11 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { access, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defaultDeckCss, slideFragmentFromBlocks } from "../shared/slide-design.mjs";
 import { formatDeckCss, formatSlideHtml } from "../shared/html-format.mjs";
-import { auditContentPolicy } from "../shared/content-policy.mjs";
+import { auditContentPolicy, auditHtmlSafety } from "../shared/content-policy.mjs";
 import { migrateSlideHtmlToTailwind } from "../shared/tailwind-slide.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -16,6 +17,7 @@ const manifestPath = join(projectRoot, ".weave", "deck.json");
 const bufferPath = join(projectRoot, ".weave", "current-buffer.json");
 const slidesRoot = join(projectRoot, "slides");
 const stylesRoot = join(projectRoot, "styles");
+const assetsRoot = join(projectRoot, "assets");
 const deckCssPath = join(stylesRoot, "deck.css");
 
 export const agentInstructions = `You are the editing agent embedded in Weave, a visual HTML slide editor.
@@ -27,9 +29,41 @@ Slide styling is expressed only with the precompiled Tailwind utility classes al
 project. Use standard Tailwind scale values and existing classes; never use inline style attributes,
 arbitrary-value classes such as [...], or edit styles/deck.css. Prefer flex/grid flow layout. Keep a
 data-weave-id on every element the human can select. Represent line breaks as <br>, not literal newlines.
+Reference imported images with relative assets/<hash>.<ext> paths. Lists use ul.list with li children;
+tables use table.table and keep data-weave-id on the table rather than individual cells. Graphs and
+decorative diagrams are static inline SVG: use fill="currentColor" with text-* classes instead of raw
+hex colors, size the SVG with w-full and aspect-* classes, and put data-weave-id on the SVG root.
 Before editing, read .weave/current-buffer.json when present — it is the authoritative unsaved state.
 Make focused changes that answer the user. Do not run git or commit; Weave formats and commits the turn.
 If no file change is needed, respond with a concise explanation.`;
+
+const assetTypes = new Map([
+  ["image/png", "png"], ["image/jpeg", "jpg"], ["image/webp", "webp"],
+  ["image/svg+xml", "svg"], ["image/gif", "gif"],
+]);
+const maxAssetBytes = 10 * 1024 * 1024;
+
+export async function importImageAsset({ data, mimeType }) {
+  const extension = assetTypes.get(String(mimeType ?? "").toLowerCase());
+  if (!extension) throw new Error("Unsupported image type. Use PNG, JPEG, WebP, SVG, or GIF.");
+  const bytes = Buffer.from(String(data ?? ""), "base64");
+  if (!bytes.length) throw new Error("Image data is required.");
+  if (bytes.length > maxAssetBytes) throw new Error("Image must be 10 MB or smaller.");
+  if (extension === "svg") {
+    const safety = auditHtmlSafety(bytes.toString("utf8"));
+    if (!safety.ok) {
+      const error = new Error("SVG failed the content safety check.");
+      error.code = "WEAVE_ASSET_POLICY";
+      error.diagnostics = safety.diagnostics;
+      throw error;
+    }
+  }
+  const hash = createHash("sha256").update(bytes).digest("hex");
+  const filename = `${hash}.${extension}`;
+  await mkdir(assetsRoot, { recursive: true });
+  await writeFile(join(assetsRoot, filename), bytes);
+  return { path: `assets/${filename}`, mimeType, size: bytes.length };
+}
 
 /* Seed content, authored as blocks and stamped into HTML fragments exactly once. After seeding
    the fragment on disk is the truth; blocks are never consulted again at runtime. */
@@ -295,7 +329,7 @@ export async function writeProject(input, bufferOnly = false, expectedRevision =
 }
 
 export function commitIfChanged(message) {
-  runGit(["add", ".weave/deck.json", "slides", "styles", "AGENTS.md"]);
+  runGit(["add", ".weave/deck.json", "slides", "styles", "AGENTS.md", ...(existsSync(assetsRoot) ? ["assets"] : [])]);
   if (!runGit(["diff", "--cached", "--name-only"])) return null;
   runGit(["-c", "user.name=Weave", "-c", "user.email=weave@localhost", "commit", "-m", message.slice(0, 180)]);
   return runGit(["rev-parse", "HEAD"]);
@@ -348,6 +382,7 @@ export async function checkoutHistory(commit) {
   runGit(["cat-file", "-e", `${commit}^{commit}`]);
   if (runGit(["branch", "--show-current"]) !== "main") runGit(["checkout", "main"]);
   runGit(["restore", "--source", commit, "--staged", "--worktree", "--", ".weave/deck.json", "slides", "styles", "AGENTS.md"]);
+  if (runGit(["ls-tree", "-d", "--name-only", commit, "assets"])) runGit(["restore", "--source", commit, "--staged", "--worktree", "--", "assets"]);
   const restored = commitIfChanged(`Restore history ${commit.slice(0, 12)}`);
   const project = await readProject();
   await atomicWriteFile(bufferPath, `${JSON.stringify(project, null, 2)}\n`);

@@ -63,3 +63,25 @@ test("deck saves are revision-guarded, replace slide files, and restore history 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("image assets are content-addressed, deduplicated, and SVG-audited", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weave-assets-"));
+  const previousRoot = process.env.WEAVE_PROJECT_ROOT;
+  process.env.WEAVE_PROJECT_ROOT = root;
+  try {
+    const project = await import(`../server/project.mjs?assets=${Date.now()}`);
+    await project.ensureProject();
+    const data = Buffer.from("small image").toString("base64");
+    const first = await project.importImageAsset({ data, mimeType: "image/png" });
+    const second = await project.importImageAsset({ data, mimeType: "image/png" });
+    assert.equal(first.path, second.path);
+    assert.equal(await readFile(join(root, first.path), "utf8"), "small image");
+    await assert.rejects(project.importImageAsset({ data, mimeType: "image/tiff" }), /Unsupported image type/);
+    const unsafeSvg = Buffer.from('<svg><script>alert(1)</script></svg>').toString("base64");
+    await assert.rejects(project.importImageAsset({ data: unsafeSvg, mimeType: "image/svg+xml" }), (error) => error.code === "WEAVE_ASSET_POLICY");
+  } finally {
+    if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
+    else process.env.WEAVE_PROJECT_ROOT = previousRoot;
+    await rm(root, { recursive: true, force: true });
+  }
+});
