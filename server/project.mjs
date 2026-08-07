@@ -51,6 +51,13 @@ The truth of every slide is its own file: slides/<id>.html holds a <main class="
 Edit those HTML files directly. styles/deck.css is generated and read-only. Do not
 generate or hand-maintain any intermediate model; .weave/deck.json is only a manifest of slide order,
 titles, and speaker notes (Weave keeps it in sync — you rarely touch it, except to reorder slides).
+templates/<id>.html holds an empty frame whose root carries data-weave-template and
+data-weave-template-name. Every slide has data-weave-slot="title" and data-weave-slot="content";
+the title slot's text is the slide name, and .weave/deck.json's title is derived from it. Templates
+supply typography by inheritance, so ordinary blocks omit color and font size unless they mean to
+differ. Kind-identity sizes such as eyebrow and note, and accent colors, stay explicit. To change a
+slide's layout, move the title slot's inner content and the remaining content children into the new
+frame's slots; do not edit the shared template frame in place.
 Slide styling is expressed only with the precompiled Tailwind utility classes already used in the
 project. Use standard Tailwind scale values and existing classes; never use inline style attributes,
 arbitrary-value classes such as [...], or edit styles/deck.css. Prefer flex/grid flow layout. Keep a

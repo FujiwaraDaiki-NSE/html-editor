@@ -493,10 +493,6 @@ body {
 .new-slide-options { position: absolute; }
 .filmstrip .new-slide-options { left: 0; bottom: 44px; }
 .slide-rail .new-slide-options { left: 50px; bottom: 0; }
-.background-preview { position: relative; width: 45px; height: 28px; display: block; overflow: hidden; border: 1px solid var(--line-strong); background: #171a20; }
-.background-preview.orbit::after { content: ""; position: absolute; width: 20px; height: 20px; right: -8px; bottom: -8px; border: 3px solid var(--accent); border-radius: 50%; }
-.background-preview.grid { background-color: #1a1e24; background-image: linear-gradient(#343942 1px, transparent 1px), linear-gradient(90deg, #343942 1px, transparent 1px); background-size: 7px 7px; }
-.background-preview.plain { background: #20242a; }
 .accent-section { padding: 11px 10px 13px; }
 .accent-section > span { display: block; margin-bottom: 9px; color: var(--muted); font-size: 8px; font-weight: 700; letter-spacing: .07em; }
 .accent-section > div { display: flex; gap: 8px; }
@@ -521,8 +517,8 @@ body {
 .save-message input { height: 26px; padding: 0 7px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--panel-2); color: var(--text); }
 
 .quality-popover { position: absolute; z-index: 31; left: 160px; bottom: 28px; width: 360px; max-height: 420px; overflow: auto; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--panel); box-shadow: var(--shadow); }
-.quality-popover header, .shortcut-help header { position: sticky; top: 0; display: flex; justify-content: space-between; align-items: center; padding: 10px; border-bottom: 1px solid var(--line); background: var(--panel); font-size: 10px; }
-.quality-popover header button, .shortcut-help header button { border: 0; background: transparent; color: var(--muted); cursor: pointer; }
+.quality-popover header { position: sticky; top: 0; display: flex; justify-content: space-between; align-items: center; padding: 10px; border-bottom: 1px solid var(--line); background: var(--panel); font-size: 10px; }
+.quality-popover header button { border: 0; background: transparent; color: var(--muted); cursor: pointer; }
 .quality-popover > button { width: 100%; padding: 8px 10px; display: grid; grid-template-columns: 8px 1fr; gap: 8px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--text); text-align: left; cursor: pointer; }
 .quality-popover > button:hover { background: var(--panel-3); }
 .quality-popover i { width: 7px; height: 7px; margin-top: 3px; border-radius: 50%; background: #f0b45d; }
@@ -537,14 +533,6 @@ body {
 .presenter footer { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 8px 20px; border-top: 1px solid #292e36; background: #15181d; }
 .presenter footer button { height: 30px; padding: 0 10px; border: 1px solid #353b45; border-radius: 5px; background: #20252c; color: #e7e9ed; cursor: pointer; }
 .presenter footer small { max-width: 380px; flex: 1; color: #8d949f; font-size: 10px; text-align: center; }
-.help-backdrop { position: fixed; z-index: 110; inset: 0; display: grid; place-items: center; background: #05070ab8; }
-.shortcut-help { width: min(440px, 90vw); border: 1px solid var(--line-strong); border-radius: 8px; background: var(--panel); box-shadow: var(--shadow); }
-.shortcut-help dl { display: grid; grid-template-columns: 140px 1fr; gap: 0; margin: 0; padding: 10px; font-size: 10px; }
-.shortcut-help dt, .shortcut-help dd { margin: 0; padding: 7px; border-bottom: 1px solid var(--line); }.shortcut-help dt { color: var(--accent); font-family: monospace; }.shortcut-help dd { color: var(--muted); }
-.template-library { max-height: 70vh; overflow: auto; }
-.template-library > p { padding: 12px; color: var(--muted); font-size: 10px; }
-.template-library > button { width: 100%; padding: 8px 10px; display: grid; grid-template-columns: 58px 1fr; align-items: center; gap: 9px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--text); text-align: left; cursor: pointer; }
-.template-library > button:hover { background: var(--panel-3); }.template-library > button strong, .template-library > button small { display: block; }.template-library > button small { margin-top: 3px; color: var(--muted); font-size: 8px; }
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .001ms !important; transition-duration: .001ms !important; } }
 
