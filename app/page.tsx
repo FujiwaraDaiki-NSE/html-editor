@@ -700,7 +700,16 @@ export default function Home() {
   const onCanvasDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     const image = Array.from(event.dataTransfer.files).find((file) => file.type.startsWith("image/"));
-    if (image) { void uploadImage(image); return; }
+    if (image) {
+      const target = (event.target as HTMLElement).closest<HTMLElement>("[data-weave-id]");
+      let placement: { id: string; after: boolean } | undefined;
+      if (target) {
+        const rect = target.getBoundingClientRect();
+        const horizontal = target.parentElement?.classList.contains("flex-row");
+        placement = { id: target.dataset.weaveId ?? "", after: horizontal ? event.clientX > rect.left + rect.width / 2 : event.clientY > rect.top + rect.height / 2 };
+      }
+      void uploadImage(image, placement); return;
+    }
     const session = blockDragRef.current;
     if (!session) return;
     session.committed = true;
@@ -785,7 +794,7 @@ export default function Home() {
     setAnnouncement("Block moved");
   };
 
-  const addBlock = (kind: string, assetPath = "") => {
+  const addBlock = (kind: string, assetPath = "", placement?: { id: string; after: boolean }) => {
     if (kind === "image" && !assetPath) { replacingImageRef.current = false; imageInputRef.current?.click(); return; }
     const host = canvasRef.current;
     const hero = host?.querySelector(".hero");
@@ -793,9 +802,11 @@ export default function Home() {
     checkpoint();
     const id = `${kind}-${createMessageId().slice(6)}`;
     const node = selectedNode();
-    const container = node?.classList.contains("weave-container") ? node : hero;
-    container.insertAdjacentHTML("beforeend", blockTemplates[kind](id));
-    const inserted = container.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(id)}"]`);
+    const target = placement?.id ? host.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(placement.id)}"]`) : null;
+    const container = target?.parentElement ?? (node?.classList.contains("weave-container") ? node : hero);
+    if (target) target.insertAdjacentHTML(placement?.after ? "afterend" : "beforebegin", blockTemplates[kind](id));
+    else container.insertAdjacentHTML("beforeend", blockTemplates[kind](id));
+    const inserted = host.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(id)}"]`);
     if (kind === "image" && inserted instanceof HTMLImageElement) {
       inserted.dataset.assetPath = assetPath;
       inserted.src = `${apiBase}/${assetPath}`;
@@ -808,7 +819,7 @@ export default function Home() {
     syncFromDom();
   };
 
-  const uploadImage = async (file: File) => {
+  const uploadImage = async (file: File, placement?: { id: string; after: boolean }) => {
     try {
       if (file.size > 10 * 1024 * 1024) throw new Error("Image must be 10 MB or smaller.");
       const dataUrl = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file); });
@@ -818,7 +829,7 @@ export default function Home() {
       const selected = selectedNode();
       if (replacingImageRef.current && selected instanceof HTMLImageElement) {
         checkpoint(); selected.dataset.assetPath = result.path; selected.src = `${apiBase}/${result.path}`; syncFromDom(); setSel(readSelection(selected));
-      } else addBlock("image", result.path);
+      } else addBlock("image", result.path, placement);
       setAnnouncement("Image imported");
       setApiError(null);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
