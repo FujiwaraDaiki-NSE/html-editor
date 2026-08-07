@@ -9,6 +9,7 @@ export const slideControlGroups = {
   fontSize: {
     label: "Size",
     options: [
+      option("Inherit", "", ""),
       option("xs", "text-xs", "font-size: 0.75rem; line-height: 1rem"),
       option("sm", "text-sm", "font-size: 0.875rem; line-height: 1.25rem"),
       option("base", "text-base", "font-size: 1rem; line-height: 1.5rem"),
@@ -27,6 +28,7 @@ export const slideControlGroups = {
   fontWeight: {
     label: "Weight",
     options: [
+      option("Inherit", "", ""),
       option("Normal", "font-normal", "font-weight: 400"),
       option("Medium", "font-medium", "font-weight: 500"),
       option("Semibold", "font-semibold", "font-weight: 600"),
@@ -37,6 +39,7 @@ export const slideControlGroups = {
   lineHeight: {
     label: "Leading",
     options: [
+      option("Inherit", "", ""),
       option("None", "leading-none", "line-height: 1"),
       option("Tight", "leading-tight", "line-height: 1.25"),
       option("Snug", "leading-snug", "line-height: 1.375"),
@@ -47,7 +50,7 @@ export const slideControlGroups = {
   },
   textAlign: {
     label: "Align",
-    options: [option("≡", "text-left", "text-align: left"), option("≣", "text-center", "text-align: center"), option("☷", "text-right", "text-align: right")],
+    options: [option("Inherit", "", ""), option("≡", "text-left", "text-align: left"), option("≣", "text-center", "text-align: center"), option("☷", "text-right", "text-align: right")],
   },
   maxWidth: {
     label: "Measure",
@@ -62,6 +65,7 @@ export const slideControlGroups = {
   color: {
     label: "Color",
     options: [
+      option("Inherit", "", ""),
       option("Slate 50", "text-slate-50", "color: #f8fafc"), option("Slate 300", "text-slate-300", "color: #cbd5e1"),
       option("Slate 400", "text-slate-400", "color: #94a3b8"), option("Amber", "text-amber-400", "color: #fbbf24"),
       option("Teal", "text-teal-400", "color: #2dd4bf"), option("Violet", "text-violet-400", "color: #a78bfa"),
@@ -86,7 +90,7 @@ export const slideControlGroups = {
   },
   listMarker: {
     label: "Marker",
-    options: [option("Bullet", "list-disc", "list-style-type: disc"), option("Number", "list-decimal", "list-style-type: decimal"), option("None", "list-none", "list-style-type: none")],
+    options: [option("Inherit", "", ""), option("Bullet", "list-disc", "list-style-type: disc"), option("Number", "list-decimal", "list-style-type: decimal"), option("None", "list-none", "list-style-type: none")],
   },
   imageFit: {
     label: "Fit",
@@ -134,6 +138,12 @@ export const allControlKeys = [...new Set([...textControlKeys, ...containerContr
 export const listControlKeys = ["listMarker"];
 export const imageControlKeys = ["imageFit", "aspectRatio", "radius"];
 export const decorationControlKeys = ["background", "borderStyle", "borderColor", "radius", "shadow"];
+
+export const readUtilityClass = (classes, key) => slideControlGroups[key].options.find(({ className }) => className && classes.includes(className))?.className ?? "";
+export const applyUtilityClass = (classes, key, className) => {
+  const group = new Set(slideControlGroups[key].options.map((option) => option.className).filter(Boolean));
+  return [...classes.filter((name) => !group.has(name)), ...(className ? [className] : [])];
+};
 
 /* Sizing is stated as an intent — Fill, Hug or Fixed — never as a class. Width is the main axis
    inside a Row but the cross axis inside a Column, so the same intent needs a different utility
@@ -215,12 +225,14 @@ const extraUtilities = {
 
 export const structuralSlideClasses = new Set(["weave-slide", "hero", "brand", "page-number", "heading", "paragraph", "eyebrow", "note", "metrics", "image", "list", "table", "weave-container", "row", "column", "grid", "theme-orbit", "theme-grid", "theme-plain"]);
 export const utilityDeclarations = new Map([
-  ...Object.values(slideControlGroups).flatMap((group) => group.options.map(({ className, css }) => [className, css])),
+  ...Object.values(slideControlGroups).flatMap((group) => group.options.flatMap(({ className, css }) => className ? [[className, css]] : [])),
   ...Object.entries(extraUtilities),
 ]);
 export const allowedSlideClasses = new Set([...structuralSlideClasses, ...utilityDeclarations.keys()]);
 
-export const defaultSlideClasses = "weave-slide relative flex h-full w-full flex-col overflow-hidden bg-slate-950 p-16 text-slate-50";
+/* text-lg carries a fixed 1.75rem line-height; leading-normal is emitted after size utilities so
+   inherited line-height stays unitless and each descendant recomputes it at its own font size. */
+export const defaultSlideClasses = "weave-slide relative flex h-full w-full flex-col overflow-hidden bg-slate-950 p-16 text-slate-50 text-lg leading-normal";
 
 const escapeClass = (name) => name.replaceAll("/", "\\/");
 export function buildTailwindSlideCss() {
@@ -245,6 +257,7 @@ export function buildTailwindSlideCss() {
   border: 34px solid color-mix(in srgb, var(--weave-accent) 62%, transparent); opacity: 0.7; pointer-events: none;
 }
 .weave-slide > * { min-width: 0; }
+.weave-slide :where(h1, h2, h3, p, ul, ol) { margin: 0; font-size: inherit; font-weight: inherit; }
 ${utilities}
 `;
 }
@@ -347,6 +360,18 @@ const migrateSlideSlots = (html) => {
   return `${html.slice(0, content.index)}${slottedContent}${html.slice(closing.end)}`;
 };
 
+// Accent and kind-identity classes stay explicit; only these old inherited defaults move to root.
+const stripLegacyInheritedDefaults = (html) => html.replace(/<([a-z][\w:-]*)\b[^>]*>/gi, (opening) => {
+  const attribute = opening.match(/\bclass\s*=\s*(["'])(.*?)\1/i);
+  if (!attribute) return opening;
+  const classes = attribute[2].split(/\s+/).filter(Boolean);
+  const remove = new Set();
+  if (classes.includes("paragraph")) { remove.add("text-lg"); remove.add("text-slate-300"); }
+  if (classes.includes("heading") && !/\bdata-weave-slot\s*=\s*(?:"title"|'title')/i.test(opening)) { remove.add("text-6xl"); remove.add("text-slate-50"); }
+  if (remove.size === 0) return opening;
+  return opening.replace(attribute[0], `class=${attribute[1]}${classes.filter((name) => !remove.has(name)).join(" ")}${attribute[1]}`);
+});
+
 /** One-way migration for decks created before Tailwind classes became the source of truth. */
 export function migrateSlideHtmlToTailwind(input) {
   let html = String(input).replace(/\sstyle\s*=\s*(?:"[^"]*"|'[^']*')/gi, "");
@@ -372,5 +397,5 @@ export function migrateSlideHtmlToTailwind(input) {
   });
   html = html.replace(/<strong(?![^>]*\bclass=)/gi, '<strong class="text-3xl font-semibold tracking-tight text-amber-400"');
   html = html.replace(/<span(?![^>]*\bclass=)/gi, '<span class="text-xs text-slate-400"');
-  return migrateSlideSlots(html);
+  return stripLegacyInheritedDefaults(migrateSlideSlots(html));
 }

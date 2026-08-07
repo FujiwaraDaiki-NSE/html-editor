@@ -6,17 +6,44 @@ import {
   allControlKeys,
   applyBlockPosition,
   applySize,
+  applyUtilityClass,
   auditTailwindSlideHtml,
   buildTailwindSlideCss,
   containerControlKeys,
+  defaultSlideClasses,
   readBlockPosition,
   readSize,
+  readUtilityClass,
   ratioOptions,
   slideControlGroups,
   textControlKeys,
 } from "../shared/tailwind-slide.mjs";
 
 const classesOf = (value) => value.split(" ").filter(Boolean);
+
+test("the browser reset precedes utilities and root leading stays unitless", () => {
+  const css = buildTailwindSlideCss();
+  const base = ".weave-slide :where(h1, h2, h3, p, ul, ol) { margin: 0; font-size: inherit; font-weight: inherit; }";
+  assert.ok(css.indexOf(base) > 0);
+  assert.ok(css.indexOf(base) < css.indexOf(".weave-slide.text-xs,"), "the zero-specificity base layer must precede every utility");
+  assert.doesNotMatch(css, /\.weave-slide\.,/, "Inherit must not emit an empty utility selector");
+  assert.equal(base.includes("padding"), false, "list indentation keeps the browser default padding");
+  const defaults = classesOf(defaultSlideClasses);
+  assert.ok(defaults.includes("text-lg"));
+  assert.ok(defaults.includes("leading-normal"));
+  assert.ok(css.indexOf(".weave-slide.text-lg,") < css.indexOf(".weave-slide.leading-normal,"), "unitless leading must override text-lg's fixed line-height");
+});
+
+test("inheritable controls clear and read back without an empty class token", () => {
+  for (const key of ["fontSize", "fontWeight", "lineHeight", "textAlign", "color", "listMarker"]) {
+    const [inherit, explicit] = slideControlGroups[key].options;
+    assert.deepEqual({ label: inherit.label, className: inherit.className }, { label: "Inherit", className: "" });
+    const cleared = applyUtilityClass(["paragraph", explicit.className, "gap-4"], key, "");
+    assert.equal(cleared.includes(""), false);
+    assert.equal(readUtilityClass(cleared, key), "");
+    assert.equal(readUtilityClass(applyUtilityClass(cleared, key, explicit.className), key), explicit.className);
+  }
+});
 
 test("width is the main axis in a Row, so intents map to flex utilities", () => {
   assert.equal(applySize(classesOf("weave-container column flex flex-col gap-4"), "fill", "row").join(" "), "weave-container column flex flex-col gap-4 flex-1");
