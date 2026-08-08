@@ -151,6 +151,7 @@ Saveで消す理由は、保存がそのスライドを確定させる合図だ�
 | `app/page.tsx:274` | 要素の選択と読み出しは `readSelection` にある。R2 はこの仕組みに乗る |
 | `app/page.tsx:338` | `contextEnvelope()` に `annotations` を足せば、サーバは中身を素通しでプロンプトへ載せる（`server/local-api.mjs:98`）。ただしD5の解釈ルールは別途プロンプトに書く必要がある |
 | `server/local-api.mjs:105` | `requireText` が空プロンプトを弾く。R7（背景・意図なしで送信）のため契約変更が要る。送信の必須条件は「指示文**または**注釈1つ以上」になる |
+| `server/local-api.mjs:276` | `turn/steer` だけ `serializeEditorContext` を呼んでいない。クライアントはagent実行中の送信をsteerに切り替える（`app/page.tsx:1228`）ため、**実行中に置いた注釈が届かない**。既存の欠落だが、注釈レイヤーでは無視できなくなる |
 | `app/page.tsx:1664` | `.canvas-toolbar` のzoom群の隣がモードトグルの置き場所 |
 | `app/page.tsx:1581` | チャット入力上の `.context-chip` が注釈添付チップの置き場所 |
 
