@@ -1,0 +1,501 @@
+<meta charset="utf-8" />
+<title>Weave システム構成と技術要素</title>
+<style>
+  :root {
+    --paper: #f4f6f7;
+    --surface: #ffffff;
+    --surface-2: #eef1f3;
+    --line: #d8dde2;
+    --line-soft: #e6eaee;
+    --text: #171b21;
+    --muted: #5d6673;
+    --soft: #67707e;
+    --human: #9a6708;
+    --agent: #0d6f68;
+    --sans: system-ui, -apple-system, "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Segoe UI", sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, "Roboto Mono", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #111419;
+      --surface: #171b21;
+      --surface-2: #1c2129;
+      --line: #272d36;
+      --line-soft: #202630;
+      --text: #e5e9ee;
+      --muted: #99a2b0;
+      --soft: #838c99;
+      --human: #f6b84b;
+      --agent: #2dd4bf;
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #111419;
+    --surface: #171b21;
+    --surface-2: #1c2129;
+    --line: #272d36;
+    --line-soft: #202630;
+    --text: #e5e9ee;
+    --muted: #99a2b0;
+    --soft: #838c99;
+    --human: #f6b84b;
+    --agent: #2dd4bf;
+  }
+  :root[data-theme="light"] {
+    --paper: #f4f6f7;
+    --surface: #ffffff;
+    --surface-2: #eef1f3;
+    --line: #d8dde2;
+    --line-soft: #e6eaee;
+    --text: #171b21;
+    --muted: #5d6673;
+    --soft: #67707e;
+    --human: #9a6708;
+    --agent: #0d6f68;
+  }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.75;
+    letter-spacing: .01em;
+    -webkit-font-smoothing: antialiased;
+  }
+  .page { max-width: 940px; margin: 0 auto; padding: 56px 24px 96px; display: flex; flex-direction: column; gap: 56px; }
+  .prose { max-width: 68ch; display: flex; flex-direction: column; gap: 18px; }
+
+  header.masthead { display: flex; flex-direction: column; gap: 14px; padding-bottom: 34px; border-bottom: 1px solid var(--line); }
+  .kicker { font-family: var(--mono); font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--soft); }
+  h1 { margin: 0; font-size: clamp(30px, 4.4vw, 44px); font-weight: 700; letter-spacing: -.02em; line-height: 1.2; text-wrap: balance; }
+  .standfirst { max-width: 62ch; margin: 0; color: var(--muted); font-size: 17px; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px 20px; font-family: var(--mono); font-size: 11.5px; color: var(--soft); }
+
+  nav.toc { display: flex; flex-wrap: wrap; gap: 6px; }
+  nav.toc a {
+    padding: 5px 11px; border: 1px solid var(--line); border-radius: 999px;
+    background: var(--surface); color: var(--muted); font-size: 12.5px; text-decoration: none;
+  }
+  nav.toc a:hover, nav.toc a:focus-visible { border-color: var(--human); color: var(--text); outline: none; }
+
+  section { display: flex; flex-direction: column; gap: 22px; scroll-margin-top: 24px; }
+  h2 { margin: 0; font-size: 24px; font-weight: 700; letter-spacing: -.015em; }
+  h2 .index { margin-right: 12px; font-family: var(--mono); font-size: 13px; font-weight: 500; color: var(--soft); letter-spacing: 0; }
+  h3 { margin: 22px 0 0; font-size: 16px; font-weight: 700; letter-spacing: -.01em; }
+  p { margin: 0; }
+  a { color: inherit; text-decoration-color: var(--soft); text-underline-offset: 3px; }
+  code { font-family: var(--mono); font-size: .875em; padding: 1px 5px; border-radius: 4px; background: var(--surface-2); }
+  strong { font-weight: 700; }
+  ul { margin: 0; padding-left: 1.35em; display: flex; flex-direction: column; gap: 8px; }
+  li::marker { color: var(--soft); }
+
+  figure { margin: 0; display: flex; flex-direction: column; gap: 12px; padding: 24px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); overflow-x: auto; }
+  figure svg { display: block; width: 100%; min-width: 620px; max-width: 100%; height: auto; color: var(--muted); }
+  figcaption { max-width: 68ch; color: var(--muted); font-size: 13.5px; line-height: 1.65; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 20px; font-family: var(--mono); font-size: 11.5px; color: var(--soft); }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .swatch { width: 22px; height: 3px; border-radius: 2px; background: currentColor; }
+  .swatch.human { color: var(--human); }
+  .swatch.agent { color: var(--agent); }
+
+  .table-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+  table { width: 100%; min-width: 620px; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }
+  th, td { padding: 12px 16px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line-soft); }
+  thead th { font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--soft); font-weight: 500; white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.name { font-family: var(--mono); font-size: 12.5px; white-space: nowrap; }
+  td.ver { font-family: var(--mono); font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+
+  pre {
+    margin: 0; padding: 18px 20px; overflow-x: auto;
+    border: 1px solid var(--line); border-radius: 10px; background: var(--surface);
+    font-family: var(--mono); font-size: 12.5px; line-height: 1.85; color: var(--text);
+  }
+  pre .c { color: var(--soft); }
+  pre .k { color: var(--human); }
+
+  .note {
+    padding: 18px 20px; border: 1px solid var(--line); border-left: 3px solid var(--human);
+    border-radius: 0 8px 8px 0; background: var(--surface); font-size: 14.5px; color: var(--muted);
+  }
+  .note strong { color: var(--text); }
+  footer { padding-top: 30px; border-top: 1px solid var(--line); color: var(--soft); font-size: 13px; }
+</style>
+
+<div class="page">
+  <header class="masthead">
+    <div class="kicker">Weave · システム構成</div>
+    <h1>ローカルで完結する、HTMLを真実としたスライドエディタ</h1>
+    <p class="standfirst">人間とAgentが同じHTMLプロジェクトを同時に編集する。その要求から決まった構成と、中核で使っている技術を1枚にまとめる。</p>
+    <div class="meta">
+      <span>2026-08-08 時点</span>
+      <span>対象リポジトリ: html-editor</span>
+      <span>関連: concept.md / README.md</span>
+    </div>
+  </header>
+
+  <nav class="toc" aria-label="目次">
+    <a href="#shape">全体像</a>
+    <a href="#truth">真実の置き場所</a>
+    <a href="#save">保存とgit</a>
+    <a href="#style">スタイルの単一ソース</a>
+    <a href="#frame">型と2つのスロット</a>
+    <a href="#agent">Agent統合</a>
+    <a href="#stack">技術要素</a>
+    <a href="#absent">使っていないもの</a>
+    <a href="#verify">壊れないための仕掛け</a>
+  </nav>
+
+  <section id="shape">
+    <h2><span class="index">§1</span>全体像</h2>
+    <div class="prose">
+      <p>動いているのは3つのプロセスと、1つのgitリポジトリだけ。クラウド側に状態を持つ場所は無い。</p>
+    </div>
+
+    <figure>
+      <svg viewBox="0 0 900 372" role="img" aria-label="ブラウザ、ローカルAPI、Codex app-serverの3プロセスと、両者が読み書きするプロジェクトのgitリポジトリの関係図">
+        <defs>
+          <marker id="a1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <polygon points="0,1 10,5 0,9" fill="currentColor" />
+          </marker>
+          <marker id="a1h" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <polygon points="0,1 10,5 0,9" fill="var(--human)" />
+          </marker>
+          <marker id="a1a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <polygon points="0,1 10,5 0,9" fill="var(--agent)" />
+          </marker>
+        </defs>
+
+        <line x1="150" y1="30" x2="750" y2="30" stroke="currentColor" stroke-width="1.5" stroke-dasharray="5 5" opacity=".5" />
+        <line x1="440" y1="20" x2="460" y2="40" stroke="currentColor" stroke-width="1.5" />
+        <line x1="460" y1="20" x2="440" y2="40" stroke="currentColor" stroke-width="1.5" />
+        <text x="450" y="14" text-anchor="middle" font-size="12" fill="currentColor">直結しない — ブラウザは資格情報を持たない</text>
+
+        <rect x="30" y="62" width="240" height="86" rx="8" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <text x="150" y="92" text-anchor="middle" font-size="14" font-weight="700" fill="var(--text)">画面（ブラウザ）</text>
+        <text x="150" y="113" text-anchor="middle" font-size="12" fill="currentColor">React · キャンバスは実DOM</text>
+        <text x="150" y="132" text-anchor="middle" font-size="11.5" font-family="ui-monospace, monospace" fill="currentColor">localhost:3000</text>
+
+        <rect x="345" y="62" width="220" height="86" rx="8" fill="none" stroke="var(--human)" stroke-width="2" />
+        <text x="455" y="92" text-anchor="middle" font-size="14" font-weight="700" fill="var(--text)">ローカルAPI</text>
+        <text x="455" y="113" text-anchor="middle" font-size="12" fill="currentColor">node HTTP · 唯一のバックエンド</text>
+        <text x="455" y="132" text-anchor="middle" font-size="11.5" font-family="ui-monospace, monospace" fill="currentColor">127.0.0.1:4317</text>
+
+        <rect x="640" y="62" width="230" height="86" rx="8" fill="none" stroke="var(--agent)" stroke-width="2" />
+        <text x="755" y="92" text-anchor="middle" font-size="14" font-weight="700" fill="var(--text)">Codex app-server</text>
+        <text x="755" y="113" text-anchor="middle" font-size="12" fill="currentColor">CLIの子プロセス</text>
+        <text x="755" y="132" text-anchor="middle" font-size="11.5" font-family="ui-monospace, monospace" fill="currentColor">stdio</text>
+
+        <line x1="270" y1="90" x2="345" y2="90" stroke="var(--human)" stroke-width="2" marker-end="url(#a1h)" />
+        <text x="307" y="80" text-anchor="middle" font-size="11" font-family="ui-monospace, monospace" fill="currentColor">/api/*</text>
+        <line x1="345" y1="122" x2="270" y2="122" stroke="var(--human)" stroke-width="2" marker-end="url(#a1h)" />
+        <text x="307" y="140" text-anchor="middle" font-size="11" font-family="ui-monospace, monospace" fill="currentColor">NDJSON</text>
+
+        <line x1="565" y1="105" x2="640" y2="105" stroke="var(--agent)" stroke-width="2" marker-start="url(#a1a)" marker-end="url(#a1a)" />
+        <text x="602" y="93" text-anchor="middle" font-size="11" font-family="ui-monospace, monospace" fill="currentColor">JSON-RPC</text>
+
+        <rect x="180" y="250" width="690" height="98" rx="8" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <text x="204" y="278" font-size="14" font-weight="700" fill="var(--text)">プロジェクト（それ自体が独立したgitリポジトリ）</text>
+        <text x="204" y="303" font-size="11.5" font-family="ui-monospace, monospace" fill="currentColor">slides/&lt;id&gt;.html — 真実　templates/&lt;id&gt;.html — 型　styles/deck.css — 生成物</text>
+        <text x="204" y="325" font-size="11.5" font-family="ui-monospace, monospace" fill="currentColor">assets/&lt;sha256&gt;.png　.weave/deck.json — 目次　.weave/current-buffer.json — 未保存</text>
+
+        <line x1="400" y1="148" x2="400" y2="250" stroke="var(--human)" stroke-width="2" marker-end="url(#a1h)" />
+        <text x="390" y="200" text-anchor="end" font-size="11" fill="currentColor">保存 · 履歴 · コミット</text>
+
+        <line x1="790" y1="148" x2="790" y2="250" stroke="var(--agent)" stroke-width="2" marker-end="url(#a1a)" />
+        <text x="780" y="200" text-anchor="end" font-size="11" fill="currentColor">ファイルを直接編集</text>
+      </svg>
+      <figcaption>ブラウザはローカルAPIだけを相手にし、Agentのプロセスとは直接話さない。両者は同じファイルを触り、その一致点がプロジェクトのgitリポジトリになる。</figcaption>
+      <div class="legend">
+        <span><i class="swatch human"></i>人間の編集経路</span>
+        <span><i class="swatch agent"></i>Agentの編集経路</span>
+      </div>
+    </figure>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>プロセス</th><th>実体</th><th>責務</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="name">画面</td>
+            <td>vinext（Vite + React）の開発サーバ、<code>:3000</code></td>
+            <td>編集UI。キャンバスはスライドHTMLを実DOMとして注入し、その場で書き換える。状態モデルを別に持たない</td>
+          </tr>
+          <tr>
+            <td class="name">ローカルAPI</td>
+            <td><code>server/local-api.mjs</code>、素のnode HTTP、<code>:4317</code></td>
+            <td>プロジェクトファイルの所有、保存トランザクション、git操作、Codexの中継。CORSは <code>localhost:3000</code> のみ許可</td>
+          </tr>
+          <tr>
+            <td class="name">Codex app-server</td>
+            <td>ローカルAPIが <code>codex app-server</code> をspawn</td>
+            <td>Agent本体。stdio越しのJSON-RPCで会話する。認証はCLIの既存ログインをそのまま使う</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note">
+      <strong>この形の効き目。</strong>OpenAIの資格情報がアプリの中を通らない。ブラウザからapp-serverへの経路が存在しないので、画面に渡す情報を絞る設計判断が要らなくなる。
+    </div>
+  </section>
+
+  <section id="truth">
+    <h2><span class="index">§2</span>真実の置き場所</h2>
+    <div class="prose">
+      <p>中間データモデルを持たない。<strong>スライドの真実は <code>slides/&lt;id&gt;.html</code> の <code>&lt;main class="weave-slide"&gt;</code> フラグメントそのもの</strong>で、エディタはそれをDOMとして描き、DOMを直接編集し、<code>outerHTML</code> に戻して書き出す。</p>
+      <p>この判断が連鎖して、他の置き場所の役割が決まっている。</p>
+      <ul>
+        <li><code>.weave/deck.json</code> は<strong>目次</strong>。並び順・名前・スピーカーノートだけを持つ。名前はHTMLのタイトルスロットから導出される表示用の値で、原本ではない</li>
+        <li><code>styles/deck.css</code> は<strong>生成物</strong>。内容が正準と一致しなければ保存を弾く（実質read-only）</li>
+        <li><code>.weave/current-buffer.json</code> は<strong>未保存の作業状態</strong>。Agentが「いま画面に出ているもの」を読めるようにするための置き場で、gitからは <code>.git/info/exclude</code> で外している</li>
+        <li><code>assets/</code> は内容のsha256をファイル名にする。同じ画像が二重に入らない</li>
+      </ul>
+      <p>結果として、Agentへの指示は「このファイルを編集して」で済む。人間の操作とAgentの操作が、同じ対象への別々の書き込み手段になる。</p>
+    </div>
+  </section>
+
+  <section id="save">
+    <h2><span class="index">§3</span>保存とgit</h2>
+    <div class="prose">
+      <p>保存はスライド全ファイルと目次の一括更新なので、途中で落ちると「新しいスライドと古い目次」のような中間状態が残りうる。それを作らないために、書き込みは<strong>別名で用意してから差し替える</strong>方式にしている。</p>
+    </div>
+
+    <figure>
+      <svg viewBox="0 0 910 258" role="img" aria-label="保存処理の流れ。リビジョン照合、別ディレクトリへの書き出し、再照合、リネームによる差し替え、退避分の削除、そして失敗時に元へ戻す経路">
+        <defs>
+          <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <polygon points="0,1 10,5 0,9" fill="currentColor" />
+          </marker>
+        </defs>
+
+        <rect x="20" y="58" width="152" height="62" rx="7" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <text x="96" y="82" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--text)">リビジョン照合</text>
+        <text x="96" y="101" text-anchor="middle" font-size="11" fill="currentColor">読込時と同じHEADか</text>
+
+        <rect x="204" y="58" width="152" height="62" rx="7" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <text x="280" y="82" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--text)">別名で書き出す</text>
+        <text x="280" y="101" text-anchor="middle" font-size="10.5" font-family="ui-monospace, monospace" fill="currentColor">.slides-…​.staged</text>
+
+        <rect x="388" y="58" width="152" height="62" rx="7" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <text x="464" y="82" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--text)">直前に再照合</text>
+        <text x="464" y="101" text-anchor="middle" font-size="11" fill="currentColor">並行コミットを踏まない</text>
+
+        <rect x="572" y="58" width="152" height="62" rx="7" fill="none" stroke="var(--human)" stroke-width="2" />
+        <text x="648" y="82" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--text)">リネームで差替え</text>
+        <text x="648" y="101" text-anchor="middle" font-size="11" fill="currentColor">旧版は退避しておく</text>
+
+        <rect x="756" y="58" width="134" height="62" rx="7" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <text x="823" y="82" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--text)">退避分を削除</text>
+        <text x="823" y="101" text-anchor="middle" font-size="11" fill="currentColor">＋ gitコミット</text>
+
+        <line x1="172" y1="89" x2="204" y2="89" stroke="currentColor" stroke-width="1.5" marker-end="url(#a2)" />
+        <line x1="356" y1="89" x2="388" y2="89" stroke="currentColor" stroke-width="1.5" marker-end="url(#a2)" />
+        <line x1="540" y1="89" x2="572" y2="89" stroke="currentColor" stroke-width="1.5" marker-end="url(#a2)" />
+        <line x1="724" y1="89" x2="756" y2="89" stroke="currentColor" stroke-width="1.5" marker-end="url(#a2)" />
+
+        <text x="455" y="30" text-anchor="middle" font-size="12" fill="currentColor">ここまでは元のファイルに触らない ────────────▶ ここで初めて入れ替わる</text>
+
+        <path d="M 700 120 L 700 176 L 96 176 L 96 120" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="5 5" marker-end="url(#a2)" />
+        <text x="398" y="196" text-anchor="middle" font-size="12" fill="currentColor">どこで失敗しても、退避した旧版を戻して元の状態に落ち着く</text>
+        <text x="398" y="222" text-anchor="middle" font-size="11.5" fill="currentColor">部分的に新しいプロジェクトは存在しない</text>
+      </svg>
+      <figcaption>差し替えはディレクトリのリネーム（アトミック）で行い、旧版は消す前に退避しておく。失敗時はその退避を戻すだけで元の状態に戻る。</figcaption>
+    </figure>
+
+    <div class="prose">
+      <p>gitは「あとから見るためのログ」ではなく<strong>記録システムそのもの</strong>として使っている。</p>
+      <ul>
+        <li><strong>履歴</strong> — 保存ごとにWeave名義でコミット。過去のコミットへ戻す操作も、消すのではなく「戻したことをコミットする」</li>
+        <li><strong>複数提案</strong> — Agentの案は <code>weave/variation/*</code> ブランチ。採用は fast-forward マージ、不採用は <code>weave/history/*</code> へ改名して残す</li>
+        <li><strong>リビジョン競合</strong> — 画面が読んだHEADと保存時のHEADが違えば拒否する。Agentが裏でコミットした変更を人間の保存が踏み潰さない</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="style">
+    <h2><span class="index">§4</span>スタイルの単一ソース</h2>
+    <div class="prose">
+      <p>スライドの見た目はTailwind標準のユーティリティクラスだけで表現する。ただし<strong>Tailwindのコンパイラは通らない</strong>。使えるクラスの一覧を持つレジストリがコード内に1つあり、そこから生成したCSSをスライドに適用している。</p>
+      <p>この1箇所が、性質の違う3つの仕事を同時に決めているところが肝。</p>
+    </div>
+
+    <figure>
+      <svg viewBox="0 0 760 232" role="img" aria-label="ユーティリティ定義のレジストリ1つが、インスペクタの選択肢、生成CSS、保存時の監査という3つの消費者を同時に決めている図">
+        <defs>
+          <marker id="a3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <polygon points="0,1 10,5 0,9" fill="currentColor" />
+          </marker>
+        </defs>
+
+        <rect x="240" y="16" width="280" height="60" rx="7" fill="none" stroke="var(--human)" stroke-width="2" />
+        <text x="380" y="41" text-anchor="middle" font-size="13" font-weight="700" fill="var(--text)">ユーティリティのレジストリ</text>
+        <text x="380" y="61" text-anchor="middle" font-size="11" font-family="ui-monospace, monospace" fill="currentColor">shared/tailwind-slide.mjs</text>
+
+        <path d="M 330 76 L 120 154" fill="none" stroke="currentColor" stroke-width="1.5" marker-end="url(#a3)" />
+        <line x1="380" y1="76" x2="380" y2="154" stroke="currentColor" stroke-width="1.5" marker-end="url(#a3)" />
+        <path d="M 430 76 L 640 154" fill="none" stroke="currentColor" stroke-width="1.5" marker-end="url(#a3)" />
+
+        <rect x="20" y="156" width="200" height="60" rx="7" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <text x="120" y="180" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--text)">インスペクタの選択肢</text>
+        <text x="120" y="199" text-anchor="middle" font-size="11" fill="currentColor">押せる値がそのまま並ぶ</text>
+
+        <rect x="280" y="156" width="200" height="60" rx="7" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <text x="380" y="180" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--text)">スライドのCSS</text>
+        <text x="380" y="199" text-anchor="middle" font-size="11" font-family="ui-monospace, monospace" fill="currentColor">styles/deck.css</text>
+
+        <rect x="540" y="156" width="200" height="60" rx="7" fill="none" stroke="currentColor" stroke-width="1.5" />
+        <text x="640" y="180" text-anchor="middle" font-size="12.5" font-weight="700" fill="var(--text)">保存時の監査</text>
+        <text x="640" y="199" text-anchor="middle" font-size="11" fill="currentColor">未登録クラスを拒否</text>
+
+        <text x="196" y="118" text-anchor="middle" font-size="11" fill="currentColor">描く</text>
+        <text x="392" y="118" font-size="11" fill="currentColor">生成する</text>
+        <text x="566" y="118" text-anchor="middle" font-size="11" fill="currentColor">照合する</text>
+      </svg>
+      <figcaption>選べる値・実際に効くCSS・保存を許すクラスが同じ1つの定義から出るので、三者がずれない。Agentが書いたクラスも人間が押した値も同じ検査を通る。</figcaption>
+    </figure>
+
+    <div class="prose">
+      <p>付随して決まっていること。</p>
+      <ul>
+        <li><strong>固定設計サイズ 1280 × 720</strong>。レスポンシブに書かず、表示側で拡大縮小する。だから絶対pxのCSS1枚が編集画面・発表モード・書き出しHTMLすべてに使える</li>
+        <li><strong>インラインstyle属性と任意値クラス（<code>[…]</code>）は禁止</strong>。保存時に弾く。値が定義の外に漏れると、上の3者の一致が崩れる</li>
+        <li><strong>prettierを正準フォーマッタにする</strong>。人間のDOM由来のHTMLとAgentが手で書いたHTMLを同じ形に揃えるので、gitのdiffが意味を持つ。改行は <code>&lt;br&gt;</code> に統一（prettierがテキストを折り返すため、生の改行は失われる）</li>
+        <li><strong>書き出しは自己完結HTML</strong>。CSSをインライン化し、外部参照を持たない1ファイル</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="frame">
+    <h2><span class="index">§5</span>型と2つのスロット</h2>
+    <div class="prose">
+      <p>2026-08-08に入った層。<strong>型（テンプレート）は中身を持たない器</strong>で、背景・枠・共通の書式だけを持つ。<code>templates/&lt;id&gt;.html</code> という、スライドと同じ形のHTMLファイル1つで完結する。</p>
+    </div>
+
+    <pre><span class="c">&lt;!-- templates/orbit.html — 空の器 --&gt;</span>
+&lt;main class="weave-slide … theme-orbit bg-slate-950 <span class="k">text-lg leading-normal</span>"
+      <span class="k">data-weave-template</span>="orbit" data-weave-template-name="Orbit / Dark"&gt;
+  &lt;div class="brand …"&gt;WEAVE&lt;/div&gt;                        <span class="c">枠（編集対象外）</span>
+  &lt;section class="hero flex flex-1 …" <span class="k">data-weave-slot="content"</span>&gt;
+    &lt;h1 class="heading text-6xl …" <span class="k">data-weave-slot="title"</span>&gt;&lt;/h1&gt;
+  &lt;/section&gt;
+  &lt;div class="page-number …"&gt;01 / 01&lt;/div&gt;                <span class="c">枠（位置から採番）</span>
+&lt;/main&gt;</pre>
+
+    <div class="prose">
+      <p>スロットを<strong>「タイトル」「内容」の2つに固定</strong>したのが、型を後から変更できる条件になっている。数が可変だと、型を変えたときどの中身をどこへ入れるか決まらない。2つなら タイトル→タイトル、内容→内容 で機械的に決まる。</p>
+      <p>型の適用は、枠を新しいものに差し替えて2つのスロットの中身を移すだけ。HTML文字列に対する純粋関数なので、ブラウザ無しで検証できる。「新規スライドを作る」は、移す中身が無いだけの同じ操作になる。</p>
+      <p>共通の書式はCSSの継承で配る。型のルートに置いたクラスを子が継承するので、型を変えれば文字の見た目も変わる。ただし継承できるプロパティに限られ、<strong>eyebrowの小ささのような「その種類がそういうものだ」という寸法とアクセント色は明示のまま残す</strong>（型はHTML1枚なので、ルートから配れる文字サイズは1つしかない）。</p>
+      <p>タイトルスロットのテキストは<strong>スライドの名前そのもの</strong>。以前はインスペクタの名前欄とキャンバスの見出しが無関係で、同じ文字列を2回打つかズレるかのどちらかだった。</p>
+    </div>
+  </section>
+
+  <section id="agent">
+    <h2><span class="index">§6</span>Agent統合</h2>
+    <div class="prose">
+      <p>Codex CLIの <code>app-server</code> を子プロセスとして起動し、stdio越しのJSON-RPCで話す。HTTPでもSDKでもない。</p>
+      <ul>
+        <li><strong>型は生成する</strong> — <code>codex app-server generate-ts</code> の出力を <code>generated/codex-app-server/</code> に置く。生成時のCLI版（現在 <code>0.146.0</code>）を記録し、起動時に実際のCLI版と比較して、食い違えば画面に出す。プロトコルの変化を黙って踏まない</li>
+        <li><strong>イベントは連番付きNDJSON</strong> — <code>/api/codex/events?after=N</code> でストリームする。直近2000件をメモリに保持しているので、再接続時に続きから受け取れる</li>
+        <li><strong>承認要求は逆方向のRPC</strong> — コマンド実行やファイル変更の承認、MCPの問い合わせはサーバ→クライアント方向の要求として届く。ローカルAPIがUIに出せるものだけを選んで画面へ渡し、返答を戻す</li>
+        <li><strong>文脈は自動で渡す</strong> — 未保存バッファ、選択中の要素、現在のスライドHTML、CSS、直近の履歴</li>
+        <li><strong>作法はAGENTS.mdで伝える</strong> — HTMLが真実であること、使えるクラス、スロットの語彙、装飾はinline SVGにすること。プロジェクト内のファイルなので、Agentが普通に読む</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="stack">
+    <h2><span class="index">§7</span>技術要素</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>技術</th><th>版</th><th>用途</th><th>選んでいる理由</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="name">React</td><td class="ver">19.2</td>
+            <td>編集UI</td>
+            <td>キャンバスはReactの管理外に置き、実DOMを直接編集する。再レンダリングでキャレットが飛ばないようにするため</td>
+          </tr>
+          <tr>
+            <td class="name">vinext / Vite</td><td class="ver">0.0.50 / 8.0</td>
+            <td>アプリの配信・開発サーバ</td>
+            <td>Next.jsのApp Router互換の構成をVite上で動かす。Cloudflare向けビルドもここに含まれる</td>
+          </tr>
+          <tr>
+            <td class="name">Tailwind CSS</td><td class="ver">4.2</td>
+            <td>エディタ自身の画面</td>
+            <td>スライド側には使わない。スライドは §4 のレジストリから生成したCSSを使う</td>
+          </tr>
+          <tr>
+            <td class="name">node:http</td><td class="ver">Node 22.13+</td>
+            <td>ローカルAPI</td>
+            <td>フレームワークを入れていない。ループバック限定・単一利用者で、ルーティングは <code>if</code> の列で足りる</td>
+          </tr>
+          <tr>
+            <td class="name">git（CLI）</td><td class="ver">—</td>
+            <td>履歴・提案・復元</td>
+            <td>ライブラリを介さず <code>execFileSync</code> で叩く。人間が同じリポジトリを普通のgitとして触れることが要件</td>
+          </tr>
+          <tr>
+            <td class="name">Codex app-server</td><td class="ver">CLI 0.146.0</td>
+            <td>Agent</td>
+            <td>公式のライフサイクル（初期化・thread・turn・通知）に沿う。資格情報はCLIに置いたまま</td>
+          </tr>
+          <tr>
+            <td class="name">prettier</td><td class="ver">3.9</td>
+            <td>HTML / CSSの正準化</td>
+            <td>2人の書き手（人間のDOM出力とAgentの手書き）を同じ形に揃える。gitのdiffを意味あるものにする</td>
+          </tr>
+          <tr>
+            <td class="name">TypeScript</td><td class="ver">5.9</td>
+            <td>画面と生成プロトコル型</td>
+            <td>サーバ側は <code>.mjs</code> のまま。共有モジュールも <code>.mjs</code> にして、ブラウザとnodeの両方から同じファイルを読む</td>
+          </tr>
+          <tr>
+            <td class="name">node:test</td><td class="ver">組込み</td>
+            <td>テスト</td>
+            <td>ランナーを追加しない。94件が数百msで走る</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="prose">
+      <p><code>shared/</code> は拡張子を <code>.mjs</code> に統一している。スライドの移行処理・スロット操作・監査・ユーティリティ定義を、<strong>ブラウザとローカルAPIが同一のファイルとして読む</strong>ため。2つの実装が食い違う余地を作らない。</p>
+    </div>
+  </section>
+
+  <section id="absent">
+    <h2><span class="index">§8</span>使っていないもの</h2>
+    <div class="prose">
+      <p>リポジトリには足場が残っていて、構成を読むときに誤解しやすいので明記する。</p>
+      <ul>
+        <li><strong>データベースは無い</strong>。<code>db/schema.ts</code> は空で、<code>getDb()</code> を呼ぶ箇所はゼロ。drizzleとD1の設定はスターターテンプレート由来</li>
+        <li><strong>Cloudflare Workerはアプリ配信のみ</strong>。<code>worker/index.ts</code> は雛形のままで、Weaveの機能を何も知らない</li>
+        <li><strong>API Routeは無い</strong>。<code>app/</code> に <code>route.ts</code> は存在せず、画面は <code>"use client"</code>。データの出入りは全部 <code>:4317</code> を通る</li>
+      </ul>
+      <p>つまり <code>npm run dev</code> を落とすとエディタは保存もAgent接続もできない。逆に言えばクラウド側に何も要らず、プロジェクトをgitごと持ち出せば完結する。</p>
+    </div>
+  </section>
+
+  <section id="verify">
+    <h2><span class="index">§9</span>壊れないための仕掛け</h2>
+    <div class="prose">
+      <p>「HTMLが真実」という前提は、放っておくと崩れる種類の約束なので、検査を仕組みに入れている。</p>
+      <ul>
+        <li><strong>内容ポリシー監査</strong> — <code>&lt;script&gt;</code>、インラインイベントハンドラ、<code>javascript:</code> URL、外部URL、インラインstyle、未登録クラス、任意値クラスを保存時に拒否。スライド・型の両方を通す</li>
+        <li><strong>構成テスト</strong> — ソースを文字列として読み、撤去したはずの旧実装が残っていないか、UIの契約（ポップオーバーの閉じ方など）が守られているかを検査する。DOMの無い環境で構成の退行を捉えるため</li>
+        <li><strong>純粋関数への切り出し</strong> — 移行・スロット操作・型の適用はHTML文字列に対する関数にしてある。ブラウザを立てずに往復不変性まで確認できる</li>
+        <li><strong>往復不変性</strong> — 型AからB、Bから戻したときに元のHTMLに一致すること。編集がファイルを少しずつ汚さないことの担保</li>
+      </ul>
+    </div>
+  </section>
+
+  <footer>
+    要件と決定の経緯は <code>concept.md</code>、機能一覧と起動手順は <code>README.md</code>、テンプレート層の検討は <code>plans/2026-08-07-slide-template-management.md</code> にある。本書はそれらの現状スナップショット。
+  </footer>
+</div>
