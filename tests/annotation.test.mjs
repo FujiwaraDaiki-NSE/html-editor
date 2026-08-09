@@ -6,8 +6,10 @@ import {
   clampRect,
   intersectingIds,
   nextOrder,
+  rectFromClientBox,
   rectFromPoints,
   rectsIntersect,
+  refreshAnnotations,
   referencedOrders,
   referenceToken,
   resizeRect,
@@ -32,6 +34,17 @@ test("pointer coordinates account for viewport origin, scale, and scroll", () =>
     toSlidePoint({ clientX: 250, clientY: 180 }, { left: 50, top: 30 }, 0.5, { left: 40, top: 10 }),
     { x: 480, y: 320 },
   );
+});
+
+test("client boxes use the same slide coordinate conversion as pointer points", () => {
+  const viewport = { left: 50, top: 30 };
+  const scroll = { left: 40, top: 10 };
+  const scale = 0.5;
+  const box = { left: 250, top: 180, width: 120, height: 45 };
+  const start = toSlidePoint({ clientX: box.left, clientY: box.top }, viewport, scale, scroll);
+  const end = toSlidePoint({ clientX: box.left + box.width, clientY: box.top + box.height }, viewport, scale, scroll);
+  assert.deepEqual(rectFromClientBox(box, viewport, scale, scroll), rectFromPoints(start, end));
+  assert.deepEqual(rectFromClientBox(box, viewport, scale, scroll), { x: 480, y: 320, w: 240, h: 90 });
 });
 
 test("rectangles normalize reversed drags and clamp to the slide", () => {
@@ -83,6 +96,24 @@ test("intersecting ids preserve input order", () => {
     { id: "first", rect: { x: 0, y: 0, w: 15, h: 15 } },
   ];
   assert.deepEqual(intersectingIds({ x: 10, y: 10, w: 30, h: 30 }, boxes), ["second", "first"]);
+});
+
+test("refreshing annotations updates element geometry and every intersection list", () => {
+  const boxes = [
+    { id: "heading", rect: { x: 40, y: 30, w: 180, h: 60 } },
+    { id: "content", rect: { x: 0, y: 0, w: 500, h: 300 } },
+    { id: "fallback-overlap", rect: { x: 700, y: 400, w: 80, h: 80 } },
+  ];
+  const annotations = [
+    { id: "element", target: { kind: "element", weaveId: "heading" }, rect: { x: 1, y: 2, w: 3, h: 4 }, intersects: [] },
+    { id: "region", target: { kind: "region" }, rect: { x: 450, y: 250, w: 100, h: 100 }, intersects: ["stale"] },
+    { id: "missing", target: { kind: "element", weaveId: "removed" }, rect: { x: 720, y: 420, w: 20, h: 20 }, intersects: [] },
+  ];
+  assert.deepEqual(refreshAnnotations(annotations, boxes), [
+    { id: "element", target: { kind: "element", weaveId: "heading" }, rect: boxes[0].rect, intersects: ["heading", "content"] },
+    { id: "region", target: { kind: "region" }, rect: annotations[1].rect, intersects: ["content"] },
+    { id: "missing", target: { kind: "element", weaveId: "removed" }, rect: annotations[2].rect, intersects: ["fallback-overlap"] },
+  ]);
 });
 
 test("the annotation envelope sorts both target kinds and copies defensively", () => {

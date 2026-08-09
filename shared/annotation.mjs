@@ -24,6 +24,11 @@ export function clampRect(rect) {
 
 export const rectFromPoints = (a, b) => clampRect({ x: a.x, y: a.y, w: b.x - a.x, h: b.y - a.y });
 
+export const rectFromClientBox = (box, viewport, scale, scroll) => rectFromPoints(
+  toSlidePoint({ clientX: box.left, clientY: box.top }, viewport, scale, scroll),
+  toSlidePoint({ clientX: box.left + box.width, clientY: box.top + box.height }, viewport, scale, scroll),
+);
+
 export const nextOrder = (annotations) => Math.max(0, ...annotations.map(({ order }) => order)) + 1;
 
 export function translateRect(rect, dx, dy) {
@@ -69,6 +74,15 @@ export const rectsIntersect = (a, b) => (
 );
 
 export const intersectingIds = (rect, boxes) => boxes.filter((box) => rectsIntersect(rect, box.rect)).map((box) => box.id);
+
+export function refreshAnnotations(annotations, boxes) {
+  const boxesById = new Map(boxes.map((box) => [box.id, box]));
+  return annotations.map((annotation) => {
+    const elementBox = annotation.target.kind === "element" ? boxesById.get(annotation.target.weaveId) : null;
+    const rect = elementBox?.rect ?? annotation.rect;
+    return { ...annotation, rect, intersects: intersectingIds(rect, boxes) };
+  });
+}
 
 export const annotationEnvelope = (annotations) => annotations
   .map((annotation) => ({
