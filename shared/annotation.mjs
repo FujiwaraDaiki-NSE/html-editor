@@ -12,6 +12,7 @@ export const toClientPoint = (point, viewport, scale, scroll) => ({
 
 const round = (value) => Math.round(value * 10) / 10;
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+const minimumRectSize = 8;
 
 export function clampRect(rect) {
   const left = clamp(Math.min(rect.x, rect.x + rect.w), 0, designWidth);
@@ -22,6 +23,45 @@ export function clampRect(rect) {
 }
 
 export const rectFromPoints = (a, b) => clampRect({ x: a.x, y: a.y, w: b.x - a.x, h: b.y - a.y });
+
+export const nextOrder = (annotations) => Math.max(0, ...annotations.map(({ order }) => order)) + 1;
+
+export function translateRect(rect, dx, dy) {
+  return {
+    x: round(clamp(rect.x + dx, 0, Math.max(0, designWidth - rect.w))),
+    y: round(clamp(rect.y + dy, 0, Math.max(0, designHeight - rect.h))),
+    w: rect.w,
+    h: rect.h,
+  };
+}
+
+const resizedCoordinate = (moving, opposite, original, limit) => {
+  const bounded = clamp(moving, 0, limit);
+  if (Math.abs(bounded - opposite) >= minimumRectSize) return bounded;
+  const direction = bounded === opposite
+    ? (original < opposite ? -1 : 1)
+    : (bounded < opposite ? -1 : 1);
+  const preferred = opposite + direction * minimumRectSize;
+  return preferred >= 0 && preferred <= limit
+    ? preferred
+    : opposite - direction * minimumRectSize;
+};
+
+export function resizeRect(rect, handle, point) {
+  const corners = {
+    nw: { moving: { x: rect.x, y: rect.y }, opposite: { x: rect.x + rect.w, y: rect.y + rect.h } },
+    ne: { moving: { x: rect.x + rect.w, y: rect.y }, opposite: { x: rect.x, y: rect.y + rect.h } },
+    sw: { moving: { x: rect.x, y: rect.y + rect.h }, opposite: { x: rect.x + rect.w, y: rect.y } },
+    se: { moving: { x: rect.x + rect.w, y: rect.y + rect.h }, opposite: { x: rect.x, y: rect.y } },
+  };
+  const corner = corners[handle];
+  if (!corner) throw new TypeError(`Unknown resize handle: ${handle}`);
+  const moving = {
+    x: resizedCoordinate(point.x, corner.opposite.x, corner.moving.x, designWidth),
+    y: resizedCoordinate(point.y, corner.opposite.y, corner.moving.y, designHeight),
+  };
+  return rectFromPoints(corner.opposite, moving);
+}
 
 export const rectsIntersect = (a, b) => (
   a.x < b.x + b.w && a.x + a.w > b.x

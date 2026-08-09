@@ -5,13 +5,16 @@ import {
   annotationEnvelope,
   clampRect,
   intersectingIds,
+  nextOrder,
   rectFromPoints,
   rectsIntersect,
   referencedOrders,
   referenceToken,
+  resizeRect,
   resolveReferences,
   toClientPoint,
   toSlidePoint,
+  translateRect,
 } from "../shared/annotation.mjs";
 
 test("slide and client coordinates round-trip at every supported scale", () => {
@@ -35,6 +38,34 @@ test("rectangles normalize reversed drags and clamp to the slide", () => {
   assert.deepEqual(rectFromPoints({ x: 420.04, y: 310.06 }, { x: 120.02, y: 90.03 }), { x: 120, y: 90, w: 300, h: 220 });
   assert.deepEqual(rectFromPoints({ x: 120, y: 80 }, { x: 1400, y: 900 }), { x: 120, y: 80, w: 1160, h: 640 });
   assert.deepEqual(clampRect({ x: -50, y: -25, w: 200, h: 100 }), { x: 0, y: 0, w: 150, h: 75 });
+});
+
+test("annotation orders start at one and never fill deleted gaps", () => {
+  assert.equal(nextOrder([]), 1);
+  assert.equal(nextOrder([{ order: 1 }, { order: 3 }]), 4);
+  assert.equal(nextOrder([{ order: 9 }, { order: 2 }, { order: 4 }]), 10);
+});
+
+test("translated rectangles stop at every slide edge without changing size", () => {
+  const rect = { x: 100, y: 80, w: 240, h: 160 };
+  assert.deepEqual(translateRect(rect, -500, 0), { x: 0, y: 80, w: 240, h: 160 }, "left");
+  assert.deepEqual(translateRect(rect, 2000, 0), { x: 1040, y: 80, w: 240, h: 160 }, "right");
+  assert.deepEqual(translateRect(rect, 0, -500), { x: 100, y: 0, w: 240, h: 160 }, "top");
+  assert.deepEqual(translateRect(rect, 0, 2000), { x: 100, y: 560, w: 240, h: 160 }, "bottom");
+});
+
+test("resizing keeps the opposite corner fixed and flips past it", () => {
+  const rect = { x: 100, y: 100, w: 200, h: 120 };
+  assert.deepEqual(resizeRect(rect, "nw", { x: 40, y: 60 }), { x: 40, y: 60, w: 260, h: 160 });
+  assert.deepEqual(resizeRect(rect, "se", { x: 50, y: 40 }), { x: 50, y: 40, w: 50, h: 60 });
+});
+
+test("resizing clamps to the slide and enforces an eight-unit minimum", () => {
+  const rect = { x: 100, y: 100, w: 200, h: 120 };
+  assert.deepEqual(resizeRect(rect, "nw", { x: -100, y: -100 }), { x: 0, y: 0, w: 300, h: 220 });
+  assert.deepEqual(resizeRect(rect, "se", { x: 2000, y: 2000 }), { x: 100, y: 100, w: 1180, h: 620 });
+  assert.deepEqual(resizeRect(rect, "se", { x: 103, y: 104 }), { x: 100, y: 100, w: 8, h: 8 });
+  assert.deepEqual(resizeRect({ x: 0, y: 0, w: 20, h: 20 }, "se", { x: 0, y: 0 }), { x: 0, y: 0, w: 8, h: 8 });
 });
 
 test("rectangles intersect only when their overlap has positive area", () => {
