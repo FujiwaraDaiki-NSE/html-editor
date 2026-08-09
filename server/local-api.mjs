@@ -21,6 +21,7 @@ import {
   writeProject,
 } from "./project.mjs";
 import { CodexService } from "./codex/service.mjs";
+import { annotationPromptRules, canSendTurn } from "../shared/annotation.mjs";
 
 const apiPort = Number(process.env.WEAVE_API_PORT ?? 4317);
 const codex = new CodexService({ projectRoot, instructions: agentInstructions });
@@ -91,13 +92,22 @@ function requireText(value, name, limit = 20_000) {
   return text;
 }
 
+function requireTurnPrompt(payload) {
+  const text = String(payload.prompt ?? "");
+  const annotations = Array.isArray(payload.contextEnvelope?.annotations) ? payload.contextEnvelope.annotations : [];
+  if (!canSendTurn(text, annotations)) throw new Error("Prompt text or at least one annotation is required.");
+  return text.trim() ? requireText(text, "Prompt") : "Use the attached editor annotations as the request for this turn.";
+}
+
 function activeProjectTurn() {
   return codex.activeTurns.size > 0;
 }
 
 function serializeEditorContext(payload) {
   if (!payload.contextEnvelope || typeof payload.contextEnvelope !== "object") return "";
-  return `\n\nEditor context envelope (authoritative for this turn):\n${JSON.stringify(payload.contextEnvelope).slice(0, 120_000)}`;
+  const annotations = Array.isArray(payload.contextEnvelope.annotations) ? payload.contextEnvelope.annotations : [];
+  const annotationRules = annotations.length > 0 ? `\n\nAnnotation interpretation rules:\n${annotationPromptRules}` : "";
+  return `\n\nEditor context envelope (authoritative for this turn):\n${JSON.stringify(payload.contextEnvelope).slice(0, 120_000)}${annotationRules}`;
 }
 
 async function startEditorTurn(payload, { variation = false } = {}) {
@@ -266,15 +276,15 @@ const server = createServer(async (request, response) => {
       return sendJson(request, response, 200, await codex.threadAction(payload.action, payload.params ?? {}));
     }
     if (url.pathname === "/api/codex/turn/start") {
-      const prompt = requireText(payload.prompt, "Prompt");
+      const prompt = requireTurnPrompt(payload);
       if (payload.deck) await writeProject(payload.deck, true);
       const result = await codex.startTurn({ ...payload, prompt: `${prompt}${serializeEditorContext(payload)}` });
       pendingTurns.set(payload.threadId, { prompt, branch: null, variation: false });
       return sendJson(request, response, 202, result);
     }
     if (url.pathname === "/api/codex/turn/steer") {
-      const prompt = requireText(payload.prompt, "Prompt");
-      return sendJson(request, response, 202, await codex.steerTurn({ ...payload, prompt }));
+      const prompt = requireTurnPrompt(payload);
+      return sendJson(request, response, 202, await codex.steerTurn({ ...payload, prompt: `${prompt}${serializeEditorContext(payload)}` }));
     }
     if (url.pathname === "/api/codex/turn/interrupt") {
       return sendJson(request, response, 202, await codex.interruptTurn(payload.threadId));
