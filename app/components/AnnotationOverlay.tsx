@@ -8,9 +8,10 @@ export type Annotation = {
   id: string;
   order: number;
   slideId: string;
-  target: { kind: "region" };
+  target: { kind: "region" } | { kind: "element"; weaveId: string };
   rect: AnnotationRect;
   label: string;
+  intersects: string[];
 };
 export type ResizeHandle = "nw" | "ne" | "sw" | "se";
 export type AnnotationGestureKind = "move" | ResizeHandle;
@@ -75,7 +76,7 @@ export function AnnotationOverlay({
       <div className={`annotation-overlay-layer ${interactive ? "interactive" : "readonly"}`}>
         {annotations.map((annotation) => (
           <div
-            className={`annotation-box ${selectedId === annotation.id ? "selected" : ""}`}
+            className={`annotation-box annotation-${annotation.target.kind} ${selectedId === annotation.id ? "selected" : ""}`}
             style={rectStyle(annotation.rect)}
             key={annotation.id}
           >

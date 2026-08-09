@@ -8,7 +8,7 @@ import { defaultDeckCss, designHeight, designWidth, escapeHtml, renderDeckDocume
 import { auditContentPolicy } from "../shared/content-policy.mjs";
 import { applyTemplateToSlideHtml, contentSlotSelector, titleFromSlideHtml, titleSlotSelector } from "../shared/slide-slots.mjs";
 import { advancedControlKeys, allControlKeys, applyBlockPosition, applySize, applyUtilityClass, blockPositionOptions, containerControlKeys, decorationControlKeys, defaultSlideClasses, imageControlKeys, listControlKeys, migrateSlideHtmlToTailwind, ratioOptions, readBlockPosition, readSize, readUtilityClass, sizeIntents, slideControlGroups, textControlKeys } from "../shared/tailwind-slide.mjs";
-import { nextOrder, rectFromPoints, resizeRect, toSlidePoint, translateRect } from "../shared/annotation.mjs";
+import { nextOrder, rectFromClientBox, rectFromPoints, referenceToken, refreshAnnotations, resizeRect, toSlidePoint, translateRect } from "../shared/annotation.mjs";
 import { AnnotationOverlay } from "./components/AnnotationOverlay";
 import type { Annotation, AnnotationGestureKind, AnnotationRect, ResizeHandle } from "./components/AnnotationOverlay";
 import { ItemCard } from "./codex/components/ItemCard";
@@ -158,10 +158,16 @@ type AnnotationGesture = {
   startClient: { x: number; y: number };
   startPoint: { x: number; y: number };
 } & (
-  | { kind: "draw"; slideId: string }
-  | { kind: "move"; annotationId: string; origin: AnnotationRect }
-  | { kind: "resize"; annotationId: string; origin: AnnotationRect; handle: ResizeHandle }
+  | { kind: "draw"; slideId: string; elementId: string | null }
+  | { kind: "move"; annotationId: string; slideId: string; origin: AnnotationRect }
+  | { kind: "resize"; annotationId: string; slideId: string; origin: AnnotationRect; handle: ResizeHandle }
 );
+type AnnotationBox = { id: string; rect: AnnotationRect };
+
+const refreshSlideAnnotations = (annotations: Annotation[], slideId: string, boxes: AnnotationBox[]) => {
+  const refreshed = new Map<string, Annotation>(refreshAnnotations(annotations.filter((annotation) => annotation.slideId === slideId), boxes).map((annotation: Annotation): [string, Annotation] => [annotation.id, annotation]));
+  return annotations.map((annotation) => refreshed.get(annotation.id) ?? annotation);
+};
 
 /* Live reordering rewrites the DOM under the cursor, so every move changes the geometry that
    decided it. Require the pointer to travel before re-deciding: without this, a container that
@@ -601,6 +607,17 @@ export default function Home() {
     return toSlidePoint(event, viewport.getBoundingClientRect(), slideScale, { left: viewport.scrollLeft, top: viewport.scrollTop });
   };
 
+  const liveAnnotationBoxes = (): AnnotationBox[] => {
+    const viewport = viewportRef.current;
+    if (!viewport) return [];
+    const viewportBox = viewport.getBoundingClientRect();
+    const scroll = { left: viewport.scrollLeft, top: viewport.scrollTop };
+    return Array.from(viewport.querySelectorAll<HTMLElement>("[data-weave-id]")).flatMap((node) => {
+      const id = node.getAttribute("data-weave-id");
+      return id ? [{ id, rect: rectFromClientBox(node.getBoundingClientRect(), viewportBox, slideScale, scroll) }] : [];
+    });
+  };
+
   const toggleAnnotationMode = () => {
     if (!annotationMode) canvasRef.current?.querySelector<HTMLElement>('[contenteditable="true"]')?.blur();
     if (mode === "code") { reinject(); setMode("preview"); }
@@ -639,8 +656,8 @@ export default function Home() {
     event.stopPropagation();
     event.currentTarget.setPointerCapture(event.pointerId);
     annotationGestureRef.current = kind === "move"
-      ? { kind, pointerId: event.pointerId, annotationId, origin: annotation.rect, startPoint: point, startClient: { x: event.clientX, y: event.clientY } }
-      : { kind: "resize", handle: kind, pointerId: event.pointerId, annotationId, origin: annotation.rect, startPoint: point, startClient: { x: event.clientX, y: event.clientY } };
+      ? { kind, pointerId: event.pointerId, annotationId, slideId: annotation.slideId, origin: annotation.rect, startPoint: point, startClient: { x: event.clientX, y: event.clientY } }
+      : { kind: "resize", handle: kind, pointerId: event.pointerId, annotationId, slideId: annotation.slideId, origin: annotation.rect, startPoint: point, startClient: { x: event.clientX, y: event.clientY } };
     setSelectedAnnotationId(annotationId);
   };
 
@@ -652,10 +669,13 @@ export default function Home() {
   };
 
   const onAnnotationGestureEnd = (event: React.PointerEvent<HTMLElement>) => {
-    if (annotationGestureRef.current?.pointerId !== event.pointerId) return;
+    const gesture = annotationGestureRef.current;
+    if (!gesture || gesture.kind === "draw" || gesture.pointerId !== event.pointerId) return;
     event.preventDefault();
     event.stopPropagation();
     if (event.type !== "pointercancel") updateAnnotationGesture(event);
+    const boxes = liveAnnotationBoxes();
+    setAnnotations((current) => refreshSlideAnnotations(current, gesture.slideId, boxes));
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     annotationGestureRef.current = null;
   };
@@ -672,13 +692,15 @@ export default function Home() {
       if (event.button !== 0) return;
       event.preventDefault();
       event.stopPropagation();
-      setSelectedId(target && canvasRef.current?.contains(target) ? target.getAttribute("data-weave-id") : null);
+      const selection = target && canvasRef.current?.contains(target) ? readSelection(target) : null;
+      setSelectedId(selection?.id ?? null);
+      setSel(selection);
       setSelectedAnnotationId(null);
       const point = annotationPoint(event);
       const slideId = slidesRef.current[activeRef.current - 1]?.id;
       if (!point || !slideId) return;
       event.currentTarget.setPointerCapture(event.pointerId);
-      annotationGestureRef.current = { kind: "draw", pointerId: event.pointerId, slideId, startPoint: point, startClient: { x: event.clientX, y: event.clientY } };
+      annotationGestureRef.current = { kind: "draw", pointerId: event.pointerId, slideId, elementId: selection?.id ?? null, startPoint: point, startClient: { x: event.clientX, y: event.clientY } };
       setDraftAnnotationRect(rectFromPoints(point, point));
       return;
     }
@@ -706,12 +728,34 @@ export default function Home() {
     if (!canceled && point && draggedArea) {
       const rect = rectFromPoints(gesture.startPoint, point);
       const id = createMessageId();
+      const boxes = liveAnnotationBoxes();
       setAnnotations((current) => {
         const slideAnnotations = current.filter((annotation) => annotation.slideId === gesture.slideId);
-        return [...current, { id, order: nextOrder(slideAnnotations), slideId: gesture.slideId, target: { kind: "region" }, rect, label: "" }];
+        const created: Annotation = { id, order: nextOrder(slideAnnotations), slideId: gesture.slideId, target: { kind: "region" }, rect, label: "", intersects: [] };
+        return refreshSlideAnnotations([...current, created], gesture.slideId, boxes);
       });
       setSelectedAnnotationId(id);
       setFocusAnnotationId(id);
+    } else if (!canceled && gesture.elementId) {
+      const existing = annotations.find((annotation) => annotation.slideId === gesture.slideId && annotation.target.kind === "element" && annotation.target.weaveId === gesture.elementId);
+      if (existing) {
+        setSelectedAnnotationId(existing.id);
+      } else {
+        const boxes = liveAnnotationBoxes();
+        const elementBox = boxes.find((box) => box.id === gesture.elementId);
+        if (elementBox) {
+          const id = createMessageId();
+          const order = nextOrder(annotations.filter((annotation) => annotation.slideId === gesture.slideId));
+          const created: Annotation = { id, order, slideId: gesture.slideId, target: { kind: "element", weaveId: gesture.elementId }, rect: elementBox.rect, label: "", intersects: [] };
+          setAnnotations((current) => refreshSlideAnnotations([...current, created], gesture.slideId, boxes));
+          setSelectedAnnotationId(id);
+          setFocusAnnotationId(id);
+          setPromptDraft((current) => {
+            const draft = current.trimEnd();
+            return draft ? `${draft} ${referenceToken(created)}` : referenceToken(created);
+          });
+        }
+      }
     }
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     annotationGestureRef.current = null;
@@ -1808,7 +1852,7 @@ export default function Home() {
                     own chrome lives in globals.css and never overlaps these rules. */}
                 <style>{deckCss}</style>
                 <div className={`canvas-interaction-status ${annotationMode ? "annotating" : draggedId ? "dragging" : editingId ? "editing" : selectedId ? "selected" : ""}`} role="status">
-                  {annotationMode ? "Annotation mode · drag to mark a region" : draggedId ? "Moving block · release to place" : editingId ? "Editing text · Esc to finish" : selectedId ? "Move mode · drag to reorder · double-click to edit" : "Click a block to select it"}
+                  {annotationMode ? "Annotation mode · click an element or drag a region" : draggedId ? "Moving block · release to place" : editingId ? "Editing text · Esc to finish" : selectedId ? "Move mode · drag to reorder · double-click to edit" : "Click a block to select it"}
                 </div>
                 <div
                   className="slide-viewport"

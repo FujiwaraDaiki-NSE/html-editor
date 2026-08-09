@@ -340,6 +340,7 @@ body {
 .annotation-overlay-scroll { position: absolute; left: 0; top: 0; }
 .annotation-overlay-layer { position: absolute; left: 0; top: 0; width: 1280px; height: 720px; transform: scale(var(--slide-scale)); transform-origin: top left; }
 .annotation-box { position: absolute; border: calc(2px / var(--slide-scale)) solid var(--accent); box-shadow: 0 0 0 calc(1px / var(--slide-scale)) rgb(20 14 5 / .65); pointer-events: none; }
+.annotation-box.annotation-element { border-style: dashed; }
 .annotation-overlay-layer.readonly .annotation-box { opacity: .72; border-width: calc(1.5px / var(--slide-scale)); box-shadow: none; }
 .annotation-box.selected { border-width: calc(3px / var(--slide-scale)); }
 .annotation-box.annotation-draft { border-style: dashed; box-shadow: none; }
