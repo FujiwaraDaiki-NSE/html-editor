@@ -8,7 +8,8 @@ import { defaultDeckCss, designHeight, designWidth, escapeHtml, renderDeckDocume
 import { auditContentPolicy } from "../shared/content-policy.mjs";
 import { applyTemplateToSlideHtml, contentSlotSelector, titleFromSlideHtml, titleSlotSelector } from "../shared/slide-slots.mjs";
 import { advancedControlKeys, allControlKeys, applyBlockPosition, applySize, applyUtilityClass, blockPositionOptions, containerControlKeys, decorationControlKeys, defaultSlideClasses, imageControlKeys, listControlKeys, migrateSlideHtmlToTailwind, ratioOptions, readBlockPosition, readSize, readUtilityClass, sizeIntents, slideControlGroups, textControlKeys } from "../shared/tailwind-slide.mjs";
-import { nextOrder, rectFromClientBox, rectFromPoints, referenceToken, refreshAnnotations, resizeRect, toSlidePoint, translateRect } from "../shared/annotation.mjs";
+import { annotationEnvelope, canSendTurn, nextOrder, rectFromClientBox, rectFromPoints, referenceToken, refreshAnnotations, resizeRect, resolveReferences, toSlidePoint, translateRect } from "../shared/annotation.mjs";
+import { AnnotationAttachment } from "./components/AnnotationAttachment";
 import { AnnotationOverlay } from "./components/AnnotationOverlay";
 import type { Annotation, AnnotationGestureKind, AnnotationRect, ResizeHandle } from "./components/AnnotationOverlay";
 import { ItemCard } from "./codex/components/ItemCard";
@@ -163,6 +164,21 @@ type AnnotationGesture = {
   | { kind: "resize"; annotationId: string; slideId: string; origin: AnnotationRect; handle: ResizeHandle }
 );
 type AnnotationBox = { id: string; rect: AnnotationRect };
+type SentAnnotationAttachment = {
+  id: string;
+  threadId: string;
+  turnId: string | null;
+  slideId: string;
+  slideLabel: string;
+  annotations: Annotation[];
+};
+
+const cloneAnnotation = (annotation: Annotation): Annotation => ({
+  ...annotation,
+  target: annotation.target.kind === "element" ? { kind: "element", weaveId: annotation.target.weaveId } : { kind: "region" },
+  rect: { ...annotation.rect },
+  intersects: [...annotation.intersects],
+});
 
 const refreshSlideAnnotations = (annotations: Annotation[], slideId: string, boxes: AnnotationBox[]) => {
   const refreshed = new Map<string, Annotation>(refreshAnnotations(annotations.filter((annotation) => annotation.slideId === slideId), boxes).map((annotation: Annotation): [string, Annotation] => [annotation.id, annotation]));
@@ -239,6 +255,8 @@ export default function Home() {
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
   const [draftAnnotationRect, setDraftAnnotationRect] = useState<AnnotationRect | null>(null);
   const [focusAnnotationId, setFocusAnnotationId] = useState<string | null>(null);
+  const [includeRegionAnnotations, setIncludeRegionAnnotations] = useState(true);
+  const [annotationAttachments, setAnnotationAttachments] = useState<SentAnnotationAttachment[]>([]);
 
   const canvasRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -271,6 +289,16 @@ export default function Home() {
   const activeTurns = selectThreadTurns(codexState, codexState.activeThreadId);
   const visibleTurns = activeTurns.slice(-100);
   const slideScale = manualZoom ?? fitScale;
+  const activeSlideId = slides[activeSlide - 1]?.id;
+  const activeAnnotations = annotations.filter((annotation) => annotation.slideId === activeSlideId);
+  const activeRegionAnnotations = activeAnnotations.filter((annotation) => annotation.target.kind === "region");
+  const activeElementAnnotations = activeAnnotations.filter((annotation) => annotation.target.kind === "element");
+  const referencedRegions = resolveReferences(promptDraft, activeRegionAnnotations);
+  const regionsWillSend = includeRegionAnnotations || referencedRegions.length > 0;
+  const sendableAnnotations = activeAnnotations.filter((annotation) => annotation.target.kind === "element" || regionsWillSend);
+  const activeThreadAttachments = annotationAttachments.filter((attachment) => attachment.threadId === codexState.activeThreadId);
+  const visibleTurnIds = new Set(visibleTurns.map((turn) => turn.id));
+  const unmatchedAttachments = activeThreadAttachments.filter((attachment) => !attachment.turnId || !visibleTurnIds.has(attachment.turnId));
 
   const setSlidesSynced = (next: SlideDoc[]) => { slidesRef.current = next; setSlides(next); };
   const setActiveSlideSynced = (next: number) => { templatePreviewHtmlRef.current = null; templatePreviewSourceHtmlRef.current = null; setTitleDraft(null); setActiveSlide(next); };
@@ -360,9 +388,10 @@ export default function Home() {
 
   const deckPayload = () => ({ title: deckTitle, slides: captureActive() });
 
-  const contextEnvelope = () => ({
+  const contextEnvelope = (annotationContext: Annotation[] = []) => ({
     revision: serverRevision,
     activeSlide,
+    annotations: annotationEnvelope(annotationContext),
     selected: selectedId ? { id: selectedId, kind: sel?.kind ?? "", label: sel?.kind ?? "" } : null,
     selectedText: typeof window === "undefined" ? "" : window.getSelection()?.toString().slice(0, 2_000) ?? "",
     activeSlideHtml: (serializeCanvas() ?? slides[activeSlide - 1]?.html ?? "").slice(0, 30_000),
@@ -686,6 +715,26 @@ export default function Home() {
     setFocusAnnotationId((current) => current === id ? null : current);
   };
 
+  const restoreAnnotationAttachment = (attachment: SentAnnotationAttachment) => {
+    if (!slidesRef.current.some((slide) => slide.id === attachment.slideId)) {
+      setApiError("The slide for this annotation attachment no longer exists.");
+      return;
+    }
+    const restoredIds = attachment.annotations.map(() => createMessageId());
+    setAnnotations((current) => {
+      let order = nextOrder(current.filter((annotation) => annotation.slideId === attachment.slideId));
+      const restored = attachment.annotations.map((annotation, index) => ({
+        ...cloneAnnotation(annotation),
+        id: restoredIds[index],
+        order: order++,
+        slideId: attachment.slideId,
+      }));
+      return [...current, ...restored];
+    });
+    if (attachment.annotations.some((annotation) => annotation.target.kind === "region")) setIncludeRegionAnnotations(true);
+    setApiError(null);
+  };
+
   const onCanvasPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     const target = (event.target as HTMLElement).closest<HTMLElement>("[data-weave-id]");
     if (annotationMode) {
@@ -694,7 +743,6 @@ export default function Home() {
       event.stopPropagation();
       const selection = target && canvasRef.current?.contains(target) ? readSelection(target) : null;
       setSelectedId(selection?.id ?? null);
-      setSel(selection);
       setSelectedAnnotationId(null);
       const point = annotationPoint(event);
       const slideId = slidesRef.current[activeRef.current - 1]?.id;
@@ -736,6 +784,7 @@ export default function Home() {
       });
       setSelectedAnnotationId(id);
       setFocusAnnotationId(id);
+      setIncludeRegionAnnotations(true);
     } else if (!canceled && gesture.elementId) {
       const existing = annotations.find((annotation) => annotation.slideId === gesture.slideId && annotation.target.kind === "element" && annotation.target.weaveId === gesture.elementId);
       if (existing) {
@@ -1417,7 +1466,19 @@ export default function Home() {
 
   const sendMessage = async () => {
     const value = promptDraft.trim();
-    if (!value || turnInFlightRef.current) return;
+    const slide = slidesRef.current[activeRef.current - 1];
+    const slideNumber = activeRef.current;
+    const slideAnnotations = slide ? annotations.filter((annotation) => annotation.slideId === slide.id) : [];
+    const boxes = viewportRef.current ? liveAnnotationBoxes() : null;
+    const refreshedAnnotations = (boxes ? refreshAnnotations(slideAnnotations, boxes) : slideAnnotations.map(cloneAnnotation)) as Annotation[];
+    const sendableIds = new Set(sendableAnnotations.map((annotation) => annotation.id));
+    const turnAnnotations = refreshedAnnotations
+      .filter((annotation) => sendableIds.has(annotation.id))
+      .sort((a, b) => a.order - b.order);
+    if (!canSendTurn(value, turnAnnotations) || turnInFlightRef.current) return;
+    if (slide && boxes) setAnnotations((current) => refreshSlideAnnotations(current, slide.id, boxes));
+    const requestDeck = deckPayload();
+    const requestEnvelope = contextEnvelope(turnAnnotations);
     turnInFlightRef.current = true;
     setTurnSubmitting(true);
     shouldAutoScrollRef.current = true;
@@ -1431,11 +1492,29 @@ export default function Home() {
         threadId = started.thread.id;
         dispatchCodex({ type: "threadLoaded", thread: started.thread, activate: true });
       }
-      const endpoint = agentRunning ? "codex/turn/steer" : "codex/turn/start";
-      const response = await fetch(`${apiBase}/${endpoint}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId, prompt: value, clientUserMessageId: createMessageId(), selectedId, deck: deckPayload(), model: selectedModel || undefined, effort: reasoningEffort, approvalPolicy, contextEnvelope: contextEnvelope() }) });
+      if (!threadId) throw new Error("Could not resolve the active Thread.");
+      const steering = agentRunning;
+      const runningTurnId = codexState.activeTurnId;
+      const endpoint = steering ? "codex/turn/steer" : "codex/turn/start";
+      const response = await fetch(`${apiBase}/${endpoint}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId, prompt: value, clientUserMessageId: createMessageId(), selectedId, deck: requestDeck, model: selectedModel || undefined, effort: reasoningEffort, approvalPolicy, contextEnvelope: requestEnvelope }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Agent turn failed.");
+      if (turnAnnotations.length > 0 && slide) {
+        const turnId = steering ? runningTurnId ?? result.turn?.id ?? result.turnId ?? null : result.turn?.id ?? result.turnId ?? null;
+        setAnnotationAttachments((current) => [...current, {
+          id: createMessageId(),
+          threadId,
+          turnId,
+          slideId: slide.id,
+          slideLabel: `Slide ${slideNumber}${slide.title ? ` · ${slide.title}` : ""}`,
+          annotations: turnAnnotations.map(cloneAnnotation),
+        }]);
+        const sentIds = new Set(turnAnnotations.map((annotation) => annotation.id));
+        setAnnotations((current) => current.filter((annotation) => !sentIds.has(annotation.id)));
+        setSelectedAnnotationId((current) => current && sentIds.has(current) ? null : current);
+      }
       setPromptDraft("");
+      setIncludeRegionAnnotations(true);
     } catch (error) {
       setApiError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -1569,8 +1648,6 @@ export default function Home() {
   /* Switching to Code mode captures the live DOM into `slides` first, so the code view can
      read the fresh HTML straight from state without touching a ref during render. */
   const codeView = mode === "code" ? slides[activeSlide - 1]?.html ?? "" : "";
-  const activeSlideId = slides[activeSlide - 1]?.id;
-  const activeAnnotations = annotations.filter((annotation) => annotation.slideId === activeSlideId);
   const templatePreview = (template: TemplateDoc) => <span className="template-preview" aria-hidden="true" dangerouslySetInnerHTML={{ __html: template.html }} />;
   const currentTemplate = templates.find((template) => template.id === currentTemplateId);
 
@@ -1786,15 +1863,40 @@ export default function Home() {
               </>
             )}
             <div ref={messagesRef} className="messages" role="log" aria-live="polite" aria-relevant="additions text" aria-label="Conversation with Agent" onScroll={(event) => { const element = event.currentTarget; shouldAutoScrollRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48; }}>
-              <div className="context-chip" role="status"><span aria-hidden="true">◎</span> Slide {activeSlide} in context · {agentActivity}</div>
+              <div className="context-chip" role="group" aria-label="Editor context">
+                <span className="context-summary" role="status"><span className="context-icon" aria-hidden="true">◎</span> Slide {activeSlide} in context · {agentActivity}</span>
+                {activeElementAnnotations.length > 0 && <span className="context-annotation-count">{activeElementAnnotations.length} element{activeElementAnnotations.length === 1 ? "" : "s"}</span>}
+                {activeRegionAnnotations.length > 0 && <button
+                  type="button"
+                  className={regionsWillSend ? "active" : "held"}
+                  aria-pressed={regionsWillSend}
+                  disabled={referencedRegions.length > 0}
+                  title={referencedRegions.length > 0 ? "Referenced regions must be included" : "Toggle region annotations for the next turn"}
+                  onClick={() => setIncludeRegionAnnotations((current) => !current)}
+                >{activeRegionAnnotations.length} region{activeRegionAnnotations.length === 1 ? "" : "s"} · {regionsWillSend ? "Send" : "Held"}</button>}
+              </div>
               {!codexState.activeThreadId && <p className="empty-thread">Start or select a conversation.</p>}
               {activeTurns.length > visibleTurns.length && <p className="trimmed-log">Showing the latest {visibleTurns.length} turns.</p>}
               {visibleTurns.map((turn) => (
                 <section className="turn-group" key={turn.id}>
                   {selectTurnItems(codexState, turn.id).map((item) => <ItemCard key={item.id} item={item} />)}
+                  {activeThreadAttachments.filter((attachment) => attachment.turnId === turn.id).map((attachment) => <AnnotationAttachment
+                    key={attachment.id}
+                    slideLabel={attachment.slideLabel}
+                    count={attachment.annotations.length}
+                    canRestore={slides.some((slide) => slide.id === attachment.slideId)}
+                    onRestore={() => restoreAnnotationAttachment(attachment)}
+                  />)}
                   <footer><span>{turn.status}</span>{turn.diff && <details><summary>Turn diff</summary><pre>{turn.diff}</pre></details>}</footer>
                 </section>
               ))}
+              {unmatchedAttachments.map((attachment) => <AnnotationAttachment
+                key={attachment.id}
+                slideLabel={attachment.slideLabel}
+                count={attachment.annotations.length}
+                canRestore={slides.some((slide) => slide.id === attachment.slideId)}
+                onRestore={() => restoreAnnotationAttachment(attachment)}
+              />)}
               {Object.values(codexState.pendingRequests).map((pending) => (
                 <ServerRequestCard key={String(pending.id)} request={pending} onResolve={(id, result) => void resolveServerRequest(id, result)} onReject={(id) => void rejectServerRequest(id)} />
               ))}
@@ -1805,7 +1907,7 @@ export default function Home() {
               <div>
                 <span>⌘ / Ctrl ↵</span>
                 {agentRunning && <button className="stop-button" onClick={() => void interruptAgent()} aria-label="Stop Agent" title="Stop Agent">■</button>}
-                <button className="send-button" onClick={() => void sendMessage()} disabled={!agentReady || !promptDraft.trim() || turnSubmitting} aria-label="Send message">↑</button>
+                <button className="send-button" onClick={() => void sendMessage()} disabled={!agentReady || !canSendTurn(promptDraft, sendableAnnotations) || turnSubmitting} aria-label="Send message">↑</button>
               </div>
             </div>
           </section> : activityView === "history" ? historySidebar : activityView === "shortcuts" ? shortcutsSidebar : settingsSidebar}
