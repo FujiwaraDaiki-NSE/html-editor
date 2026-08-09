@@ -8,6 +8,9 @@ import { defaultDeckCss, designHeight, designWidth, escapeHtml, renderDeckDocume
 import { auditContentPolicy } from "../shared/content-policy.mjs";
 import { applyTemplateToSlideHtml, contentSlotSelector, titleFromSlideHtml, titleSlotSelector } from "../shared/slide-slots.mjs";
 import { advancedControlKeys, allControlKeys, applyBlockPosition, applySize, applyUtilityClass, blockPositionOptions, containerControlKeys, decorationControlKeys, defaultSlideClasses, imageControlKeys, listControlKeys, migrateSlideHtmlToTailwind, ratioOptions, readBlockPosition, readSize, readUtilityClass, sizeIntents, slideControlGroups, textControlKeys } from "../shared/tailwind-slide.mjs";
+import { nextOrder, rectFromPoints, resizeRect, toSlidePoint, translateRect } from "../shared/annotation.mjs";
+import { AnnotationOverlay } from "./components/AnnotationOverlay";
+import type { Annotation, AnnotationGestureKind, AnnotationRect, ResizeHandle } from "./components/AnnotationOverlay";
 import { ItemCard } from "./codex/components/ItemCard";
 import { ServerRequestCard } from "./codex/components/ServerRequestCard";
 import { codexReducer, initialCodexState } from "./codex/reducer";
@@ -150,6 +153,15 @@ type BlockDragSession = {
   lastReorderX: number;
   lastReorderY: number;
 };
+type AnnotationGesture = {
+  pointerId: number;
+  startClient: { x: number; y: number };
+  startPoint: { x: number; y: number };
+} & (
+  | { kind: "draw"; slideId: string }
+  | { kind: "move"; annotationId: string; origin: AnnotationRect }
+  | { kind: "resize"; annotationId: string; origin: AnnotationRect; handle: ResizeHandle }
+);
 
 /* Live reordering rewrites the DOM under the cursor, so every move changes the geometry that
    decided it. Require the pointer to travel before re-deciding: without this, a container that
@@ -216,6 +228,11 @@ export default function Home() {
   const [currentTemplateId, setCurrentTemplateId] = useState("");
   // Keep raw input while focused because the derived title trims whitespace after every DOM sync.
   const [titleDraft, setTitleDraft] = useState<string | null>(null);
+  const [annotationMode, setAnnotationMode] = useState(false);
+  const [annotations, setAnnotations] = useState<Annotation[]>([]);
+  const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
+  const [draftAnnotationRect, setDraftAnnotationRect] = useState<AnnotationRect | null>(null);
+  const [focusAnnotationId, setFocusAnnotationId] = useState<string | null>(null);
 
   const canvasRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -237,6 +254,7 @@ export default function Home() {
   const activeRef = useRef(activeSlide);
   const selectedRef = useRef(selectedId);
   const blockDragRef = useRef<BlockDragSession | null>(null);
+  const annotationGestureRef = useRef<AnnotationGesture | null>(null);
   const popoverTriggerRef = useRef<HTMLButtonElement | null>(null);
   // Preview stays outside slide state so save, sync, and undo cannot observe a candidate frame.
   const templatePreviewHtmlRef = useRef<string | null>(null);
@@ -488,7 +506,7 @@ export default function Home() {
     const previewHtml = templatePreviewHtmlRef.current;
     host.innerHTML = previewHtml ?? templatePreviewSourceHtmlRef.current ?? slidesRef.current[activeSlide - 1]?.html ?? "";
     host.querySelectorAll<HTMLImageElement>('img[src^="assets/"]').forEach((node) => { const path = node.getAttribute("src") ?? ""; node.dataset.assetPath = path; node.src = `${apiBase}/${path}`; });
-    host.querySelectorAll<HTMLElement>("[data-weave-id]").forEach((node) => { node.draggable = !agentRunning && !isTitleSlot(node); });
+    host.querySelectorAll<HTMLElement>("[data-weave-id]").forEach((node) => { node.draggable = !annotationMode && !agentRunning && !isTitleSlot(node); });
     const root = host.querySelector<HTMLElement>(".weave-slide");
     if (root) {
       setCurrentTemplateId(root.dataset.weaveTemplate ?? "");
@@ -497,7 +515,7 @@ export default function Home() {
       const activeAccent = accents.find((item) => root.querySelector(`.${item.className}`));
       setAccent(activeAccent?.color ?? accents[0].color);
     }
-  }, [activeSlide, injectKey, mode, agentRunning]);
+  }, [activeSlide, injectKey, mode, agentRunning, annotationMode]);
 
   /* Selection outline + inspector read-out follow the selected node without re-injecting. */
   useLayoutEffect(() => {
@@ -532,7 +550,7 @@ export default function Home() {
     setOutline(list);
     // `slides` is a dependency because every DOM edit flows back through it: without it the tree
     // keeps showing the pre-move order after a canvas or tree drag.
-  }, [selectedId, injectKey, activeSlide, mode, slides]);
+  }, [selectedId, injectKey, activeSlide, mode, slides, annotationMode]);
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
@@ -577,14 +595,131 @@ export default function Home() {
 
   /* --- Live-DOM editing on the canvas -------------------------------------------------- */
 
+  const annotationPoint = (event: { clientX: number; clientY: number }) => {
+    const viewport = viewportRef.current;
+    if (!viewport) return null;
+    return toSlidePoint(event, viewport.getBoundingClientRect(), slideScale, { left: viewport.scrollLeft, top: viewport.scrollTop });
+  };
+
+  const toggleAnnotationMode = () => {
+    if (!annotationMode) canvasRef.current?.querySelector<HTMLElement>('[contenteditable="true"]')?.blur();
+    if (mode === "code") { reinject(); setMode("preview"); }
+    annotationGestureRef.current = null;
+    setDraftAnnotationRect(null);
+    setTreeDragId(null);
+    setTreeDrop(null);
+    setOpenPopover(null);
+    if (annotationMode) setSelectedAnnotationId(null);
+    setAnnotationMode(!annotationMode);
+  };
+
+  const updateAnnotationGesture = (event: { clientX: number; clientY: number }) => {
+    const gesture = annotationGestureRef.current;
+    const point = annotationPoint(event);
+    if (!gesture || !point) return;
+    if (gesture.kind === "draw") {
+      setDraftAnnotationRect(rectFromPoints(gesture.startPoint, point));
+      return;
+    }
+    setAnnotations((current) => current.map((annotation) => {
+      if (annotation.id !== gesture.annotationId) return annotation;
+      const rect = gesture.kind === "move"
+        ? translateRect(gesture.origin, point.x - gesture.startPoint.x, point.y - gesture.startPoint.y)
+        : resizeRect(gesture.origin, gesture.handle, point);
+      return { ...annotation, rect };
+    }));
+  };
+
+  const onAnnotationGestureStart = (event: React.PointerEvent<HTMLElement>, annotationId: string, kind: AnnotationGestureKind) => {
+    if (!annotationMode || event.button !== 0) return;
+    const annotation = annotations.find((item) => item.id === annotationId);
+    const point = annotationPoint(event);
+    if (!annotation || !point) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    annotationGestureRef.current = kind === "move"
+      ? { kind, pointerId: event.pointerId, annotationId, origin: annotation.rect, startPoint: point, startClient: { x: event.clientX, y: event.clientY } }
+      : { kind: "resize", handle: kind, pointerId: event.pointerId, annotationId, origin: annotation.rect, startPoint: point, startClient: { x: event.clientX, y: event.clientY } };
+    setSelectedAnnotationId(annotationId);
+  };
+
+  const onAnnotationGestureMove = (event: React.PointerEvent<HTMLElement>) => {
+    if (annotationGestureRef.current?.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    updateAnnotationGesture(event);
+  };
+
+  const onAnnotationGestureEnd = (event: React.PointerEvent<HTMLElement>) => {
+    if (annotationGestureRef.current?.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.type !== "pointercancel") updateAnnotationGesture(event);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    annotationGestureRef.current = null;
+  };
+
+  const deleteAnnotation = (id: string) => {
+    setAnnotations((current) => current.filter((annotation) => annotation.id !== id));
+    setSelectedAnnotationId((current) => current === id ? null : current);
+    setFocusAnnotationId((current) => current === id ? null : current);
+  };
+
   const onCanvasPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     const target = (event.target as HTMLElement).closest<HTMLElement>("[data-weave-id]");
+    if (annotationMode) {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setSelectedId(target && canvasRef.current?.contains(target) ? target.getAttribute("data-weave-id") : null);
+      setSelectedAnnotationId(null);
+      const point = annotationPoint(event);
+      const slideId = slidesRef.current[activeRef.current - 1]?.id;
+      if (!point || !slideId) return;
+      event.currentTarget.setPointerCapture(event.pointerId);
+      annotationGestureRef.current = { kind: "draw", pointerId: event.pointerId, slideId, startPoint: point, startClient: { x: event.clientX, y: event.clientY } };
+      setDraftAnnotationRect(rectFromPoints(point, point));
+      return;
+    }
     if (!target || !canvasRef.current?.contains(target)) { setSelectedId(null); return; }
     if (target.getAttribute("contenteditable") === "true") return;
     setSelectedId(target.getAttribute("data-weave-id"));
   };
 
+  const onCanvasPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const gesture = annotationGestureRef.current;
+    if (gesture?.kind !== "draw" || gesture.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    updateAnnotationGesture(event);
+  };
+
+  const onCanvasPointerEnd = (event: React.PointerEvent<HTMLDivElement>) => {
+    const gesture = annotationGestureRef.current;
+    if (gesture?.kind !== "draw" || gesture.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const point = annotationPoint(event);
+    const canceled = event.type === "pointercancel";
+    const draggedArea = Math.abs(event.clientX - gesture.startClient.x) >= 4 && Math.abs(event.clientY - gesture.startClient.y) >= 4;
+    if (!canceled && point && draggedArea) {
+      const rect = rectFromPoints(gesture.startPoint, point);
+      const id = createMessageId();
+      setAnnotations((current) => {
+        const slideAnnotations = current.filter((annotation) => annotation.slideId === gesture.slideId);
+        return [...current, { id, order: nextOrder(slideAnnotations), slideId: gesture.slideId, target: { kind: "region" }, rect, label: "" }];
+      });
+      setSelectedAnnotationId(id);
+      setFocusAnnotationId(id);
+    }
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    annotationGestureRef.current = null;
+    setDraftAnnotationRect(null);
+  };
+
   const beginEdit = (node: HTMLElement) => {
+    if (annotationMode) return;
     if (node instanceof HTMLImageElement || [...node.classList].some((cls) => containerClasses.has(cls))) return;
     checkpoint();
     node.draggable = false;
@@ -595,6 +730,7 @@ export default function Home() {
   };
 
   const onCanvasDoubleClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (annotationMode) { event.preventDefault(); event.stopPropagation(); return; }
     const target = (event.target as HTMLElement).closest<HTMLElement>("[data-weave-id]");
     if (target) beginEdit(target);
   };
@@ -604,13 +740,14 @@ export default function Home() {
     if (node.getAttribute?.("contenteditable") === "true") {
       node.removeAttribute("contenteditable");
       node.removeAttribute("data-editing");
-      node.draggable = !agentRunning && !isTitleSlot(node);
+      node.draggable = !annotationMode && !agentRunning && !isTitleSlot(node);
       setEditingId(null);
       syncFromDom();
     }
   };
 
   const onCanvasKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (annotationMode) return;
     const node = selectedNode();
     if (!node) return;
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "b" && node.getAttribute("contenteditable") === "true") {
@@ -662,6 +799,7 @@ export default function Home() {
   };
 
   const onCanvasDragStart = (event: DragEvent<HTMLDivElement>) => {
+    if (annotationMode) { event.preventDefault(); event.stopPropagation(); return; }
     const target = (event.target as HTMLElement).closest<HTMLElement>("[data-weave-id]");
     const id = target?.getAttribute("data-weave-id");
     if (!target || !id || isTitleSlot(target) || target.getAttribute("contenteditable") === "true" || !target.parentNode) {
@@ -680,6 +818,7 @@ export default function Home() {
   };
 
   const onCanvasDragOver = (event: DragEvent<HTMLDivElement>) => {
+    if (annotationMode) { event.preventDefault(); event.stopPropagation(); return; }
     const session = blockDragRef.current;
     const host = canvasRef.current;
     if (!session || !host) return;
@@ -739,6 +878,7 @@ export default function Home() {
 
   const onCanvasDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
+    if (annotationMode) { event.stopPropagation(); return; }
     const image = Array.from(event.dataTransfer.files).find((file) => file.type.startsWith("image/"));
     if (image) {
       const target = (event.target as HTMLElement).closest<HTMLElement>("[data-weave-id]");
@@ -770,6 +910,7 @@ export default function Home() {
     const image = Array.from(event.clipboardData.files).find((file) => file.type.startsWith("image/"));
     if (!image) return;
     event.preventDefault();
+    if (annotationMode) { event.stopPropagation(); return; }
     void uploadImage(image);
   };
 
@@ -798,6 +939,7 @@ export default function Home() {
   };
 
   const onTreeDragOver = (event: DragEvent<HTMLElement>, item: OutlineItem | null) => {
+    if (annotationMode) return;
     if (!treeDragId || !canDropInTree(treeDragId, item?.id ?? null)) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "move";
@@ -811,6 +953,7 @@ export default function Home() {
 
   const onTreeDrop = (event: DragEvent<HTMLElement>, item: OutlineItem | null) => {
     event.preventDefault();
+    if (annotationMode) { event.stopPropagation(); return; }
     const host = canvasRef.current;
     const drop = treeDrop;
     const dragId = treeDragId;
@@ -990,6 +1133,7 @@ export default function Home() {
     activeRef.current = slideNumber;
     setActiveSlideSynced(slideNumber);
     setSelectedId(null);
+    setSelectedAnnotationId(null);
     reinject();
   };
 
@@ -1041,6 +1185,7 @@ export default function Home() {
 
   const deleteSlide = () => {
     if (slidesRef.current.length <= 1) return;
+    const deletedSlideId = slidesRef.current[activeRef.current - 1]?.id;
     checkpoint();
     const captured = captureActive().filter((_, index) => index !== activeRef.current - 1);
     const nextNumber = Math.min(activeRef.current, captured.length);
@@ -1048,6 +1193,8 @@ export default function Home() {
     activeRef.current = nextNumber;
     setActiveSlideSynced(nextNumber);
     setSelectedId(null);
+    setSelectedAnnotationId(null);
+    if (deletedSlideId) setAnnotations((current) => current.filter((annotation) => annotation.slideId !== deletedSlideId));
     setSaved(false);
     reinject();
   };
@@ -1069,7 +1216,9 @@ export default function Home() {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
       if (target.matches("input, textarea, [contenteditable=true]")) return;
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") { event.preventDefault(); if (event.shiftKey) redo(); else undo(); }
+      if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "a") { event.preventDefault(); toggleAnnotationMode(); }
+      else if (annotationMode && selectedAnnotationId && (event.key === "Delete" || event.key === "Backspace")) { event.preventDefault(); deleteAnnotation(selectedAnnotationId); }
+      else if (!annotationMode && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") { event.preventDefault(); if (event.shiftKey) redo(); else undo(); }
       else if (event.key === "?") setActivityView("shortcuts");
       else if (event.key === "ArrowRight" && activeSlide < slides.length) switchSlide(activeSlide + 1);
       else if (event.key === "ArrowLeft" && activeSlide > 1) switchSlide(activeSlide - 1);
@@ -1376,6 +1525,8 @@ export default function Home() {
   /* Switching to Code mode captures the live DOM into `slides` first, so the code view can
      read the fresh HTML straight from state without touching a ref during render. */
   const codeView = mode === "code" ? slides[activeSlide - 1]?.html ?? "" : "";
+  const activeSlideId = slides[activeSlide - 1]?.id;
+  const activeAnnotations = annotations.filter((annotation) => annotation.slideId === activeSlideId);
   const templatePreview = (template: TemplateDoc) => <span className="template-preview" aria-hidden="true" dangerouslySetInnerHTML={{ __html: template.html }} />;
   const currentTemplate = templates.find((template) => template.id === currentTemplateId);
 
@@ -1636,7 +1787,7 @@ export default function Home() {
               )}
               <div className="view-toggle" role="group" aria-label="Editor view">
                 <button className={mode === "preview" ? "active" : ""} onClick={() => { if (mode === "code") reinject(); setMode("preview"); }}>▣ <span>Preview</span></button>
-                <button className={mode === "code" ? "active" : ""} onClick={() => { setSlidesSynced(captureActive()); setMode("code"); }}>‹› <span>Code</span></button>
+                <button className={mode === "code" ? "active" : ""} onClick={() => { setSlidesSynced(captureActive()); setSelectedAnnotationId(null); setAnnotationMode(false); setMode("code"); }}>‹› <span>Code</span></button>
               </div>
             </div>
           </div>
@@ -1656,15 +1807,19 @@ export default function Home() {
                 {/* The project stylesheet is the only thing styling the slide; the editor's
                     own chrome lives in globals.css and never overlaps these rules. */}
                 <style>{deckCss}</style>
-                <div className={`canvas-interaction-status ${draggedId ? "dragging" : editingId ? "editing" : selectedId ? "selected" : ""}`} role="status">
-                  {draggedId ? "Moving block · release to place" : editingId ? "Editing text · Esc to finish" : selectedId ? "Move mode · drag to reorder · double-click to edit" : "Click a block to select it"}
+                <div className={`canvas-interaction-status ${annotationMode ? "annotating" : draggedId ? "dragging" : editingId ? "editing" : selectedId ? "selected" : ""}`} role="status">
+                  {annotationMode ? "Annotation mode · drag to mark a region" : draggedId ? "Moving block · release to place" : editingId ? "Editing text · Esc to finish" : selectedId ? "Move mode · drag to reorder · double-click to edit" : "Click a block to select it"}
                 </div>
                 <div
                   className="slide-viewport"
                   data-zoom-mode={manualZoom == null ? "fit" : "manual"}
+                  data-annotation-mode={annotationMode ? "true" : undefined}
                   ref={(node) => { viewportRef.current = node; canvasRef.current = node; }}
                   style={{ "--slide-scale": slideScale } as React.CSSProperties}
                   onPointerDown={onCanvasPointerDown}
+                  onPointerMove={onCanvasPointerMove}
+                  onPointerUp={onCanvasPointerEnd}
+                  onPointerCancel={onCanvasPointerEnd}
                   onDoubleClick={onCanvasDoubleClick}
                   onBlurCapture={onCanvasBlurCapture}
                   onKeyDown={onCanvasKeyDown}
@@ -1676,20 +1831,31 @@ export default function Home() {
                 />
                 <div
                   className="annotation-overlay"
-                  aria-hidden="true"
                   style={{ "--slide-scale": slideScale } as React.CSSProperties}
                 >
-                  <div className="annotation-overlay-scroll" ref={annotationScrollRef}>
-                    <div className="annotation-overlay-layer" />
-                  </div>
+                  <AnnotationOverlay
+                    interactive={annotationMode}
+                    annotations={activeAnnotations}
+                    selectedId={selectedAnnotationId}
+                    draftRect={draftAnnotationRect}
+                    focusAnnotationId={focusAnnotationId}
+                    scrollRef={annotationScrollRef}
+                    onFocusHandled={() => setFocusAnnotationId(null)}
+                    onSelect={setSelectedAnnotationId}
+                    onLabelChange={(id, label) => setAnnotations((current) => current.map((annotation) => annotation.id === id ? { ...annotation, label } : annotation))}
+                    onDelete={deleteAnnotation}
+                    onGestureStart={onAnnotationGestureStart}
+                    onGestureMove={onAnnotationGestureMove}
+                    onGestureEnd={onAnnotationGestureEnd}
+                  />
                 </div>
                 <div className="canvas-toolbar">
                   <div className="canvas-tool-group history-tools" role="group" aria-label="Edit history">
-                    <button onClick={undo} disabled={historyState.undo === 0} aria-label="Undo" title="Undo">↶</button>
-                    <button onClick={redo} disabled={historyState.redo === 0} aria-label="Redo" title="Redo">↷</button>
+                    <button onClick={undo} disabled={annotationMode || historyState.undo === 0} aria-label="Undo" title="Undo">↶</button>
+                    <button onClick={redo} disabled={annotationMode || historyState.redo === 0} aria-label="Redo" title="Redo">↷</button>
                   </div>
                   <div className="canvas-tool-group content-tools" role="group" aria-label="Slide content">
-                    <button onClick={(event) => togglePopover("addBlock", event.currentTarget)} className={openPopover === "addBlock" ? "active" : ""} aria-expanded={openPopover === "addBlock"} aria-haspopup="menu">＋ Add block</button>
+                    <button onClick={(event) => togglePopover("addBlock", event.currentTarget)} className={openPopover === "addBlock" ? "active" : ""} aria-expanded={openPopover === "addBlock"} aria-haspopup="menu" disabled={annotationMode}>＋ Add block</button>
                     <input ref={imageInputRef} className="sr-only" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml,image/gif" onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadImage(file); }} />
                   </div>
                   <div className="canvas-tool-group slide-tools" role="group" aria-label="Slide operations">
@@ -1711,6 +1877,14 @@ export default function Home() {
                       title={canvasFocused ? "Show editor panels" : "Hide panels and focus the canvas"}
                       onClick={() => setCanvasFocused((value) => !value)}
                     >⛶</button>
+                  </div>
+                  <div className="canvas-tool-group annotation-tools" role="group" aria-label="Annotations">
+                    <button
+                      className={annotationMode ? "active" : ""}
+                      aria-pressed={annotationMode}
+                      title="Toggle annotation mode (A)"
+                      onClick={toggleAnnotationMode}
+                    >▱ <span>Annotate</span></button>
                   </div>
                 </div>
                 {openPopover === "addBlock" && (
@@ -1761,9 +1935,9 @@ export default function Home() {
                   key={item.id}
                   style={{ paddingLeft: 14 + item.depth * 14 }}
                   className={[selectedId === item.id ? "active" : "", treeDragId === item.id ? "dragging" : "", treeDrop?.id === item.id ? `drop-${treeDrop.position}` : ""].filter(Boolean).join(" ")}
-                  draggable={!agentRunning && !item.locked}
+                  draggable={!annotationMode && !agentRunning && !item.locked}
                   onClick={() => setSelectedId(item.id)}
-                  onDragStart={(event) => { if (item.locked) { event.preventDefault(); return; } event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", item.id); setTreeDragId(item.id); setSelectedId(item.id); }}
+                  onDragStart={(event) => { if (annotationMode || item.locked) { event.preventDefault(); return; } event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", item.id); setTreeDragId(item.id); setSelectedId(item.id); }}
                   onDragOver={(event) => onTreeDragOver(event, item)}
                   onDrop={(event) => onTreeDrop(event, item)}
                   onDragEnd={() => { setTreeDragId(null); setTreeDrop(null); }}
@@ -1773,6 +1947,8 @@ export default function Home() {
               ))}
             </div>}
           </section>
+          {annotationMode && <div className="annotation-inspector-notice" role="status">Editing is off while annotating. Selection stays available in the object tree.</div>}
+          <fieldset className="inspector-editing" disabled={annotationMode}>
           {sel && (
             <>
               {/* What every block has, whatever it is. A block is a flex child before it is a
@@ -1874,6 +2050,7 @@ export default function Home() {
             <div>{accents.map((item) => <button key={item.color} style={{ background: item.color }} className={accent === item.color ? "active" : ""} onClick={() => setSlideAccent(item.color)} aria-label={`Use accent ${item.color}`} />)}</div>
           </section>
           <button className="delete-block" onClick={deleteSelected} disabled={!sel || outline.length <= 1 || outline.some((item) => item.id === selectedId && item.locked)}>Delete selected block</button>
+          </fieldset>
         </aside> : <button className="open-inspector" onClick={() => setInspectorOpen(true)}>Inspector</button>}
       </div>
 
