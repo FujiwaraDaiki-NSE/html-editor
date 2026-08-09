@@ -257,6 +257,7 @@ export default function Home() {
   const [focusAnnotationId, setFocusAnnotationId] = useState<string | null>(null);
   const [includeRegionAnnotations, setIncludeRegionAnnotations] = useState(true);
   const [annotationAttachments, setAnnotationAttachments] = useState<SentAnnotationAttachment[]>([]);
+  const [activeOverlayAttachmentId, setActiveOverlayAttachmentId] = useState<string | null>(null);
 
   const canvasRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -299,6 +300,13 @@ export default function Home() {
   const activeThreadAttachments = annotationAttachments.filter((attachment) => attachment.threadId === codexState.activeThreadId);
   const visibleTurnIds = new Set(visibleTurns.map((turn) => turn.id));
   const unmatchedAttachments = activeThreadAttachments.filter((attachment) => !attachment.turnId || !visibleTurnIds.has(attachment.turnId));
+  const activeOverlayAttachment = annotationAttachments.find((attachment) => attachment.id === activeOverlayAttachmentId) ?? null;
+  const activeOverlayTurnIds = activeOverlayAttachment ? codexState.threads[activeOverlayAttachment.threadId]?.turnIds ?? [] : [];
+  const activeOverlayTurnIndex = activeOverlayAttachment?.turnId ? activeOverlayTurnIds.indexOf(activeOverlayAttachment.turnId) : -1;
+  const activeOverlayLabel = activeOverlayAttachment
+    ? `${activeOverlayTurnIndex >= 0 ? `Turn ${activeOverlayTurnIndex + 1}` : "Sent turn"} · ${activeOverlayAttachment.slideLabel}`
+    : "";
+  const recalledAnnotations = activeOverlayAttachment?.slideId === activeSlideId ? activeOverlayAttachment.annotations : [];
 
   const setSlidesSynced = (next: SlideDoc[]) => { slidesRef.current = next; setSlides(next); };
   const setActiveSlideSynced = (next: number) => { templatePreviewHtmlRef.current = null; templatePreviewSourceHtmlRef.current = null; setTitleDraft(null); setActiveSlide(next); };
@@ -1230,6 +1238,18 @@ export default function Home() {
     reinject();
   };
 
+  const toggleAttachmentOverlay = (attachment: SentAnnotationAttachment) => {
+    if (activeOverlayAttachmentId === attachment.id) {
+      setActiveOverlayAttachmentId(null);
+      return;
+    }
+    const slideIndex = slidesRef.current.findIndex((slide) => slide.id === attachment.slideId);
+    if (slideIndex < 0) return;
+    if (mode === "code") setMode("preview");
+    if (activeRef.current !== slideIndex + 1) switchSlide(slideIndex + 1);
+    setActiveOverlayAttachmentId(attachment.id);
+  };
+
   const setSlideTitle = (title: string) => {
     const node = slideRoot()?.querySelector<HTMLElement>(titleSlotSelector);
     if (!node) return;
@@ -1885,7 +1905,10 @@ export default function Home() {
                     slideLabel={attachment.slideLabel}
                     count={attachment.annotations.length}
                     canRestore={slides.some((slide) => slide.id === attachment.slideId)}
+                    canOverlay={slides.some((slide) => slide.id === attachment.slideId)}
+                    overlayActive={activeOverlayAttachmentId === attachment.id && slides.some((slide) => slide.id === attachment.slideId)}
                     onRestore={() => restoreAnnotationAttachment(attachment)}
+                    onToggleOverlay={() => toggleAttachmentOverlay(attachment)}
                   />)}
                   <footer><span>{turn.status}</span>{turn.diff && <details><summary>Turn diff</summary><pre>{turn.diff}</pre></details>}</footer>
                 </section>
@@ -1895,7 +1918,10 @@ export default function Home() {
                 slideLabel={attachment.slideLabel}
                 count={attachment.annotations.length}
                 canRestore={slides.some((slide) => slide.id === attachment.slideId)}
+                canOverlay={slides.some((slide) => slide.id === attachment.slideId)}
+                overlayActive={activeOverlayAttachmentId === attachment.id && slides.some((slide) => slide.id === attachment.slideId)}
                 onRestore={() => restoreAnnotationAttachment(attachment)}
+                onToggleOverlay={() => toggleAttachmentOverlay(attachment)}
               />)}
               {Object.values(codexState.pendingRequests).map((pending) => (
                 <ServerRequestCard key={String(pending.id)} request={pending} onResolve={(id, result) => void resolveServerRequest(id, result)} onReject={(id) => void rejectServerRequest(id)} />
@@ -1953,8 +1979,12 @@ export default function Home() {
                 {/* The project stylesheet is the only thing styling the slide; the editor's
                     own chrome lives in globals.css and never overlaps these rules. */}
                 <style>{deckCss}</style>
-                <div className={`canvas-interaction-status ${annotationMode ? "annotating" : draggedId ? "dragging" : editingId ? "editing" : selectedId ? "selected" : ""}`} role="status">
-                  {annotationMode ? "Annotation mode · click an element or drag a region" : draggedId ? "Moving block · release to place" : editingId ? "Editing text · Esc to finish" : selectedId ? "Move mode · drag to reorder · double-click to edit" : "Click a block to select it"}
+                <div className={`canvas-interaction-status ${annotationMode ? "annotating" : recalledAnnotations.length > 0 ? "recalling" : draggedId ? "dragging" : editingId ? "editing" : selectedId ? "selected" : ""}`} role="status">
+                  {annotationMode
+                    ? `Annotation mode · click an element or drag a region${recalledAnnotations.length > 0 ? ` · Comparing ${activeOverlayLabel}` : ""}`
+                    : recalledAnnotations.length > 0
+                      ? `Comparing sent annotations · ${activeOverlayLabel}`
+                      : draggedId ? "Moving block · release to place" : editingId ? "Editing text · Esc to finish" : selectedId ? "Move mode · drag to reorder · double-click to edit" : "Click a block to select it"}
                 </div>
                 <div
                   className="slide-viewport"
@@ -1982,6 +2012,7 @@ export default function Home() {
                   <AnnotationOverlay
                     interactive={annotationMode}
                     annotations={activeAnnotations}
+                    recalledAnnotations={recalledAnnotations}
                     selectedId={selectedAnnotationId}
                     draftRect={draftAnnotationRect}
                     focusAnnotationId={focusAnnotationId}

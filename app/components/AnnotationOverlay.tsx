@@ -19,6 +19,7 @@ export type AnnotationGestureKind = "move" | ResizeHandle;
 type Props = {
   interactive: boolean;
   annotations: Annotation[];
+  recalledAnnotations: Annotation[];
   selectedId: string | null;
   draftRect: AnnotationRect | null;
   focusAnnotationId: string | null;
@@ -42,6 +43,7 @@ const rectStyle = (rect: AnnotationRect): CSSProperties => ({
 export function AnnotationOverlay({
   interactive,
   annotations,
+  recalledAnnotations,
   selectedId,
   draftRect,
   focusAnnotationId,
@@ -73,6 +75,20 @@ export function AnnotationOverlay({
 
   return (
     <div className="annotation-overlay-scroll" ref={scrollRef}>
+      {recalledAnnotations.length > 0 && (
+        <div className="annotation-overlay-layer annotation-recall-layer" aria-hidden="true">
+          {recalledAnnotations.map((annotation) => (
+            <div
+              className={`annotation-box annotation-recall-box annotation-${annotation.target.kind}`}
+              style={rectStyle(annotation.rect)}
+              key={annotation.id}
+            >
+              <span className="annotation-order annotation-order-static annotation-recall-order">S·{annotation.order}</span>
+              {annotation.label && <span className="annotation-label-static annotation-recall-label">{annotation.label}</span>}
+            </div>
+          ))}
+        </div>
+      )}
       <div className={`annotation-overlay-layer ${interactive ? "interactive" : "readonly"}`}>
         {annotations.map((annotation) => (
           <div
