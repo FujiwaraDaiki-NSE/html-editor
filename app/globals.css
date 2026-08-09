@@ -329,6 +329,14 @@ body {
 .slide-viewport { position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden; box-shadow: var(--shadow); }
 .slide-viewport[data-zoom-mode="manual"] { overflow: auto; background: #090b0e; }
 .slide-viewport > .weave-slide { position: absolute; left: 0; top: 0; transform: scale(var(--slide-scale)); transform-origin: top left; }
+/* The annotation layer sits beside the viewport, not inside it: the viewport's children are
+   replaced wholesale by innerHTML on every slide injection. It is sized and placed to coincide
+   with the viewport's own box (the shell is 16/10 and centres a 16/9 viewport), scaled like
+   .weave-slide so its coordinate space is the 1280x720 slide, and translated by the viewport's
+   scroll so the two stay pinned together once the canvas is zoomed past fit. */
+.annotation-overlay { position: absolute; left: 0; top: 50%; width: 100%; aspect-ratio: 16 / 9; translate: 0 -50%; overflow: hidden; pointer-events: none; }
+.annotation-overlay-scroll { position: absolute; left: 0; top: 0; }
+.annotation-overlay-layer { position: absolute; left: 0; top: 0; width: 1280px; height: 720px; transform: scale(var(--slide-scale)); transform-origin: top left; }
 
 .slide-block { position: relative; cursor: default; outline: calc(1px / var(--slide-scale)) solid transparent; outline-offset: calc(4px / var(--slide-scale)); }
 .slide-block:hover { outline-color: color-mix(in srgb, var(--accent) 45%, transparent); }

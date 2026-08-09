@@ -219,6 +219,7 @@ export default function Home() {
 
   const canvasRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
+  const annotationScrollRef = useRef<HTMLDivElement>(null);
   const presenterRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
@@ -539,6 +540,18 @@ export default function Home() {
     const observer = new ResizeObserver(([entry]) => setFitScale(Math.min(entry.contentRect.width / designWidth, entry.contentRect.height / designHeight)));
     observer.observe(viewport);
     return () => observer.disconnect();
+  }, [mode]);
+
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    const scrollLayer = annotationScrollRef.current;
+    if (!viewport || !scrollLayer) return;
+    const syncScroll = () => {
+      scrollLayer.style.transform = `translate(${-viewport.scrollLeft}px, ${-viewport.scrollTop}px)`;
+    };
+    syncScroll();
+    viewport.addEventListener("scroll", syncScroll, { passive: true });
+    return () => viewport.removeEventListener("scroll", syncScroll);
   }, [mode]);
 
   useEffect(() => { slidesRef.current = slides; }, [slides]);
@@ -1661,6 +1674,15 @@ export default function Home() {
                   onPaste={onCanvasPaste}
                   onDragEnd={onCanvasDragEnd}
                 />
+                <div
+                  className="annotation-overlay"
+                  aria-hidden="true"
+                  style={{ "--slide-scale": slideScale } as React.CSSProperties}
+                >
+                  <div className="annotation-overlay-scroll" ref={annotationScrollRef}>
+                    <div className="annotation-overlay-layer" />
+                  </div>
+                </div>
                 <div className="canvas-toolbar">
                   <div className="canvas-tool-group history-tools" role="group" aria-label="Edit history">
                     <button onClick={undo} disabled={historyState.undo === 0} aria-label="Undo" title="Undo">↶</button>
