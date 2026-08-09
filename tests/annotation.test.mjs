@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  annotationPromptRules,
   annotationEnvelope,
+  canSendTurn,
   clampRect,
   intersectingIds,
   nextOrder,
@@ -109,11 +111,32 @@ test("refreshing annotations updates element geometry and every intersection lis
     { id: "region", target: { kind: "region" }, rect: { x: 450, y: 250, w: 100, h: 100 }, intersects: ["stale"] },
     { id: "missing", target: { kind: "element", weaveId: "removed" }, rect: { x: 720, y: 420, w: 20, h: 20 }, intersects: [] },
   ];
-  assert.deepEqual(refreshAnnotations(annotations, boxes), [
+  const refreshed = refreshAnnotations(annotations, boxes);
+  assert.deepEqual(refreshed, [
     { id: "element", target: { kind: "element", weaveId: "heading" }, rect: boxes[0].rect, intersects: ["heading", "content"] },
     { id: "region", target: { kind: "region" }, rect: annotations[1].rect, intersects: ["content"] },
     { id: "missing", target: { kind: "element", weaveId: "removed" }, rect: annotations[2].rect, intersects: ["fallback-overlap"] },
   ]);
+  assert.notStrictEqual(refreshed[0].rect, boxes[0].rect);
+  boxes[0].rect.x = 999;
+  assert.equal(refreshed[0].rect.x, 40);
+});
+
+test("a turn can be sent with prompt text or annotations", () => {
+  assert.equal(canSendTurn("Change the headline", []), true);
+  assert.equal(canSendTurn("  \n", [{ id: "annotation" }]), true);
+  assert.equal(canSendTurn("", []), false);
+  assert.equal(canSendTurn("  \n", []), false);
+});
+
+test("annotation prompt rules require flow interpretation rather than literal coordinates", () => {
+  assert.match(annotationPromptRules, /approximation.+proportion.+reading order/is);
+  assert.match(annotationPromptRules, /not as coordinate specifications/i);
+  assert.match(annotationPromptRules, /Row, Column, or Grid flow structure/i);
+  assert.match(annotationPromptRules, /misaligned or overlap/i);
+  assert.match(annotationPromptRules, /tidying.+part of the editing task/i);
+  assert.match(annotationPromptRules, /Absolute positioning is prohibited/i);
+  assert.doesNotMatch(annotationPromptRules, /(?:use|prefer|reproduce with) absolute positioning/i);
 });
 
 test("the annotation envelope sorts both target kinds and copies defensively", () => {

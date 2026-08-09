@@ -79,10 +79,17 @@ export function refreshAnnotations(annotations, boxes) {
   const boxesById = new Map(boxes.map((box) => [box.id, box]));
   return annotations.map((annotation) => {
     const elementBox = annotation.target.kind === "element" ? boxesById.get(annotation.target.weaveId) : null;
-    const rect = elementBox?.rect ?? annotation.rect;
+    const sourceRect = elementBox?.rect ?? annotation.rect;
+    const rect = { x: sourceRect.x, y: sourceRect.y, w: sourceRect.w, h: sourceRect.h };
     return { ...annotation, rect, intersects: intersectingIds(rect, boxes) };
   });
 }
+
+export const canSendTurn = (text, annotations) => String(text ?? "").trim().length > 0 || annotations.length > 0;
+
+export const annotationPromptRules = `Treat editor annotation rectangles as an approximation of proportion and reading order, not as coordinate specifications.
+Build the result with Row, Column, or Grid flow structure using the project's existing utility classes. Absolute positioning is prohibited for interpreting annotations.
+Regularize spacing and alignment yourself when annotation rectangles are misaligned or overlap; tidying them into a coherent composition is part of the editing task.`;
 
 export const annotationEnvelope = (annotations) => annotations
   .map((annotation) => ({
