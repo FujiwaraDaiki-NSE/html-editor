@@ -665,6 +665,7 @@ export default function Home() {
     setOpenPopover(null);
     if (annotationMode) setSelectedAnnotationId(null);
     setAnnotationMode(!annotationMode);
+    setAnnouncement(annotationMode ? "Annotation mode left" : "Annotation mode entered");
   };
 
   const updateAnnotationGesture = (event: { clientX: number; clientY: number }) => {
@@ -718,9 +719,11 @@ export default function Home() {
   };
 
   const deleteAnnotation = (id: string) => {
+    const annotation = annotations.find((item) => item.id === id);
     setAnnotations((current) => current.filter((annotation) => annotation.id !== id));
     setSelectedAnnotationId((current) => current === id ? null : current);
     setFocusAnnotationId((current) => current === id ? null : current);
+    if (annotation) setAnnouncement(`Annotation ${annotation.order} deleted`);
   };
 
   const restoreAnnotationAttachment = (attachment: SentAnnotationAttachment) => {
@@ -741,6 +744,7 @@ export default function Home() {
     });
     if (attachment.annotations.some((annotation) => annotation.target.kind === "region")) setIncludeRegionAnnotations(true);
     setApiError(null);
+    setAnnouncement("Annotation attachment restored to draft");
   };
 
   const onCanvasPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -785,14 +789,13 @@ export default function Home() {
       const rect = rectFromPoints(gesture.startPoint, point);
       const id = createMessageId();
       const boxes = liveAnnotationBoxes();
-      setAnnotations((current) => {
-        const slideAnnotations = current.filter((annotation) => annotation.slideId === gesture.slideId);
-        const created: Annotation = { id, order: nextOrder(slideAnnotations), slideId: gesture.slideId, target: { kind: "region" }, rect, label: "", intersects: [] };
-        return refreshSlideAnnotations([...current, created], gesture.slideId, boxes);
-      });
+      const order = nextOrder(annotations.filter((annotation) => annotation.slideId === gesture.slideId));
+      const created: Annotation = { id, order, slideId: gesture.slideId, target: { kind: "region" }, rect, label: "", intersects: [] };
+      setAnnotations((current) => refreshSlideAnnotations([...current, created], gesture.slideId, boxes));
       setSelectedAnnotationId(id);
       setFocusAnnotationId(id);
       setIncludeRegionAnnotations(true);
+      setAnnouncement(`Region annotation ${order} created`);
     } else if (!canceled && gesture.elementId) {
       const existing = annotations.find((annotation) => annotation.slideId === gesture.slideId && annotation.target.kind === "element" && annotation.target.weaveId === gesture.elementId);
       if (existing) {
@@ -811,6 +814,7 @@ export default function Home() {
             const draft = current.trimEnd();
             return draft ? `${draft} ${referenceToken(created)}` : referenceToken(created);
           });
+          setAnnouncement(`Element annotation ${order} created`);
         }
       }
     }
@@ -1241,6 +1245,7 @@ export default function Home() {
   const toggleAttachmentOverlay = (attachment: SentAnnotationAttachment) => {
     if (activeOverlayAttachmentId === attachment.id) {
       setActiveOverlayAttachmentId(null);
+      setAnnouncement("Annotation overlay hidden");
       return;
     }
     const slideIndex = slidesRef.current.findIndex((slide) => slide.id === attachment.slideId);
@@ -1248,6 +1253,7 @@ export default function Home() {
     if (mode === "code") setMode("preview");
     if (activeRef.current !== slideIndex + 1) switchSlide(slideIndex + 1);
     setActiveOverlayAttachmentId(attachment.id);
+    setAnnouncement("Annotation overlay shown");
   };
 
   const setSlideTitle = (title: string) => {
@@ -1532,6 +1538,7 @@ export default function Home() {
         const sentIds = new Set(turnAnnotations.map((annotation) => annotation.id));
         setAnnotations((current) => current.filter((annotation) => !sentIds.has(annotation.id)));
         setSelectedAnnotationId((current) => current && sentIds.has(current) ? null : current);
+        setAnnouncement("Annotation attachment sent");
       }
       setPromptDraft("");
       setIncludeRegionAnnotations(true);
@@ -1766,7 +1773,7 @@ export default function Home() {
   const shortcutsSidebar = (
     <section className="activity-panel shortcuts-panel" aria-label="Keyboard shortcuts">
       <header className="activity-panel-heading"><span>KEYBOARD SHORTCUTS</span></header>
-      <div className="activity-panel-body"><dl><dt>← / →</dt><dd>Previous / next slide</dd><dt>Double-click or Enter</dt><dd>Edit selected text</dd><dt>Esc</dt><dd>Finish editing or close presentation</dd><dt>⌘/Ctrl Z</dt><dd>Undo</dd><dt>⌘/Ctrl Shift Z</dt><dd>Redo</dd><dt>?</dt><dd>Open this view</dd></dl></div>
+      <div className="activity-panel-body"><dl><dt>← / →</dt><dd>Previous / next slide</dd><dt>Double-click or Enter</dt><dd>Edit selected text</dd><dt>A</dt><dd>Toggle annotation mode</dd><dt>Esc</dt><dd>Finish editing, leave an annotation label, or close presentation</dd><dt>⌘/Ctrl Z</dt><dd>Undo</dd><dt>⌘/Ctrl Shift Z</dt><dd>Redo</dd><dt>?</dt><dd>Open this view</dd></dl></div>
     </section>
   );
 
@@ -1959,7 +1966,7 @@ export default function Home() {
               )}
               <div className="view-toggle" role="group" aria-label="Editor view">
                 <button className={mode === "preview" ? "active" : ""} onClick={() => { if (mode === "code") reinject(); setMode("preview"); }}>▣ <span>Preview</span></button>
-                <button className={mode === "code" ? "active" : ""} onClick={() => { setSlidesSynced(captureActive()); setSelectedAnnotationId(null); setAnnotationMode(false); setMode("code"); }}>‹› <span>Code</span></button>
+                <button className={mode === "code" ? "active" : ""} onClick={() => { setSlidesSynced(captureActive()); setSelectedAnnotationId(null); if (annotationMode) setAnnouncement("Annotation mode left"); setAnnotationMode(false); setMode("code"); }}>‹› <span>Code</span></button>
               </div>
             </div>
           </div>
@@ -2059,6 +2066,7 @@ export default function Home() {
                     <button
                       className={annotationMode ? "active" : ""}
                       aria-pressed={annotationMode}
+                      aria-keyshortcuts="A"
                       title="Toggle annotation mode (A)"
                       onClick={toggleAnnotationMode}
                     >▱ <span>Annotate</span></button>

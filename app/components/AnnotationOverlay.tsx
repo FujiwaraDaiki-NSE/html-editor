@@ -116,6 +116,12 @@ export function AnnotationOverlay({
                   placeholder="Label"
                   onFocus={() => onSelect(annotation.id)}
                   onPointerDown={(event) => { event.stopPropagation(); onSelect(annotation.id); }}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Escape") return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    event.currentTarget.blur();
+                  }}
                   onChange={(event) => onLabelChange(annotation.id, event.target.value)}
                 />
                 <button
