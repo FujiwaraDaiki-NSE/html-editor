@@ -8,7 +8,8 @@ import { defaultDeckCss, designHeight, designWidth, escapeHtml, renderDeckDocume
 import { auditContentPolicy } from "../shared/content-policy.mjs";
 import { applyTemplateToSlideHtml, contentSlotSelector, titleFromSlideHtml, titleSlotSelector } from "../shared/slide-slots.mjs";
 import { advancedControlKeys, allControlKeys, applyBlockPosition, applySize, applyUtilityClass, blockPositionOptions, containerControlKeys, decorationControlKeys, defaultSlideClasses, imageControlKeys, listControlKeys, migrateSlideHtmlToTailwind, ratioOptions, readBlockPosition, readSize, readUtilityClass, sizeIntents, slideControlGroups, textControlKeys } from "../shared/tailwind-slide.mjs";
-import { annotationEnvelope, canSendTurn, insertReferenceAt, nextOrder, rectFromClientBox, rectFromPoints, refreshAnnotations, resizeRect, resolveReferences, toSlidePoint, translateRect } from "../shared/annotation.mjs";
+import { canSendTurn, insertReferenceAt, nextOrder, rectFromClientBox, rectFromPoints, refreshAnnotations, resizeRect, resolveReferences, toSlidePoint, translateRect } from "../shared/annotation.mjs";
+import { editorEnvelope } from "../shared/context.mjs";
 import { AnnotationAttachment } from "./components/AnnotationAttachment";
 import { AnnotationLegend } from "./components/AnnotationLegend";
 import { AnnotationOverlay } from "./components/AnnotationOverlay";
@@ -421,15 +422,17 @@ export default function Home() {
 
   const deckPayload = () => ({ title: deckTitle, slides: captureActive() });
 
-  const contextEnvelope = (annotationContext: Annotation[] = []) => ({
-    revision: serverRevision,
-    activeSlide,
-    annotations: annotationEnvelope(annotationContext),
-    selected: selectedId ? { id: selectedId, kind: sel?.kind ?? "", label: sel?.kind ?? "" } : null,
-    selectedText: typeof window === "undefined" ? "" : window.getSelection()?.toString().slice(0, 2_000) ?? "",
-    activeSlideHtml: (serializeCanvas() ?? slides[activeSlide - 1]?.html ?? "").slice(0, 30_000),
-    css: deckCss.slice(0, 30_000),
-    recentHistory: history.slice(0, 5).map(({ shortId, message }) => ({ shortId, message })),
+  const contextEnvelope = (annotationContext: Annotation[] = []) => editorEnvelope({
+    slide: activeSlideId,
+    selected: selectedId ? {
+      id: selectedId,
+      kind: sel?.kind ?? "",
+      text: (() => {
+        const node = selectedNode();
+        return node ? textExcerptOfNode(node, 200) : "";
+      })(),
+    } : undefined,
+    annotations: annotationContext,
   });
 
   const quality = useMemo(() => {
