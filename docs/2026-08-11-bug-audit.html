@@ -184,7 +184,7 @@
           <strong>10</strong><span>並列レビュー担当</span>
         </div>
         <div class="metric">
-          <strong>139 / 139</strong><span>テスト成功</span>
+          <strong>148 / 148</strong><span>修正後テスト成功</span>
         </div>
         <div class="metric"><strong>2</strong><span>最優先の問題群</span></div>
         <div class="metric"><strong>11</strong><span>優先修正候補</span></div>
@@ -193,6 +193,12 @@
       <div class="callout">
         <strong>結論:</strong>
         テストとビルドは成功しているが、安全でないHTML/CSSの実行経路と、保存・非同期処理による編集消失が残っている。まずこの2系統を止め、その後Codex再接続、履歴復元、書き出しを修正するのが妥当。
+      </div>
+
+      <div class="callout" style="border-left-color: var(--ok); background: #ecfdf5">
+        <strong>修正完了 — 2026-08-11:</strong>
+        本レポートの重大・高・中優先度の指摘を修正した。HTMLは保存時の監査に加えて表示時にもサニタイズし、CSSは生成済みの固定スタイルだけを適用する。非同期編集は編集世代とプロジェクト単位の直列化で保護し、Codex再接続、履歴復元、HTTP境界、Undo、画像処理、固定寸法、offline export、Cloudflare設定も更新した。
+        最終確認は <code>npm run lint</code>、<code>npm run typecheck</code>、production build、および <code>148 / 148</code> testsが成功している。
       </div>
 
       <h2>最優先で修正すべき問題</h2>
@@ -534,8 +540,8 @@
           </tr>
           <tr>
             <td><code>npx tsc --noEmit</code></td>
-            <td class="fail">失敗</td>
-            <td>page.tsx 4件、Cloudflare関連3件</td>
+            <td class="pass">修正後成功</td>
+            <td>型エラーを修正し、typecheck scriptを追加</td>
           </tr>
           <tr>
             <td>content-policy最小再現</td>
@@ -627,7 +633,7 @@
           計画commit: <code>c8446aa</code>
         </p>
         <p>
-          本監査ではアプリケーションコードを変更していない。指摘の修正は別タスクとして、再現テストを先に追加してから小さなcommitに分けて実施する。
+          初回監査ではアプリケーションコードを変更していなかった。その後、指摘を再現テスト付きの小さなcommitに分けて修正した。
         </p>
       </footer>
     </main>

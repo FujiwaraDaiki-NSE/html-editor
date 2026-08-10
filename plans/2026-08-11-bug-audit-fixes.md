@@ -1,6 +1,6 @@
 # バグ監査指摘の修正計画
 
-状態: 実施中
+状態: 完了
 
 ## 目的
 
@@ -23,3 +23,12 @@
 - `npm run lint`、`npm run typecheck`、`npm test` が成功する。
 - 修正結果と残存リスクをユーザー向けHTMLへ反映する。
 - 変更を機能単位でコミットし、`dev/general` に統合する。
+
+## 実施結果
+
+- HTML/CSS監査と表示時サニタイズを追加し、危険な埋め込みとCSS汚染を遮断した。
+- 編集世代、保存mutex、アップロード対象固定、Codex再接続・イベントgap処理を追加した。
+- managed tree復元、HTTP method・JSON境界、Variation後始末、各UI不具合を修正した。
+- offline HTMLへ画像をdata URLとして埋め込み、固定スライド寸法を維持した。
+- Cloudflare bindingと型定義を揃え、`typecheck` scriptを追加した。
+- `npm run lint`、`npm run typecheck`、`npm test`（production build、148 tests）が成功した。
