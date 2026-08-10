@@ -60,6 +60,11 @@ export function AnnotationOverlay({
 
   useEffect(() => {
     if (!interactive || !focusAnnotationId) return;
+    const annotation = annotations.find((item) => item.id === focusAnnotationId);
+    if (annotation?.target.kind !== "region") {
+      onFocusHandled();
+      return;
+    }
     const input = inputsRef.current.get(focusAnnotationId);
     if (!input) return;
     input.focus();
@@ -84,7 +89,7 @@ export function AnnotationOverlay({
               key={annotation.id}
             >
               <span className="annotation-order annotation-order-static annotation-recall-order">S·{annotation.order}</span>
-              {annotation.label && <span className="annotation-label-static annotation-recall-label">{annotation.label}</span>}
+              {annotation.target.kind === "region" && annotation.label && <span className="annotation-label-static annotation-recall-label">{annotation.label}</span>}
             </div>
           ))}
         </div>
@@ -98,32 +103,38 @@ export function AnnotationOverlay({
           >
             {interactive ? (
               <>
-                <button
-                  type="button"
-                  className="annotation-order"
-                  aria-label={`Move annotation ${annotation.order}`}
-                  title={`Move annotation ${annotation.order}`}
-                  {...gestureProps(annotation.id, "move")}
-                >{annotation.order}</button>
-                <input
-                  ref={(node) => {
-                    if (node) inputsRef.current.set(annotation.id, node);
-                    else inputsRef.current.delete(annotation.id);
-                  }}
-                  className="annotation-label"
-                  value={annotation.label}
-                  aria-label={`Annotation ${annotation.order} label`}
-                  placeholder="Label"
-                  onFocus={() => onSelect(annotation.id)}
-                  onPointerDown={(event) => { event.stopPropagation(); onSelect(annotation.id); }}
-                  onKeyDown={(event) => {
-                    if (event.key !== "Escape") return;
-                    event.preventDefault();
-                    event.stopPropagation();
-                    event.currentTarget.blur();
-                  }}
-                  onChange={(event) => onLabelChange(annotation.id, event.target.value)}
-                />
+                {annotation.target.kind === "region" ? (
+                  <button
+                    type="button"
+                    className="annotation-order"
+                    aria-label={`Move annotation ${annotation.order}`}
+                    title={`Move annotation ${annotation.order}`}
+                    {...gestureProps(annotation.id, "move")}
+                  >{annotation.order}</button>
+                ) : (
+                  <span className="annotation-order annotation-order-static" aria-label={`Annotation ${annotation.order}`}>{annotation.order}</span>
+                )}
+                {annotation.target.kind === "region" && (
+                  <input
+                    ref={(node) => {
+                      if (node) inputsRef.current.set(annotation.id, node);
+                      else inputsRef.current.delete(annotation.id);
+                    }}
+                    className="annotation-label"
+                    value={annotation.label}
+                    aria-label={`Annotation ${annotation.order} label`}
+                    placeholder="Label"
+                    onFocus={() => onSelect(annotation.id)}
+                    onPointerDown={(event) => { event.stopPropagation(); onSelect(annotation.id); }}
+                    onKeyDown={(event) => {
+                      if (event.key !== "Escape") return;
+                      event.preventDefault();
+                      event.stopPropagation();
+                      event.currentTarget.blur();
+                    }}
+                    onChange={(event) => onLabelChange(annotation.id, event.target.value)}
+                  />
+                )}
                 <button
                   type="button"
                   className="annotation-delete"
@@ -132,7 +143,7 @@ export function AnnotationOverlay({
                   onPointerDown={(event) => event.stopPropagation()}
                   onClick={(event) => { event.stopPropagation(); onDelete(annotation.id); }}
                 >×</button>
-                {(["nw", "ne", "sw", "se"] as ResizeHandle[]).map((handle) => (
+                {annotation.target.kind === "region" && (["nw", "ne", "sw", "se"] as ResizeHandle[]).map((handle) => (
                   <button
                     type="button"
                     className={`annotation-handle ${handle}`}
@@ -145,7 +156,7 @@ export function AnnotationOverlay({
             ) : (
               <>
                 <span className="annotation-order annotation-order-static" aria-label={`Annotation ${annotation.order}`}>{annotation.order}</span>
-                {annotation.label && <span className="annotation-label-static">{annotation.label}</span>}
+                {annotation.target.kind === "region" && annotation.label && <span className="annotation-label-static">{annotation.label}</span>}
               </>
             )}
           </div>

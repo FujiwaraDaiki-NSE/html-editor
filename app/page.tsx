@@ -853,7 +853,6 @@ export default function Home() {
           };
           setAnnotations((current) => refreshSlideAnnotations([...current, created], gesture.slideId, boxes));
           setSelectedAnnotationId(id);
-          setFocusAnnotationId(id);
           setPromptDraft((current) => {
             const draft = current.trimEnd();
             return draft ? `${draft} ${referenceToken(created)}` : referenceToken(created);
