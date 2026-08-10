@@ -751,7 +751,10 @@ async function createProjectUnlocked({ title, template = "orbit" }) {
     id: "cover",
     title: name,
     notes: "",
-    html: selected.html.replace(/(<h1\b[^>]*>)[\s\S]*?(<\/h1>)/i, `$1${escapeHtml(name)}$2`),
+    html: selected.html.replace(
+      /(<h1\b[^>]*>)[\s\S]*?(<\/h1>)/i,
+      (_match, opening, closing) => `${opening}${escapeHtml(name)}${closing}`,
+    ),
   };
   try {
     gitAt(root, ["init", "-b", "main"]);
