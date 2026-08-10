@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weave — 決まり具合を渡す（思考をAgentへ渡す機能・第2巡）</title>
+<style>
+  :root {
+    --paper: #f2f3f0;
+    --surface: #fffefa;
+    --surface-2: #e9ece7;
+    --ink: #1d211f;
+    --muted: #626a65;
+    --line: #d6dad4;
+    --human: #a46416;
+    --agent: #14766d;
+    --violet: #7156a8;
+    --sans: system-ui, -apple-system, "Hiragino Kaku Gothic ProN", "Noto Sans JP", sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #111512;
+      --surface: #181d19;
+      --surface-2: #222923;
+      --ink: #e8ebe7;
+      --muted: #a0aaa2;
+      --line: #303831;
+      --human: #efad4e;
+      --agent: #4bd1c2;
+      --violet: #b89beb;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font: 15.5px/1.8 var(--sans);
+    letter-spacing: .01em;
+    -webkit-font-smoothing: antialiased;
+  }
+  .page { width: min(100% - 40px, 1040px); margin: 0 auto; padding: 64px 0 112px; }
+  header { padding-bottom: 36px; border-bottom: 1px solid var(--line); }
+  .kicker, .eyebrow { font: 650 11px/1.3 var(--mono); letter-spacing: .13em; text-transform: uppercase; color: var(--muted); }
+  h1 { max-width: 17ch; margin: 16px 0 20px; font-size: clamp(34px, 5.6vw, 60px); line-height: 1.12; letter-spacing: -.045em; text-wrap: balance; }
+  .lead { max-width: 700px; margin: 0; color: var(--muted); font-size: 18px; }
+  .thesis { margin-top: 28px; padding: 20px 24px; border-left: 3px solid var(--human); background: var(--surface); font-size: 18px; }
+  nav { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 28px; }
+  nav a { padding: 5px 11px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: 12px; text-decoration: none; }
+  nav a:hover, nav a:focus-visible { border-color: var(--human); color: var(--ink); }
+  section { padding-top: 72px; scroll-margin-top: 20px; }
+  h2 { margin: 9px 0 18px; font-size: clamp(25px, 4vw, 36px); line-height: 1.25; letter-spacing: -.025em; }
+  h3 { margin: 0; font-size: 19px; line-height: 1.45; letter-spacing: -.01em; }
+  p { margin: 0; }
+  .section-intro { max-width: 730px; color: var(--muted); font-size: 16px; }
+  .map { margin-top: 28px; overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+  table { width: 100%; min-width: 700px; border-collapse: collapse; }
+  th, td { padding: 13px 18px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+  tr:last-child td { border-bottom: 0; }
+  th { color: var(--muted); font: 600 10.5px/1.3 var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+  td:first-child { width: 30%; font-weight: 700; }
+  tr.open td { background: color-mix(in srgb, var(--human) 9%, transparent); }
+  .covered { color: var(--agent); }
+  .missing { color: var(--human); font-weight: 700; }
+  .marks { margin-top: 30px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .mark { padding: 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+  .mark .chip { display: inline-block; margin-bottom: 10px; padding: 3px 10px; border-radius: 999px; font: 700 11px var(--mono); }
+  .mark.firm .chip { background: color-mix(in srgb, var(--agent) 22%, transparent); color: var(--agent); border: 1px solid color-mix(in srgb, var(--agent) 45%, transparent); }
+  .mark.open .chip { background: var(--surface-2); color: var(--muted); border: 1px solid var(--line); }
+  .mark.draft .chip { background: color-mix(in srgb, var(--human) 20%, transparent); color: var(--human); border: 1px dashed color-mix(in srgb, var(--human) 60%, transparent); }
+  .mark b { display: block; margin-bottom: 6px; font-size: 14px; }
+  .mark p { color: var(--muted); font-size: 13.5px; line-height: 1.65; }
+  .scenario { margin-top: 32px; padding: 28px; border-radius: 12px; background: var(--ink); color: var(--paper); }
+  .scenario .eyebrow { color: color-mix(in srgb, var(--paper) 64%, transparent); }
+  .scenario h3 { margin-top: 8px; font-size: 23px; }
+  .steps { margin-top: 22px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; counter-reset: step; }
+  .steps div { position: relative; padding-top: 34px; color: color-mix(in srgb, var(--paper) 78%, transparent); font-size: 13px; line-height: 1.6; }
+  .steps div::before { counter-increment: step; content: counter(step); position: absolute; top: 0; left: 0; color: var(--human); font: 700 20px var(--mono); }
+  .steps strong { display: block; color: var(--paper); }
+  .contract { margin-top: 30px; display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .contract article { padding: 22px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+  .contract h3 { margin-bottom: 10px; }
+  .contract ul { margin: 0; padding-left: 1.2em; color: var(--muted); font-size: 14px; }
+  .contract li + li { margin-top: 6px; }
+  pre { margin: 20px 0 0; padding: 18px 20px; overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); color: var(--ink); font: 12.5px/1.7 var(--mono); }
+  code { padding: 2px 5px; border-radius: 4px; background: var(--surface-2); font: .88em var(--mono); }
+  pre code { padding: 0; background: none; font-size: 1em; }
+  .note { margin-top: 26px; padding: 20px 24px; border: 1px solid var(--line); border-left: 3px solid var(--violet); border-radius: 0 10px 10px 0; background: var(--surface); }
+  .note b { color: var(--violet); }
+  .feature-list { margin-top: 34px; display: grid; gap: 18px; }
+  .feature { padding: 26px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+  .feature-head { display: grid; grid-template-columns: 46px minmax(0, 1fr) auto; gap: 14px; align-items: start; }
+  .rank { width: 38px; height: 38px; display: grid; place-items: center; border-radius: 50%; background: var(--surface-2); color: var(--muted); font: 700 12px var(--mono); }
+  .tag { padding: 4px 8px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font: 600 10px var(--mono); white-space: nowrap; }
+  .feature-summary { margin: 12px 0 0 60px; max-width: 760px; color: var(--muted); }
+  .feature-grid { margin: 20px 0 0 60px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .feature-grid > div { padding-top: 14px; border-top: 1px solid var(--line); }
+  .feature-grid b { display: block; margin-bottom: 5px; color: var(--ink); font-size: 12px; }
+  .feature-grid p { color: var(--muted); font-size: 13.5px; line-height: 1.65; }
+  .principles { margin-top: 28px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .principles article { padding: 20px; border-top: 2px solid var(--violet); background: var(--surface); }
+  .principles span { display: block; margin-bottom: 8px; color: var(--violet); font: 700 11px var(--mono); }
+  .principles p { color: var(--muted); font-size: 13.5px; }
+  .roadmap { margin-top: 28px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+  .phase { padding: 22px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+  .phase b { color: var(--human); font: 700 11px var(--mono); }
+  .phase h3 { margin: 8px 0; font-size: 16px; }
+  .phase p { color: var(--muted); font-size: 13px; }
+  .measure { margin-top: 28px; padding: 20px 24px; border: 1px solid var(--line); border-left: 3px solid var(--agent); background: var(--surface); }
+  footer { margin-top: 80px; padding-top: 24px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+  a { color: inherit; }
+  @media (max-width: 760px) {
+    .page { width: min(100% - 28px, 1040px); padding-top: 36px; }
+    section { padding-top: 54px; }
+    .marks, .steps, .principles, .roadmap, .contract { grid-template-columns: 1fr; }
+    .feature-head { grid-template-columns: 42px 1fr; }
+    .tag { grid-column: 2; width: fit-content; }
+    .feature-summary, .feature-grid { margin-left: 0; }
+    .feature-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <p class="kicker">Weave · Concept Extension · Round 2 · 2026-08-11</p>
+  <h1>まだ無い形の次は、もう有る形の温度を渡す。</h1>
+  <p class="lead">ラフは「まだ存在しない形」を、位置と大きさのまま渡した。第1巡は「すでに手で直した形」を渡す案を並べた。残っているのは、いま画面にある要素の一つひとつについて、人間の頭の中だけにある<strong>決まり具合</strong>である。</p>
+  <div class="thesis">
+    <strong>本命は「決まり具合を成果物の上に置く」。</strong>
+    人間の中には常に「ここは決定」「ここは仮」の地図がある。Weaveは今、全要素を等価に扱っているため、その地図は毎ターン、チャットの「ロゴはそのままで」という一文へ書き直されている。
+  </div>
+  <nav>
+    <a href="#hole">残った穴</a>
+    <a href="#marks">本命の形</a>
+    <a href="#contract">渡すもの／渡さないもの</a>
+    <a href="#others">併走候補</a>
+    <a href="#guardrails">追加の原則</a>
+    <a href="#sequence">実装順</a>
+  </nav>
+</header>
+
+<section id="hole">
+  <p class="eyebrow">01 · Gap</p>
+  <h2>第1巡の入力マップに、割り当てられなかった行が1つある</h2>
+  <p class="section-intro">
+    <a href="./intent-handoff-features.html">第1巡の資料</a>は、失われている思考を7行に整理し、候補を6件出した。表と候補を突き合わせると、6件のどれにも対応していない行が1行だけ残る。
+  </p>
+
+  <div class="map">
+    <table>
+      <thead>
+        <tr><th>人間の思考</th><th>今の入力</th><th>第1巡での扱い</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>どこに何を置きたいか</td><td>ラフの矩形＋ラベル</td><td class="covered">実装済み</td></tr>
+        <tr><td>どの要素の話か</td><td><code>@</code> で指差す</td><td class="covered">実装済み</td></tr>
+        <tr><td>正確にどう見せたいか</td><td>直接編集・インスペクタ</td><td class="covered">候補01 お手本として渡す</td></tr>
+        <tr><td>どの案が近いか</td><td>複数提案を切り替える</td><td class="covered">候補02 良いところを摘む</td></tr>
+        <tr class="open"><td>ここだけは崩したくない</td><td>毎回チャットで説明</td><td class="missing">未割り当て</td></tr>
+        <tr><td>自分でもまだ決めきれない</td><td>曖昧なプロンプト</td><td class="covered">候補03 Agentから問い返す</td></tr>
+        <tr><td>この参考の、ここが好き</td><td>画像＋文章で説明</td><td class="covered">候補05 参照レンズ</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <p class="section-intro" style="margin-top:24px">
+    この行が残ったのは偶然ではない。候補01〜06はいずれも「これから変えたいもの」を渡す機能で、<strong>「変えないでほしいもの」を渡す機能が1つも無かった</strong>。ところが実際の制作では、確定した部分のほうが先に増えていく。表紙のロゴ、承認済みの数字、社名の表記。作業が進むほど、人間はチャットに保護のための一文を足し続けることになる。
+  </p>
+  <p class="section-intro" style="margin-top:16px">
+    そして「まだ決めきれない」の裏返しも同じ場所にある。仮置きのダミー文は、見た目の上では確定した本文と区別がつかない。Agentから見ると、削っていい文と触ってはいけない文が同じ重みで並んでいる。<strong>失われているのは要素そのものではなく、要素に対する人間の確信の強さ</strong>である。
+  </p>
+</section>
+
+<section id="marks">
+  <p class="eyebrow">02 · First feature</p>
+  <h2>決まり具合マーク — Firm / Draft</h2>
+  <p class="section-intro">
+    要素を選んで1キー。状態は3つだが、印が付くのは2つだけで、<strong>無印が既定＝今までと完全に同じ挙動</strong>である。新しい義務は誰にも発生しない。
+  </p>
+
+  <div class="marks">
+    <article class="mark firm">
+      <span class="chip">FIRM</span>
+      <b>決まっている</b>
+      <p>承認済みの数字、確定した見出し、ロゴ。Agentは指示が明示的にそこを指さない限り、文言・サイズ・位置を保つ。</p>
+    </article>
+    <article class="mark open">
+      <span class="chip">— (既定)</span>
+      <b>自由</b>
+      <p>無印。印を付けたことがないプロジェクトは、今日のWeaveとバイト単位で同じ状態のまま動く。</p>
+    </article>
+    <article class="mark draft">
+      <span class="chip">DRAFT</span>
+      <b>仮置き</b>
+      <p>置いてあるだけのダミー、後で差し替える写真、まだ言葉になっていない一文。Agentは優先的に埋め、何を仮定したかを述べる。</p>
+    </article>
+  </div>
+
+  <div class="scenario">
+    <p class="eyebrow">Example · 4 actions</p>
+    <h3>「ロゴと数字はそのままで」を、二度と書かなくてよくなる。</h3>
+    <div class="steps">
+      <div><strong>印を付ける</strong>承認済みの数字カードと表紙ロゴを選び、Firm。差し替え前提の写真枠は Draft。</div>
+      <div><strong>普通に頼む</strong>「もっと落ち着いた見た目に」とだけ書く。保護のための一文は要らない。</div>
+      <div><strong>Agentが読む</strong>Firmのidは保ち、Draftのidは自分の判断で埋める。envelopeの2行が根拠になる。</div>
+      <div><strong>印が残る</strong>印は保存され、翌日のターンにも、案のブランチにも同じ地図が付いてくる。</div>
+    </div>
+  </div>
+
+  <div class="note">
+    <p><b>ラフとの対称性。</b> ラフモードは「まだ無い場所」に矩形を置く。決まり具合マークは「もう有る要素」に温度を置く。注釈レイヤーが決めた2つの入口——空間をドラッグする（D10）と、既存要素を指す（D9）——のうち、後者の語彙をそのまま延ばしたものにあたる。新しいモードは要らない。</p>
+  </div>
+
+  <div class="note" style="border-left-color:var(--human)">
+    <p><b>承認ゲートではない。</b> Firmは、人間の直接編集もAgentの書き込みもシステム的には止めない。止めると <code>concept.md</code> 2.1 の「承認ゲートを設けず無条件上書き、undoはgitで一元化」が崩れ、保存経路が二重になる。マークが変えるのは<strong>Agentの判断材料</strong>だけであり、外れたときの復旧はこれまでどおり履歴が担う。禁止ではなく意図を渡す、というのがラフ以来の一貫した姿勢でもある。</p>
+  </div>
+</section>
+
+<section id="contract">
+  <p class="eyebrow">03 · Handoff</p>
+  <h2>Agentへ渡すもの、渡さないもの</h2>
+  <p class="section-intro">
+    追加は <code>shared/context.mjs</code> の <code>editorEnvelope</code> に1キー、<code>contextPromptRules</code> に2文。既存の <code>selected</code> / <code>annotations</code> / <code>overflowing</code> と同じ層に並ぶ。
+  </p>
+
+  <pre><code>{
+  "slide": "s2",
+  "selected": { "id": "heading-a1", "kind": "h1", "text": "..." },
+  "marks": {
+    "firm":  ["logo-x7", "metrics-c3"],
+    "draft": ["image-b2"]
+  }
+}
+
+// contextPromptRules への追記
+marks.firm lists data-weave-ids the human considers settled:
+  preserve their text, size, and position unless the instruction names them.
+marks.draft lists ids the human left provisional:
+  prefer filling or replacing them, and state what you assumed.</code></pre>
+
+  <div class="contract">
+    <article>
+      <h3>渡すもの</h3>
+      <ul>
+        <li>Firm / Draft を付けた要素の <code>data-weave-id</code> の並び</li>
+        <li>そのスライドの範囲に限った印（デッキ全体の一覧は送らない）</li>
+        <li>印の意味を説明する2文のルール</li>
+        <li>任意のチャット文。空でも成立する</li>
+      </ul>
+    </article>
+    <article>
+      <h3>渡さないもの</h3>
+      <ul>
+        <li>「変更禁止」という強制。Agentは指示があれば触ってよい</li>
+        <li>印を付けた理由の入力欄。理由を要求した瞬間にフォームが増える</li>
+        <li>印の変更履歴。今の地図だけを渡す</li>
+        <li>印から自動生成した永続ルール（候補04「決定の糸」の領分）</li>
+      </ul>
+    </article>
+  </div>
+
+  <div class="note">
+    <p><b>印はどこに残るか。</b> 保存HTMLの <code>data-weave-mark="firm"</code> 属性として持つ。ラフ（D3・非永続）と違い、「崩さないでほしい」は複数ターンにまたがる要求なので、セッション限りにすると毎朝付け直しになって価値の大半が消える。属性なのでgit履歴に乗り、案のブランチをまたいでも付いてくる。<strong>エクスポート時には <code>data-weave-id</code> と同じ経路で落とす</strong>ので、成果物の見た目にも出力にも影響しない。印を付けた要素にだけ属性が書かれるため、diffも汚れない。</p>
+  </div>
+
+  <div class="measure">
+    <p><strong>成功条件。</strong> チャット入力から「〜はそのままで」「〜は触らないで」という保護の一文が消えること。副次的に、Firmを付けた要素がAgentのターンで書き換わった回数が測れるようになり、これはAgentの指示追従性そのものの指標になる。減らなければ、印は純粋な手間である（第1巡の原則06）。</p>
+  </div>
+</section>
+
+<section id="others">
+  <p class="eyebrow">04 · Candidates</p>
+  <h2>併走候補</h2>
+  <p class="section-intro">第1巡の6件と重複しない、第2巡で新たに立てた候補。いずれも既存の仕組みの上に乗る。</p>
+
+  <div class="feature-list">
+    <article class="feature">
+      <div class="feature-head">
+        <span class="rank">07</span>
+        <h3>行き止まりの記憶 — 戻したことを、そのターンだけ伝える</h3>
+        <span class="tag">Zero gesture</span>
+      </div>
+      <p class="feature-summary">人間がAgentの出力をundoした、案を却下した。これは「違う」という最も強い信号なのに、今は完全に捨てられていて、Agentは次のターンで同じ方向を再提案する。直前のターンが取り消されたときだけ、その差分の要約を1件、次のenvelopeに載せる。</p>
+      <div class="feature-grid">
+        <div><b>拾う思考</b><p>言葉にする価値も感じないほど即座の拒否。「これじゃない」と手が動いた事実そのもの。</p></div>
+        <div><b>重要な制約</b><p>永続化しない。1件だけ。画面にチップとして見せ、外せる。操作ミスのundoを恒久的な学習にしない。</p></div>
+      </div>
+    </article>
+
+    <article class="feature">
+      <div class="feature-head">
+        <span class="rank">08</span>
+        <h3>重ねて比べる — 差そのものを知覚できるようにする</h3>
+        <span class="tag">Variation</span>
+      </div>
+      <p class="feature-summary">複数提案の閲覧はタブ切り替え＝逐次比較で、人間は細部の差を知覚できない。ラフの重ね照合（R11）と同じ機構を案どうしへ向け、2案を半透明で重ねる。ずれている場所が視覚的に浮かび、その場所を指して選べる。</p>
+      <div class="feature-grid">
+        <div><b>拾う思考</b><p>比較して初めて生まれる好み。候補02「良いところを摘む」は、この知覚が先に無いと成立しない。</p></div>
+        <div><b>既存資産</b><p>案ブランチとタブ切替、recallレイヤーの重ね描画。新しいデータ形式をほとんど必要としない。</p></div>
+      </div>
+    </article>
+
+    <article class="feature">
+      <div class="feature-head">
+        <span class="rank">09</span>
+        <h3>関係を引く — 要素と要素の間にあるもの</h3>
+        <span class="tag">Reserved · D11</span>
+      </div>
+      <p class="feature-summary">「この3つはこの順に流れる」「この枠はこの見出しの補足」は、矩形とラベルの組では言えない。注釈レイヤー設計 D11 が形を予約済みで、座標の線ではなく<strong>2つの注釈を結ぶ辺</strong>として持つ。要素→矩形（この見出しを、右のこの枠へ）が最も効く。</p>
+      <div class="feature-grid">
+        <div><b>拾う思考</b><p>プロジェクト思想が明示している「物事の関係性」。単体の位置と大きさでは表現できない層。</p></div>
+        <div><b>着手時期</b><p>設計書の判断に従い、ラフの往復回数の測定より後。矩形だけで減らないなら、辺を足しても減らない。</p></div>
+      </div>
+    </article>
+  </div>
+</section>
+
+<section id="guardrails">
+  <p class="eyebrow">05 · Guardrails</p>
+  <h2>第1巡の6原則に足す3つ</h2>
+  <div class="principles">
+    <article>
+      <span>07</span>
+      <h3 style="font-size:15px;margin-bottom:8px">既定を動かさない</h3>
+      <p>何も印を付けなければ、挙動は今日とまったく同じ。新しい入力チャネルは、使わない人に義務を作ってはいけない。</p>
+    </article>
+    <article>
+      <span>08</span>
+      <h3 style="font-size:15px;margin-bottom:8px">禁止ではなく意図を渡す</h3>
+      <p>システムが変更を止めた瞬間、承認ゲートが復活し、undoの一元性（2.1）が崩れる。印はAgentの判断材料に留める。</p>
+    </article>
+    <article>
+      <span>09</span>
+      <h3 style="font-size:15px;margin-bottom:8px">印は出力に残らない</h3>
+      <p>編集のための情報は、成果物の見た目とエクスポートに出ない。<code>data-weave-id</code> がすでに通っている道をそのまま使う。</p>
+    </article>
+  </div>
+</section>
+
+<section id="sequence">
+  <p class="eyebrow">06 · Sequence</p>
+  <h2>推奨する実装順</h2>
+  <div class="roadmap">
+    <article class="phase">
+      <b>PHASE 1</b>
+      <h3>決まり具合を渡す</h3>
+      <p>Firm / Draft。envelopeに1キー、プロンプトに2文、属性1つ。第1巡の候補01より小さく、候補01の暴発も抑える。</p>
+    </article>
+    <article class="phase">
+      <b>PHASE 2</b>
+      <h3>実演を渡す</h3>
+      <p>第1巡の本命「お手本として渡す」。Firmが先にあると、展開してよい範囲がAgent側で自然に絞られる。</p>
+    </article>
+    <article class="phase">
+      <b>PHASE 3</b>
+      <h3>比較を渡す</h3>
+      <p>重ねて比べる → 良いところを摘む。差の知覚を作ってから、部分選択を載せる。</p>
+    </article>
+    <article class="phase">
+      <b>PHASE 4</b>
+      <h3>面を共有する</h3>
+      <p>Agentからの問い返し、決定の糸、関係を引く。指示面を共同思考の面へ変える段階。</p>
+    </article>
+  </div>
+  <div class="measure">
+    <p><strong>判断。</strong> Phase 1 を先に置くのは、それが最も小さいからではなく、<strong>他のどの機能よりも早く効果が測れる</strong>から。保護の一文がチャットから消えたかどうかは、追加の計測機構なしにログを読めば分かる。</p>
+  </div>
+</section>
+
+<footer>
+  根拠: <a href="./intent-handoff-features.html">思考をAgentへ渡す、次の機能（第1巡）</a>、<code>concept.md</code> 1 / 2.1 / 2.5、<code>docs/annotation-layer-design.md</code> D3 / D9 / D10 / D11、<code>shared/context.mjs</code> の <code>editorEnvelope</code> と <code>contextPromptRules</code>。これは機能提案であり、データ形式とAPIの確定仕様ではない。
+</footer>
+
+</div>
+</body>
+</html>
