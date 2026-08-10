@@ -373,7 +373,8 @@ export default function Home() {
   const agentRunning = selectThreadRunning(codexState, codexState.activeThreadId);
   const activeTurns = selectThreadTurns(codexState, codexState.activeThreadId);
   const visibleTurns = activeTurns.slice(-100);
-  const slideScale = manualZoom ?? fitScale;
+  const zoomLevel = manualZoom ?? defaultCanvasZoom;
+  const slideScale = fitScale * zoomLevel;
   const activeSlideId = slides[activeSlide - 1]?.id;
   const activeAnnotations = annotations.filter((annotation) => annotation.slideId === activeSlideId);
   const activeRegionAnnotations = activeAnnotations.filter((annotation) => annotation.target.kind === "region");
@@ -2416,7 +2417,7 @@ export default function Home() {
                 </div>
                 <div
                   className="slide-viewport"
-                  data-zoom-mode={manualZoom == null ? "fit" : "manual"}
+                  data-zoom-mode={zoomLevel <= defaultCanvasZoom ? "fit" : "manual"}
                   data-annotation-mode={annotationMode ? "true" : undefined}
                   data-pointer-picking={pointerPicking ? "true" : undefined}
                   ref={(node) => { viewportRef.current = node; canvasRef.current = node; }}
@@ -2475,10 +2476,10 @@ export default function Home() {
                     <button onClick={deleteSlide} disabled={slides.length <= 1}>Delete</button>
                   </div>
                   <div className="canvas-tool-group zoom-tools" role="group" aria-label="Canvas zoom">
-                    <button aria-label="Zoom out" onClick={() => setManualZoom(Math.max(.25, (manualZoom ?? fitScale) - .1))}>−</button>
-                    <b>{Math.round(slideScale * 100)}%</b>
-                    <button aria-label="Zoom in" onClick={() => setManualZoom(Math.min(4, (manualZoom ?? fitScale) + .1))}>＋</button>
-                    <button aria-label="Actual size" onClick={() => setManualZoom(1)}>100</button>
+                    <button aria-label="Zoom out" onClick={() => setManualZoom(Math.max(.25, zoomLevel - .1))}>−</button>
+                    <b>{Math.round(zoomLevel * 100)}%</b>
+                    <button aria-label="Zoom in" onClick={() => setManualZoom(Math.min(4, zoomLevel + .1))}>＋</button>
+                    <button aria-label="Reset zoom to 100%" onClick={() => setManualZoom(defaultCanvasZoom)}>100</button>
                     <button aria-label="Fit to screen" onClick={() => setManualZoom(null)}>⊡</button>
                     <button
                       className={canvasFocused ? "active" : ""}

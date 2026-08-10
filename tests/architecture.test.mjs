@@ -189,6 +189,11 @@ test("the slide canvas opens at 100% zoom", async () => {
   ]);
   assert.match(page, /const defaultCanvasZoom = 1;/);
   assert.match(page, /useState<number \| null>\(defaultCanvasZoom\)/);
+  assert.match(page, /const zoomLevel = manualZoom \?\? defaultCanvasZoom;/);
+  assert.match(page, /const slideScale = fitScale \* zoomLevel;/);
+  assert.match(page, /data-zoom-mode=\{zoomLevel <= defaultCanvasZoom \? "fit" : "manual"\}/);
+  assert.match(page, /Math\.round\(zoomLevel \* 100\)/);
+  assert.match(page, /aria-label="Reset zoom to 100%" onClick=\{\(\) => setManualZoom\(defaultCanvasZoom\)\}/);
   assert.match(page, /aria-label="Fit to screen" onClick=\{\(\) => setManualZoom\(null\)\}/);
   assert.match(page, /const \[inspectorOpen, setInspectorOpen\] = useState\(true\)/);
   assert.match(page, /data-focus=\{canvasFocused \? "canvas" : "workspace"\}/);
