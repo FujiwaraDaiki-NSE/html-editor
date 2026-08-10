@@ -389,11 +389,13 @@ body {
 .annotation-box.selected { border-width: calc(3px / var(--slide-scale)); }
 .annotation-box.annotation-draft { border-style: dashed; box-shadow: none; }
 /* The ghost shows the artifact it is asking for — a dashed frame — so the shape teaches the
-   gesture. It stays an outline rather than a filled panel: the slide has to read through it. */
-.annotation-empty-state { position: absolute; left: 50%; top: 50%; width: calc(420px / var(--slide-scale)); padding: calc(24px / var(--slide-scale)) calc(28px / var(--slide-scale)); translate: -50% -50%; display: grid; gap: calc(5px / var(--slide-scale)); justify-items: center; border: calc(2px / var(--slide-scale)) dashed color-mix(in srgb, var(--accent) 52%, transparent); border-radius: calc(10px / var(--slide-scale)); background: color-mix(in srgb, var(--panel) 26%, transparent); color: var(--accent); text-align: center; pointer-events: none; }
-.annotation-empty-state strong { font: 700 calc(19px / var(--slide-scale))/1.35 Arial, sans-serif; }
-.annotation-empty-state span { font: 400 calc(14px / var(--slide-scale))/1.4 Arial, sans-serif; opacity: .82; }
-.annotation-empty-state small { margin-top: calc(7px / var(--slide-scale)); font: 400 calc(11px / var(--slide-scale))/1.4 Arial, sans-serif; opacity: .58; }
+   gesture. It stays an outline rather than a filled panel: the slide has to read through it.
+   Unlike everything else in this layer it is chrome, so it is sized in screen px and centred on
+   the viewport rather than on the 1280x720 design box. */
+.annotation-empty-state { position: absolute; z-index: 2; left: 50%; top: 50%; width: min(420px, 78%); padding: 22px 26px; translate: -50% -50%; display: grid; gap: 5px; justify-items: center; border: 2px dashed color-mix(in srgb, var(--accent) 52%, transparent); border-radius: 10px; background: color-mix(in srgb, var(--panel) 26%, transparent); color: var(--accent); text-align: center; pointer-events: none; }
+.annotation-empty-state strong { font: 700 17px/1.35 Arial, sans-serif; }
+.annotation-empty-state span { font: 400 13px/1.4 Arial, sans-serif; opacity: .82; }
+.annotation-empty-state small { margin-top: 6px; font: 400 10px/1.4 Arial, sans-serif; opacity: .58; }
 .annotation-order, .annotation-delete, .annotation-handle, .annotation-label, .annotation-label-static { position: absolute; z-index: 1; }
 .annotation-overlay-layer.interactive .annotation-order, .annotation-overlay-layer.interactive .annotation-delete, .annotation-overlay-layer.interactive .annotation-handle, .annotation-overlay-layer.interactive .annotation-label { pointer-events: auto; }
 .annotation-order, .annotation-delete { top: calc(4px / var(--slide-scale)); height: calc(22px / var(--slide-scale)); border: calc(1px / var(--slide-scale)) solid color-mix(in srgb, var(--accent) 70%, #211a0f); background: var(--accent); color: #211a0f; font: 700 calc(11px / var(--slide-scale))/1 Arial, sans-serif; }

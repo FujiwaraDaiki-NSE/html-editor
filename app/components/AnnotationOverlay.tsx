@@ -148,6 +148,17 @@ export function AnnotationOverlay({
   });
 
   return (
+    <>
+      {/* The ghost is chrome, not slide content: it hangs off the viewport-sized overlay rather
+          than the 1280x720 layer, so it stays centred on what the human can actually see at any
+          zoom — and whatever size the deck's own slide root happens to render at. */}
+      {interactive && annotations.length === 0 && (
+        <div className="annotation-empty-state" aria-hidden="true">
+          <strong>Drag to draw a frame</strong>
+          <span>→ then write what goes in it</span>
+          <small>Frames are sent to Agent together</small>
+        </div>
+      )}
     <div className="annotation-overlay-scroll" ref={scrollRef}>
       {recalledAnnotations.length > 0 && (
         <div className="annotation-overlay-layer annotation-recall-layer" aria-hidden="true">
@@ -164,13 +175,6 @@ export function AnnotationOverlay({
         </div>
       )}
       <div className={`annotation-overlay-layer ${interactive ? "interactive" : "readonly"}`}>
-        {interactive && annotations.length === 0 && (
-          <div className="annotation-empty-state" aria-hidden="true">
-            <strong>Drag to draw a frame</strong>
-            <span>→ then write what goes in it</span>
-            <small>Frames are sent to Agent together</small>
-          </div>
-        )}
         {annotations.map((annotation) => (
           <div
             className={`annotation-box annotation-${annotation.target.kind} ${selectedId === annotation.id ? "selected" : ""}`}
@@ -242,5 +246,6 @@ export function AnnotationOverlay({
       </div>
       {pointerPicking && <PointerPickingLayer candidates={pointerCandidates} annotations={annotations} onPick={onPointerPick} onCancel={onPointerPickCancel} />}
     </div>
+    </>
   );
 }
