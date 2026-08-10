@@ -1615,12 +1615,6 @@ export default function Home() {
   const onPromptKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     const nativeEvent = event.nativeEvent as KeyboardEvent;
     const isComposing = compositionRef.current || nativeEvent.isComposing || nativeEvent.keyCode === 229;
-    if (event.key === "Escape" && pointerPicking) {
-      event.preventDefault();
-      setPointerPicking(false);
-      setAnnouncement("Element pointing canceled");
-      return;
-    }
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !isComposing) { event.preventDefault(); void sendMessage(); }
   };
 
