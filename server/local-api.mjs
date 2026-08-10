@@ -23,6 +23,7 @@ import {
 } from "./project.mjs";
 import { CodexService } from "./codex/service.mjs";
 import { annotationPromptRules, canSendTurn } from "../shared/annotation.mjs";
+import { contextPromptRules, editorEnvelope } from "../shared/context.mjs";
 
 const apiPort = Number(process.env.WEAVE_API_PORT ?? 4317);
 const codex = new CodexService({ projectRoot, instructions: agentInstructions });
@@ -106,9 +107,11 @@ function activeProjectTurn() {
 
 function serializeEditorContext(payload) {
   if (!payload.contextEnvelope || typeof payload.contextEnvelope !== "object") return "";
-  const annotations = Array.isArray(payload.contextEnvelope.annotations) ? payload.contextEnvelope.annotations : [];
+  const envelope = editorEnvelope(payload.contextEnvelope);
+  if (Object.keys(envelope).length === 0) return "";
+  const annotations = Array.isArray(envelope.annotations) ? envelope.annotations : [];
   const annotationRules = annotations.length > 0 ? `\n\nAnnotation interpretation rules:\n${annotationPromptRules}` : "";
-  return `\n\nEditor context envelope (authoritative for this turn):\n${JSON.stringify(payload.contextEnvelope).slice(0, 120_000)}${annotationRules}`;
+  return `\n\nEditor context envelope:\n${JSON.stringify(envelope)}\n\nContext rules:\n${contextPromptRules}${annotationRules}`;
 }
 
 async function startEditorTurn(payload, { variation = false } = {}) {
@@ -123,7 +126,6 @@ async function startEditorTurn(payload, { variation = false } = {}) {
   });
   const context = `${variation ? "Create a meaningfully different, polished direction. " : ""}User request: ${prompt}
 
-Current editor selection: ${String(payload.selectedId ?? "none")}
 The latest editor state has been written to slides/*.html.
 Inspect the current project and edit the slides/*.html files directly. Do not edit styles/deck.css.
 Do not commit; Weave will commit after this turn.${serializeEditorContext(payload)}`;
