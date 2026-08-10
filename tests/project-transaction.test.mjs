@@ -100,6 +100,32 @@ test("writes keep policy failures inspectable until the commit gate", async () =
   }
 });
 
+test("unmanaged files do not block project transactions", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weave-managed-status-"));
+  const previousRoot = process.env.WEAVE_PROJECT_ROOT;
+  process.env.WEAVE_PROJECT_ROOT = root;
+  try {
+    const project = await import(`../server/project.mjs?managed-status=${Date.now()}`);
+    await project.ensureProject();
+    await mkdir(join(root, "plans"));
+    await writeFile(join(root, "plans", "2026-01-01-note.md"), "stray note\n");
+
+    assert.notEqual(git(root, ["status", "--porcelain"]), "");
+    assert.equal(project.projectState().project.clean, true);
+    await project.assertSwitchable();
+
+    const current = await project.readProject();
+    await project.writeProject({ ...current, title: "Managed change" });
+    assert.equal(project.projectState().project.clean, false);
+    project.commitIfChanged("Save managed change");
+    assert.equal(project.projectState().project.clean, true);
+  } finally {
+    if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
+    else process.env.WEAVE_PROJECT_ROOT = previousRoot;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("image assets are content-addressed, deduplicated, and SVG-audited", async () => {
   const root = await mkdtemp(join(tmpdir(), "weave-assets-"));
   const previousRoot = process.env.WEAVE_PROJECT_ROOT;

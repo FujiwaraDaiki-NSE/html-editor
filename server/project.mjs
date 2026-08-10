@@ -390,8 +390,19 @@ export async function assertCommittable() {
   }
 }
 
+/* Clean checks cover only what Weave commits; status accepts missing pathspecs, while add does not. */
+/* Keep optional paths in status so a tracked-but-deleted assets or templates directory remains dirty. */
+const managedPaths = [".weave/deck.json", "slides", "styles", "AGENTS.md", "assets", "templates"];
+
+function managedStatus() {
+  return runGit(["status", "--porcelain", "--", ...managedPaths]);
+}
+
 export function commitIfChanged(message) {
-  runGit(["add", ".weave/deck.json", "slides", "styles", "AGENTS.md", ...(existsSync(assetsRoot()) ? ["assets"] : []), ...(existsSync(templatesRoot()) ? ["templates"] : [])]);
+  const pathsToAdd = managedPaths
+    .filter((path) => path !== "assets" && path !== "templates")
+    .concat(existsSync(assetsRoot()) ? ["assets"] : [], existsSync(templatesRoot()) ? ["templates"] : []);
+  runGit(["add", ...pathsToAdd]);
   if (!runGit(["diff", "--cached", "--name-only"])) return null;
   runGit(["-c", "user.name=Weave", "-c", "user.email=weave@localhost", "commit", "-m", message.slice(0, 180)]);
   return runGit(["rev-parse", "HEAD"]);
@@ -432,14 +443,14 @@ export function projectState() {
       branch: runGit(["branch", "--show-current"]) || "detached",
       commit: runGit(["rev-parse", "--short", "HEAD"]),
       revision: getRevision(),
-      clean: runGit(["status", "--porcelain"]) === "",
+      clean: managedStatus() === "",
     },
   };
 }
 
 export async function checkoutHistory(commit) {
   if (!/^[0-9a-f]{7,40}$/i.test(commit)) throw new Error("Invalid history id.");
-  if (runGit(["status", "--porcelain"])) throw new Error("Save the current changes before restoring history.");
+  if (managedStatus()) throw new Error("Save the current changes before restoring history.");
   runGit(["cat-file", "-e", `${commit}^{commit}`]);
   if (runGit(["branch", "--show-current"]) !== "main") runGit(["checkout", "main"]);
   runGit(["restore", "--source", commit, "--staged", "--worktree", "--", ".weave/deck.json", "slides", "styles", "AGENTS.md"]);
@@ -450,19 +461,19 @@ export async function checkoutHistory(commit) {
 }
 
 export function checkoutMain() {
-  if (runGit(["status", "--porcelain"])) throw new Error("Save the current changes before returning to the latest version.");
+  if (managedStatus()) throw new Error("Save the current changes before returning to the latest version.");
   runGit(["checkout", "main"]);
 }
 
 export function checkoutVariation(branch) {
-  if (runGit(["status", "--porcelain"])) throw new Error("Save current changes before switching directions.");
+  if (managedStatus()) throw new Error("Save current changes before switching directions.");
   const allowed = branch === "main" || getVariations().some((item) => item.branch === branch);
   if (!allowed) throw new Error("Unknown direction.");
   runGit(["checkout", branch]);
 }
 
 export function createVariationBranch() {
-  if (runGit(["status", "--porcelain"])) throw new Error("Save current changes before creating a direction.");
+  if (managedStatus()) throw new Error("Save current changes before creating a direction.");
   if (runGit(["branch", "--show-current"]) !== "main") runGit(["checkout", "main"]);
   const existing = new Set(getVariations().map((item) => item.branch));
   let index = 0;
@@ -476,7 +487,7 @@ export function createVariationBranch() {
 }
 
 export function acceptVariation() {
-  if (runGit(["status", "--porcelain"])) throw new Error("The current direction has uncommitted changes.");
+  if (managedStatus()) throw new Error("The current direction has uncommitted changes.");
   const selected = runGit(["branch", "--show-current"]);
   if (!selected.startsWith("weave/variation/")) throw new Error("Select a generated direction first.");
   const variations = getVariations();
@@ -489,7 +500,7 @@ export function acceptVariation() {
 }
 
 export function archiveVariation() {
-  if (runGit(["status", "--porcelain"])) throw new Error("The current direction has uncommitted changes.");
+  if (managedStatus()) throw new Error("The current direction has uncommitted changes.");
   const selected = runGit(["branch", "--show-current"]);
   if (!selected.startsWith("weave/variation/")) throw new Error("Select a generated direction first.");
   runGit(["checkout", "main"]);
@@ -670,7 +681,7 @@ async function persistCurrentProject() {
 }
 
 export async function assertSwitchable(targetSlug = null) {
-  if (runGit(["status", "--porcelain"])) throw Object.assign(new Error("The current project has uncommitted changes."), { code: "WEAVE_PROJECT_DIRTY" });
+  if (managedStatus()) throw Object.assign(new Error("The current project has uncommitted changes."), { code: "WEAVE_PROJECT_DIRTY" });
   if (getVariations().length) throw Object.assign(new Error("Current project has open proposal branches."), { code: "WEAVE_PROJECT_BLOCKED" });
   if (targetSlug) {
     const target = join(workspacesRoot, assertSlug(targetSlug));

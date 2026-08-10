@@ -62,6 +62,9 @@ test("projects are independent repositories with lifecycle operations", async ()
 
     await project.switchProject(copy);
     await writeFile(join(workspaces, copy, "dirty.txt"), "dirty");
+    await project.switchProject(slug);
+    await project.switchProject(copy);
+    await writeFile(join(workspaces, copy, "slides", "dirty.html"), "<main></main>");
     await assert.rejects(project.switchProject(slug), (error) => error.code === "WEAVE_PROJECT_DIRTY");
     git(join(workspaces, copy), ["clean", "-fd"]);
     git(join(workspaces, slug), ["branch", "weave/variation/open"]);
