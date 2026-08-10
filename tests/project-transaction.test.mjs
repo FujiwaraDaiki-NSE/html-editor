@@ -19,11 +19,12 @@ test("deck saves are revision-guarded, replace slide files, and restore history 
     const initialRevision = project.getRevision();
     assert.match(initialRevision, /^[0-9a-f]{40}$/);
     assert.equal(project.projectState().project.revision, initialRevision);
-    assert.equal(git(root, ["ls-files", ".weave/current-buffer.json"]), "");
+    assert.equal((await readdir(join(root, ".weave"))).includes("current-buffer.json"), false);
 
     const onlySlide = { ...initial.slides[0], id: "renamed-slide", title: "Renamed and saved" };
     const saved = { title: "Transactional deck", slides: [onlySlide] };
     await project.writeProject(saved, initialRevision);
+    assert.equal((await readdir(join(root, ".weave"))).includes("current-buffer.json"), false);
     assert.deepEqual(await readdir(join(root, "slides")), ["renamed-slide.html"]);
     const savedCommit = project.commitIfChanged("Save transactional deck");
     assert.match(savedCommit, /^[0-9a-f]{40}$/);
