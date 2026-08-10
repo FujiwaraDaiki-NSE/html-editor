@@ -124,7 +124,8 @@ const relayoutForParent = (node: Element, intent: string, fromLayout: string): s
 };
 
 type Control = { key: string; label: string; options: Array<{ label: string; className: string }> };
-const controlsFor = (keys: string[]): Control[] => keys.map((key) => ({ key, label: slideControlGroups[key].label, options: slideControlGroups[key].options }));
+const controlGroups = slideControlGroups as Record<string, { label: string; options: Array<{ label: string; className: string }> }>;
+const controlsFor = (keys: string[]): Control[] => keys.map((key) => ({ key, label: controlGroups[key].label, options: controlGroups[key].options }));
 const textSchema = controlsFor(textControlKeys);
 const containerSchema = controlsFor(containerControlKeys);
 const advancedSchema = controlsFor(advancedControlKeys);
@@ -156,7 +157,7 @@ type OutlineItem = { id: string; label: string; kind: string; depth: number; con
 /* Where a tree row drop lands: beside the target, or as the last child when the target is a container. */
 type TreeDrop = { id: string | null; position: "before" | "after" | "inside" };
 
-type Snapshot = { title: string; slides: SlideDoc[]; activeSlide: number; selectedId: string | null };
+type Snapshot = { title: string; slides: SlideDoc[]; activeSlide: number; selectedId: string | null; annotations: Annotation[] };
 type BlockDragSession = {
   id: string;
   node: HTMLElement;
@@ -331,6 +332,7 @@ export default function Home() {
   const turnInFlightRef = useRef(false);
   const shouldAutoScrollRef = useRef(true);
   const eventSequenceRef = useRef(0);
+  const editGenerationRef = useRef(0);
   const undoRef = useRef<Snapshot[]>([]);
   const deckLoadedRef = useRef(false);
   const redoRef = useRef<Snapshot[]>([]);
@@ -345,6 +347,7 @@ export default function Home() {
   // Preview stays outside slide state so save, sync, and undo cannot observe a candidate frame.
   const templatePreviewHtmlRef = useRef<string | null>(null);
   const templatePreviewSourceHtmlRef = useRef<string | null>(null);
+  const markDirty = () => { editGenerationRef.current += 1; setSaved(false); };
 
   const agentReady = codexState.connection.status === "connected";
   const agentRunning = selectThreadRunning(codexState, codexState.activeThreadId);
@@ -454,9 +457,16 @@ export default function Home() {
     return list.map((slide, index) => (index === activeRef.current - 1 ? { ...slide, title: title ?? slide.title, html } : slide));
   };
 
-  const syncFromDom = () => { setSlidesSynced(captureActive()); setSaved(false); };
+  const syncFromDom = () => {
+    setSlidesSynced(captureActive());
+    markDirty();
+    requestAnimationFrame(() => {
+      const slide = slidesRef.current[activeRef.current - 1];
+      if (slide && viewportRef.current) setAnnotations((current) => refreshSlideAnnotations(current, slide.id, liveAnnotationBoxes()));
+    });
+  };
 
-  const snapshot = (): Snapshot => ({ title: deckTitle, slides: captureActive().map((slide) => ({ ...slide })), activeSlide: activeRef.current, selectedId: selectedRef.current });
+  const snapshot = (): Snapshot => ({ title: deckTitle, slides: captureActive().map((slide) => ({ ...slide })), activeSlide: activeRef.current, selectedId: selectedRef.current, annotations: annotations.map(cloneAnnotation) });
   const restoreSnapshot = (value: Snapshot) => {
     setDeckTitle(value.title);
     setSlidesSynced(value.slides.map((slide) => ({ ...slide })));
@@ -464,7 +474,8 @@ export default function Home() {
     setActiveSlideSynced(value.activeSlide);
     selectedRef.current = value.selectedId;
     setSelectedId(value.selectedId);
-    setSaved(false);
+    setAnnotations(value.annotations.map(cloneAnnotation));
+    markDirty();
     reinject();
   };
   const checkpoint = () => { undoRef.current = [...undoRef.current.slice(-79), snapshot()]; redoRef.current = []; setHistoryState({ undo: undoRef.current.length, redo: 0 }); };
@@ -513,14 +524,14 @@ export default function Home() {
       setSlides(nextSlides);
       setDeckCss(state.css?.includes("weave-tailwind-slide-v1") ? state.css : defaultDeckCss);
       setTemplates(state.templates ?? []);
-      setHistory(state.history);
-      setVariations(state.variations ?? []);
-      setProject(state.project);
-      setServerRevision(state.project.revision ?? state.project.commit);
-      setActiveVariation(state.project.branch);
       setSaved(state.project.clean);
       reinject();
     }
+    setHistory(state.history);
+    setVariations(state.variations ?? []);
+    setProject(state.project);
+    setServerRevision(state.project.revision ?? state.project.commit);
+    setActiveVariation(state.project.branch);
     dispatchCodex({ type: "connection", connection: { status: state.codex.ready ? "connected" : state.codex.version?.compatible === false ? "incompatible" : "connecting", error: state.codex.version?.message ?? null, cliVersion: state.codex.version?.running } });
     dispatchCodex({ type: "catalog", catalog: state.codex.catalog });
     dispatchCodex({ type: "pendingRequests", requests: state.codex.pendingRequests });
@@ -576,9 +587,18 @@ export default function Home() {
             if (!line.trim()) continue;
             const envelope = JSON.parse(line);
             eventSequenceRef.current = Math.max(eventSequenceRef.current, envelope.sequence ?? 0);
-            if (envelope.type === "weave/project") {
+            if (envelope.type === "weave/project" || envelope.type === "codex/gap") {
+              const generation = editGenerationRef.current;
               const stateResponse = await fetch(`${apiBase}/state`);
-              if (stateResponse.ok) applyServerState(await stateResponse.json());
+              if (stateResponse.ok) {
+                const state = await stateResponse.json();
+                const unchanged = generation === editGenerationRef.current;
+                applyServerState(state, unchanged);
+                if (!unchanged) {
+                  markDirty();
+                  setApiError("The project changed on disk while you were editing. Your local edits were kept; save again to reconcile them.");
+                }
+              }
               continue;
             }
             const action = actionFromStreamEvent(envelope);
@@ -1109,6 +1129,11 @@ export default function Home() {
 
   const onCanvasDragOver = (event: DragEvent<HTMLDivElement>) => {
     if (annotationMode) { event.preventDefault(); event.stopPropagation(); return; }
+    if (Array.from(event.dataTransfer.items).some((item) => item.kind === "file")) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      return;
+    }
     const session = blockDragRef.current;
     const host = canvasRef.current;
     if (!session || !host) return;
@@ -1293,16 +1318,21 @@ export default function Home() {
   };
 
   const uploadImage = async (file: File, placement?: { id: string; after: boolean }) => {
+    const targetSlideId = slidesRef.current[activeRef.current - 1]?.id;
+    const replacing = replacingImageRef.current;
+    const targetElementId = selectedRef.current;
     try {
       if (file.size > 10 * 1024 * 1024) throw new Error("Image must be 10 MB or smaller.");
       const dataUrl = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file); });
       const response = await fetch(`${apiBase}/assets`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ mimeType: file.type, data: dataUrl.slice(dataUrl.indexOf(",") + 1) }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Image import failed.");
-      const selected = selectedNode();
-      if (replacingImageRef.current && selected instanceof HTMLImageElement) {
+      if (slidesRef.current[activeRef.current - 1]?.id !== targetSlideId) throw new Error("Image imported, but the target slide changed before upload completed.");
+      const selected = targetElementId ? canvasRef.current?.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(targetElementId)}"]`) ?? null : null;
+      if (replacing && selected instanceof HTMLImageElement && selectedRef.current === targetElementId) {
         checkpoint(); selected.dataset.assetPath = result.path; selected.src = `${apiBase}/${result.path}`; syncFromDom(); setSel(readSelection(selected));
-      } else addBlock("image", result.path, placement);
+      } else if (replacing) throw new Error("Image imported, but the image selected for replacement changed before upload completed.");
+      else addBlock("image", result.path, placement);
       setAnnouncement("Image imported");
       setApiError(null);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
@@ -1396,7 +1426,7 @@ export default function Home() {
     const html = applyTemplateToSlideHtml(slide.html, template.html, { position: activeRef.current, total: captured.length, accent });
     const title = titleFromSlideHtml(html);
     setSlidesSynced(captured.map((item, itemIndex) => itemIndex === index ? { ...item, title: title ?? item.title, html } : item));
-    setSaved(false);
+    markDirty();
     dismissPopover(false);
     reinject();
   };
@@ -1451,7 +1481,7 @@ export default function Home() {
   const setSlideNotes = (notes: string) => {
     checkpoint();
     setSlidesSynced(captureActive().map((slide, index) => (index === activeRef.current - 1 ? { ...slide, notes } : slide)));
-    setSaved(false);
+    markDirty();
   };
 
   const addSlide = (templateId?: string) => {
@@ -1460,14 +1490,14 @@ export default function Home() {
     const template = templates.find((item) => item.id === templateId);
     const empty = '<main class="weave-slide"><section data-weave-slot="content"><h1 data-weave-slot="title" data-weave-id="title"></h1></section></main>';
     const framed = template ? applyTemplateToSlideHtml(empty, template.html, { position: captured.length + 1, total: captured.length + 1, accent }) : blankSlideHtml(background, accent);
-    const html = framed.replace(/\bdata-weave-id\s*=\s*(["'])(.*?)\1/gi, (_, quote) => `data-weave-id=${quote}block-${createMessageId().slice(6)}${quote}`);
+    const html = framed.replace(/\bdata-weave-id\s*=\s*(["'])(.*?)\1/gi, (_: string, quote: string) => `data-weave-id=${quote}block-${createMessageId().slice(6)}${quote}`);
     const slide = slideFromHtml({ id: `slide-${createMessageId().slice(6)}`, title: "", notes: "", html });
     const next = [...captured, slide];
     setSlidesSynced(next);
     activeRef.current = next.length;
     setActiveSlideSynced(next.length);
     setSelectedId(null);
-    setSaved(false);
+    markDirty();
     dismissPopover(false);
     reinject();
   };
@@ -1483,7 +1513,7 @@ export default function Home() {
     activeRef.current += 1;
     setActiveSlideSynced(activeRef.current);
     setSelectedId(null);
-    setSaved(false);
+    markDirty();
     reinject();
   };
 
@@ -1499,7 +1529,7 @@ export default function Home() {
     setSelectedId(null);
     setSelectedAnnotationId(null);
     if (deletedSlideId) setAnnotations((current) => current.filter((annotation) => annotation.slideId !== deletedSlideId));
-    setSaved(false);
+    markDirty();
     reinject();
   };
 
@@ -1512,7 +1542,7 @@ export default function Home() {
     setSlidesSynced(next);
     activeRef.current = target + 1;
     setActiveSlideSynced(target + 1);
-    setSaved(false);
+    markDirty();
     reinject();
   };
 
@@ -1667,13 +1697,15 @@ export default function Home() {
 
   const saveProject = async () => {
     try {
+      const generation = editGenerationRef.current;
       const response = await fetch(`${apiBase}/save`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ deck: deckPayload(), message: saveMessage || deckTitle, expectedRevision: serverRevision, idempotencyKey: createMessageId() }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Save failed.");
-      applyServerState(result as ServerState);
-      setSaved(true);
+      const unchanged = generation === editGenerationRef.current;
+      applyServerState(result as ServerState, unchanged);
+      setSaved(unchanged);
       setSaveMessage("");
-      setAnnouncement("Deck saved to history");
+      setAnnouncement(unchanged ? "Deck saved to history" : "Saved version recorded; newer local edits remain unsaved");
       setApiError(null);
       return true;
     } catch (error) {
@@ -1684,17 +1716,36 @@ export default function Home() {
 
   const exportFragments = () => captureActive().map((slide) => slide.html);
 
-  const exportDeck = () => {
+  const exportDeck = async () => {
     if (!quality.ok) { popoverTriggerRef.current = null; setOpenPopover("quality"); setApiError("Resolve quality errors before exporting."); return; }
-    const html = renderDeckDocument(exportFragments(), deckCss, deckTitle);
-    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `${deckTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "weave-deck"}.html`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-    setAnnouncement("Offline presentation downloaded");
+    try {
+      let fragments = exportFragments();
+      const assetPaths = [...new Set(fragments.flatMap((fragment) => [...fragment.matchAll(/\bsrc=(?:"(assets\/[^"]+)"|'(assets\/[^']+)')/g)].map((match) => match[1] ?? match[2])))];
+      const embeddedAssets = new Map(await Promise.all(assetPaths.map(async (path) => {
+        const response = await fetch(`${apiBase}/${path}`);
+        if (!response.ok) throw new Error(`Could not include ${path} in the offline export.`);
+        const blob = await response.blob();
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result));
+          reader.onerror = () => reject(reader.error);
+          reader.readAsDataURL(blob);
+        });
+        return [path, dataUrl] as const;
+      })));
+      fragments = fragments.map((fragment) => fragment.replace(/\bsrc=(['"])(assets\/[^'"]+)\1/g, (attribute, quote, path) => `src=${quote}${embeddedAssets.get(path) ?? path}${quote}`));
+      const html = renderDeckDocument(fragments, deckCss, deckTitle);
+      const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `${deckTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "weave-deck"}.html`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      setAnnouncement("Offline presentation downloaded");
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : String(error));
+    }
   };
 
   const downloadBundle = () => {
@@ -1720,7 +1771,7 @@ export default function Home() {
       activeRef.current = 1;
       setActiveSlideSynced(1);
       setSelectedId(null);
-      setSaved(false);
+      markDirty();
       reinject();
       setAnnouncement("Portable deck imported; save to commit it");
     } catch (error) {
@@ -2053,7 +2104,7 @@ export default function Home() {
                 activeRef.current = index + 1;
                 setActiveSlideSynced(index + 1);
                 setDraggedSlide(null);
-                setSaved(false);
+                markDirty();
                 reinject();
               }}
             >
@@ -2081,7 +2132,7 @@ export default function Home() {
   );
 
   const presenterScale = typeof window === "undefined" ? 1 : Math.min((window.innerWidth - 80) / designWidth, (window.innerHeight - 120) / designHeight);
-  const containerLike = !!sel && (sel.container || sel.kind === "metrics");
+  const containerLike = !!sel && sel.container;
   const propertyRows = (schema: Control[]) => schema.map((ctl) => {
     const current = sel?.read[ctl.key] ?? "";
     return (
@@ -2157,7 +2208,7 @@ export default function Home() {
           <span className="chevron">⌄</span>
         </button>
         <div className="document-title">
-          <input className={!saved ? "unsaved-dot" : ""} aria-label="Deck title" value={deckTitle} onChange={(event) => { setDeckTitle(event.target.value); setSaved(false); }} />
+          <input className={!saved ? "unsaved-dot" : ""} aria-label="Deck title" value={deckTitle} onChange={(event) => { setDeckTitle(event.target.value); markDirty(); }} />
           <small>Slide {activeSlide} of {slides.length}</small>
         </div>
         <div className="top-actions">

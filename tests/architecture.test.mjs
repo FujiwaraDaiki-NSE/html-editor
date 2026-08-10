@@ -286,6 +286,17 @@ test("local API constrains origins and exposes reconnectable NDJSON events", asy
   assert.doesNotMatch(source, /response.*close.*interrupt/is);
 });
 
+test("async editor updates preserve newer local edits", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /editGenerationRef/);
+  assert.match(page, /generation === editGenerationRef\.current/);
+  assert.match(page, /applyServerState\(result as ServerState, unchanged\)/);
+  assert.match(page, /targetSlideId/);
+  assert.match(page, /targetElementId/);
+  assert.match(page, /annotations: annotations\.map\(cloneAnnotation\)/);
+  assert.match(page, /embeddedAssets/);
+});
+
 test("production code does not call excluded or experimental app-server APIs", async () => {
   const source = (await Promise.all([
     readFile(new URL("../server/local-api.mjs", import.meta.url), "utf8"),
