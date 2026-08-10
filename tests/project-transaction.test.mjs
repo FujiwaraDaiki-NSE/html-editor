@@ -147,3 +147,47 @@ test("image assets are content-addressed, deduplicated, and SVG-audited", async 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("concurrent saves with one revision cannot overwrite each other", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weave-save-lock-"));
+  const previousRoot = process.env.WEAVE_PROJECT_ROOT;
+  process.env.WEAVE_PROJECT_ROOT = root;
+  try {
+    const project = await import(`../server/project.mjs?save-lock=${Date.now()}`);
+    await project.ensureProject();
+    const initial = await project.readProject();
+    const revision = project.getRevision();
+    const results = await Promise.allSettled([
+      project.saveProject({ ...initial, title: "First save" }, revision, "First save"),
+      project.saveProject({ ...initial, title: "Second save" }, revision, "Second save"),
+    ]);
+    assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+    const rejected = results.find((result) => result.status === "rejected");
+    assert.equal(rejected.reason.code, "WEAVE_REVISION_CONFLICT");
+  } finally {
+    if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
+    else process.env.WEAVE_PROJECT_ROOT = previousRoot;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("history restore removes managed directories absent from the target commit", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weave-history-tree-"));
+  const previousRoot = process.env.WEAVE_PROJECT_ROOT;
+  process.env.WEAVE_PROJECT_ROOT = root;
+  try {
+    const project = await import(`../server/project.mjs?history-tree=${Date.now()}`);
+    await project.ensureProject();
+    const revisionWithoutAssets = project.getRevision();
+    await mkdir(join(root, "assets"), { recursive: true });
+    await writeFile(join(root, "assets", "added.png"), "image");
+    project.commitIfChanged("Add later asset");
+    await project.checkoutHistory(revisionWithoutAssets);
+    await assert.rejects(readFile(join(root, "assets", "added.png")), (error) => error.code === "ENOENT");
+    assert.equal(git(root, ["status", "--porcelain"]), "");
+  } finally {
+    if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
+    else process.env.WEAVE_PROJECT_ROOT = previousRoot;
+    await rm(root, { recursive: true, force: true });
+  }
+});

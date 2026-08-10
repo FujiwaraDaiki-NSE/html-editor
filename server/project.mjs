@@ -23,6 +23,22 @@ const stylesRoot = () => join(currentProjectRoot, "styles");
 const assetsRoot = () => join(currentProjectRoot, "assets");
 export const templatesRoot = () => join(currentProjectRoot, "templates");
 const deckCssPath = () => join(stylesRoot(), "deck.css");
+const projectWriteQueues = new Map();
+
+export async function runProjectExclusive(task, root = currentProjectRoot) {
+  const previous = projectWriteQueues.get(root) ?? Promise.resolve();
+  let release;
+  const current = new Promise((resolvePromise) => { release = resolvePromise; });
+  const queued = previous.then(() => current);
+  projectWriteQueues.set(root, queued);
+  await previous;
+  try {
+    return await task();
+  } finally {
+    release();
+    if (projectWriteQueues.get(root) === queued) projectWriteQueues.delete(root);
+  }
+}
 
 const templateThemes = [
   { id: "orbit", name: "Orbit / Dark", background: "bg-slate-950", text: "text-slate-50" },
@@ -304,7 +320,7 @@ export async function readProject() {
 }
 
 /** Write the project: every slide file (formatted) plus the manifest, transactionally. */
-export async function writeProject(input, expectedRevision = null) {
+async function writeProjectUnlocked(input, expectedRevision = null) {
   const project = validateProject(input);
   const slides = await Promise.all(project.slides.map(async (slide) => ({
     ...slide,
@@ -369,6 +385,24 @@ export async function writeProject(input, expectedRevision = null) {
     ]);
   }
   return { title: project.title, slides };
+}
+
+export async function writeProject(input, expectedRevision = null) {
+  const root = currentProjectRoot;
+  return await runProjectExclusive(
+    () => writeProjectUnlocked(input, expectedRevision),
+    root,
+  );
+}
+
+export async function saveProject(input, expectedRevision, message) {
+  const root = currentProjectRoot;
+  return await runProjectExclusive(async () => {
+    const deck = await writeProjectUnlocked(input, expectedRevision);
+    await assertCommittable();
+    const commit = commitIfChanged(message ?? `Save: ${deck.title}`);
+    return { deck, commit };
+  }, root);
 }
 
 /* The commit gate checks disk because that is what commitIfChanged will persist; writes stay inspectable. */
@@ -454,8 +488,14 @@ export async function checkoutHistory(commit) {
   runGit(["cat-file", "-e", `${commit}^{commit}`]);
   if (runGit(["branch", "--show-current"]) !== "main") runGit(["checkout", "main"]);
   runGit(["restore", "--source", commit, "--staged", "--worktree", "--", ".weave/deck.json", "slides", "styles", "AGENTS.md"]);
-  if (runGit(["ls-tree", "-d", "--name-only", commit, "assets"])) runGit(["restore", "--source", commit, "--staged", "--worktree", "--", "assets"]);
-  if (runGit(["ls-tree", "-d", "--name-only", commit, "templates"])) runGit(["restore", "--source", commit, "--staged", "--worktree", "--", "templates"]);
+  for (const path of ["assets", "templates"]) {
+    if (runGit(["ls-tree", "-d", "--name-only", commit, path])) {
+      runGit(["restore", "--source", commit, "--staged", "--worktree", "--", path]);
+    } else {
+      await rm(join(currentProjectRoot, path), { recursive: true, force: true });
+      if (runGit(["ls-files", "--", path])) runGit(["add", "-A", "--", path]);
+    }
+  }
   const restored = commitIfChanged(`Restore history ${commit.slice(0, 12)}`);
   return restored ?? getRevision();
 }
@@ -694,11 +734,23 @@ export async function assertSwitchable(targetSlug = null) {
   if (runGit(["branch", "--show-current"]) === "") checkoutMain();
 }
 
-export async function createProject({ title, template = "orbit" }) {
+async function createProjectUnlocked({ title, template = "orbit" }) {
   const name = String(title ?? "").trim();
   if (!name) throw new Error("Title is required.");
-  const slug = await uniqueSlug(name);
-  const root = join(workspacesRoot, slug);
+  await mkdir(workspacesRoot, { recursive: true });
+  const base = generatedSlug(name);
+  let slug = base;
+  let root;
+  for (let index = 2; ; index += 1) {
+    root = join(workspacesRoot, slug);
+    try {
+      await mkdir(root);
+      break;
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      slug = `${base}-${index}`;
+    }
+  }
   const selected = builtInTemplates.find((item) => item.id === template) ?? builtInTemplates[0];
   const cover = {
     id: "cover",
@@ -706,14 +758,22 @@ export async function createProject({ title, template = "orbit" }) {
     notes: "",
     html: selected.html.replace(/(<h1\b[^>]*>)[\s\S]*?(<\/h1>)/i, `$1${escapeHtml(name)}$2`),
   };
-  await mkdir(root, { recursive: true });
-  gitAt(root, ["init", "-b", "main"]);
-  await withProjectRoot(root, async () => {
-    await writeProject({ title: name, slides: [cover] });
-    await ensureProjectScaffolding();
-    commitIfChanged("Create project");
-  });
-  return slug;
+  try {
+    gitAt(root, ["init", "-b", "main"]);
+    await withProjectRoot(root, async () => {
+      await writeProject({ title: name, slides: [cover] });
+      await ensureProjectScaffolding();
+      commitIfChanged("Create project");
+    });
+    return slug;
+  } catch (error) {
+    await rm(root, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+export async function createProject(options) {
+  return await runProjectExclusive(() => createProjectUnlocked(options), workspacesRoot);
 }
 
 export async function initializeCurrentProject() {

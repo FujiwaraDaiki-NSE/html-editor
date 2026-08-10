@@ -30,6 +30,7 @@ import {
   assertAssetFilename,
   projectAssetPath,
   writeProject,
+  saveProject,
 } from "./project.mjs";
 import { CodexService } from "./codex/service.mjs";
 import { annotationPromptRules, canSendTurn } from "../shared/annotation.mjs";
@@ -305,9 +306,11 @@ const server = createServer(async (request, response) => {
       if (idempotencyKey && completedSaves.has(idempotencyKey)) {
         return sendJson(request, response, 200, completedSaves.get(idempotencyKey));
       }
-      const deck = await writeProject(payload.deck, payload.expectedRevision);
-      await assertCommittable();
-      const commit = commitIfChanged(`Save: ${String(payload.message ?? deck.title).slice(0, 120)}`);
+      const { deck, commit } = await saveProject(
+        payload.deck,
+        payload.expectedRevision,
+        `Save: ${String(payload.message ?? payload.deck?.title ?? "Deck").slice(0, 120)}`,
+      );
       const result = { ...(await statePayload()), commit };
       if (idempotencyKey) {
         completedSaves.set(idempotencyKey, result);

@@ -127,3 +127,26 @@ test("initialization leaves the default root untouched without projects", async 
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("concurrent project creation reserves distinct slugs", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weave-project-create-lock-"));
+  const previousRoot = process.env.WEAVE_PROJECT_ROOT;
+  const previousWorkspaces = process.env.WEAVE_WORKSPACES_ROOT;
+  process.env.WEAVE_PROJECT_ROOT = join(root, "startup");
+  process.env.WEAVE_WORKSPACES_ROOT = join(root, "workspaces");
+  try {
+    const project = await import(`../server/project.mjs?create-lock=${Date.now()}`);
+    const slugs = await Promise.all([
+      project.createProject({ title: "Same title" }),
+      project.createProject({ title: "Same title" }),
+    ]);
+    assert.equal(new Set(slugs).size, 2);
+    assert.deepEqual(new Set(slugs), new Set(["same-title", "same-title-2"]));
+  } finally {
+    if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
+    else process.env.WEAVE_PROJECT_ROOT = previousRoot;
+    if (previousWorkspaces === undefined) delete process.env.WEAVE_WORKSPACES_ROOT;
+    else process.env.WEAVE_WORKSPACES_ROOT = previousWorkspaces;
+    await rm(root, { recursive: true, force: true });
+  }
+});
