@@ -1,8 +1,11 @@
 "use client";
 
+import { AnnotationLegend } from "./AnnotationLegend";
+import type { Annotation } from "./AnnotationOverlay";
+
 type Props = {
   slideLabel: string;
-  count: number;
+  annotations: Annotation[];
   canRestore: boolean;
   canOverlay: boolean;
   overlayActive: boolean;
@@ -10,11 +13,12 @@ type Props = {
   onToggleOverlay: () => void;
 };
 
-export function AnnotationAttachment({ slideLabel, count, canRestore, canOverlay, overlayActive, onRestore, onToggleOverlay }: Props) {
+export function AnnotationAttachment({ slideLabel, annotations, canRestore, canOverlay, overlayActive, onRestore, onToggleOverlay }: Props) {
+  const count = annotations.length;
   return (
     <div className={`annotation-attachment ${overlayActive ? "overlay-active" : ""}`}>
       <span className="annotation-attachment-icon" aria-hidden="true">▱</span>
-      <span><strong>{count} annotation{count === 1 ? "" : "s"}</strong><small>{slideLabel}</small></span>
+      <span className="annotation-attachment-summary"><strong>{count} annotation{count === 1 ? "" : "s"}</strong><small>{slideLabel}</small></span>
       <span className="annotation-attachment-actions">
         <button
           type="button"
@@ -26,6 +30,7 @@ export function AnnotationAttachment({ slideLabel, count, canRestore, canOverlay
         >{overlayActive ? "Hide overlay" : "Show overlay"}</button>
         <button type="button" onClick={onRestore} disabled={!canRestore} title={canRestore ? "Copy annotations back to the draft" : "The original slide no longer exists"}>Return to draft</button>
       </span>
+      <AnnotationLegend annotations={annotations} />
     </div>
   );
 }

@@ -212,6 +212,14 @@ body {
 .context-chip button { min-height: 20px; padding: 0 6px; border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line)); border-radius: 999px; background: color-mix(in srgb, var(--accent) 12%, var(--panel-2)); color: var(--accent); font-size: 8px; cursor: pointer; }
 .context-chip button.held { border-color: var(--line-strong); background: var(--panel-2); color: var(--muted); }
 .context-chip button:disabled { cursor: default; opacity: .82; }
+.annotation-legend { grid-column: 1 / -1; flex: 1 0 100%; width: 100%; max-height: 91px; margin: 2px 0 0; padding: 4px 0 0; display: grid; align-content: start; gap: 3px; overflow-y: auto; border-top: 1px solid var(--line); list-style: none; scrollbar-width: thin; }
+.annotation-legend-item { min-width: 0; display: grid; grid-template-columns: 40px 25px minmax(0, 1fr); align-items: center; gap: 5px; }
+.annotation-thumbnail { position: relative; width: 40px; aspect-ratio: 16 / 9; display: block; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 2px; background: var(--panel-2); }
+.annotation-thumbnail-rect { position: absolute; min-width: 2px; min-height: 2px; box-sizing: border-box; border: 1px solid var(--accent); }
+.annotation-thumbnail-rect.annotation-element { border-style: dashed; }
+.annotation-legend-order { color: var(--accent); font: 700 8px/1 var(--font-geist-mono), monospace; }
+.annotation-legend-text { min-width: 0; overflow: hidden; color: var(--muted); font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
+.annotation-legend-text strong { color: var(--text); font-size: inherit; font-weight: 600; }
 .message { display: flex; gap: 6px; align-items: flex-start; margin: 0 0 9px; }
 .message-content { min-width: 0; max-width: calc(100% - 24px); }
 .message-content > p { margin: 0; padding: 7px 8px; border-radius: 4px 9px 9px 9px; background: var(--panel-3); color: #bfc4cb; font-size: 9px; line-height: 1.45; overflow-wrap: anywhere; white-space: pre-wrap; }
@@ -265,13 +273,14 @@ body {
 .annotation-attachment { margin: 0 0 6px; padding: 7px; display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 6px; border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line)); border-radius: 6px; background: color-mix(in srgb, var(--accent) 6%, var(--panel-2)); }
 .annotation-attachment.overlay-active { border-color: color-mix(in srgb, #58d7f5 72%, var(--line)); box-shadow: inset 0 0 0 1px color-mix(in srgb, #58d7f5 18%, transparent); }
 .annotation-attachment-icon { width: 20px; height: 20px; display: grid; place-items: center; border-radius: 4px; background: color-mix(in srgb, var(--accent) 16%, var(--panel-3)); color: var(--accent); font-size: 10px; }
-.annotation-attachment strong, .annotation-attachment small { display: block; }
-.annotation-attachment strong { color: var(--text); font-size: 8px; }
-.annotation-attachment small { margin-top: 2px; overflow: hidden; color: var(--muted); font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
+.annotation-attachment-summary strong, .annotation-attachment-summary small { display: block; }
+.annotation-attachment-summary strong { color: var(--text); font-size: 8px; }
+.annotation-attachment-summary small { margin-top: 2px; overflow: hidden; color: var(--muted); font-size: 7px; text-overflow: ellipsis; white-space: nowrap; }
 .annotation-attachment-actions { display: grid; gap: 4px; }
 .annotation-attachment button { padding: 4px 6px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--panel-3); color: var(--text); font-size: 7px; cursor: pointer; }
 .annotation-attachment .annotation-overlay-toggle[aria-pressed="true"] { border-color: #58d7f5; background: color-mix(in srgb, #58d7f5 13%, var(--panel-3)); color: #58d7f5; }
 .annotation-attachment button:disabled { cursor: default; opacity: .45; }
+.annotation-attachment .annotation-legend { max-height: 78px; }
 .codex-item { margin: 0 0 6px; padding: 7px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); font-size: 8px; line-height: 1.45; overflow: hidden; }
 .codex-item > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); }
 .codex-item > header strong { color: var(--accent); font-size: 8px; }
