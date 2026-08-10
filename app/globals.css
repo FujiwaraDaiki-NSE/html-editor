@@ -359,7 +359,7 @@ body {
    rules below are editor chrome only, and each undoes the scale so it stays crisp. */
 .slide-viewport { position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden; box-shadow: var(--shadow); }
 .slide-viewport[data-zoom-mode="manual"] { overflow: auto; background: #090b0e; }
-.slide-viewport[data-annotation-mode] { cursor: crosshair; touch-action: none; }
+.slide-viewport[data-annotation-mode] { cursor: crosshair; touch-action: none; box-shadow: var(--shadow), inset 0 0 0 2px var(--accent); }
 .slide-viewport[data-pointer-picking="true"] { box-shadow: var(--shadow), inset 0 0 0 2px var(--accent); }
 .slide-viewport > .weave-slide { position: absolute; left: 0; top: 0; transform: scale(var(--slide-scale)); transform-origin: top left; }
 /* The annotation layer sits beside the viewport, not inside it: the viewport's children are
@@ -369,7 +369,8 @@ body {
    scroll so the two stay pinned together once the canvas is zoomed past fit. */
 .annotation-overlay { position: absolute; z-index: 4; left: 0; top: 50%; width: 100%; aspect-ratio: 16 / 9; translate: 0 -50%; overflow: hidden; pointer-events: none; }
 .annotation-overlay-scroll { position: absolute; left: 0; top: 0; }
-.annotation-overlay-layer { position: absolute; left: 0; top: 0; width: 1280px; height: 720px; transform: scale(var(--slide-scale)); transform-origin: top left; }
+.annotation-overlay-layer { position: absolute; left: 0; top: 0; width: 1280px; height: 720px; transform: scale(var(--slide-scale)); transform-origin: top left; transition: backdrop-filter 160ms ease-out, background-color 160ms ease-out; }
+.annotation-overlay-layer.interactive { backdrop-filter: saturate(.3) contrast(.95); background: color-mix(in srgb, var(--panel) 10%, transparent); }
 .annotation-overlay-layer.interactive, .annotation-overlay-layer.readonly { z-index: 1; }
 .pointer-picking-layer { z-index: 2; pointer-events: auto; cursor: crosshair; }
 .pointer-pick-frame, .pointer-pick-tab { position: absolute; pointer-events: auto; }
@@ -387,6 +388,12 @@ body {
 .annotation-recall-layer .annotation-recall-box.annotation-element { border-style: dotted; }
 .annotation-box.selected { border-width: calc(3px / var(--slide-scale)); }
 .annotation-box.annotation-draft { border-style: dashed; box-shadow: none; }
+/* The ghost shows the artifact it is asking for — a dashed frame — so the shape teaches the
+   gesture. It stays an outline rather than a filled panel: the slide has to read through it. */
+.annotation-empty-state { position: absolute; left: 50%; top: 50%; width: calc(420px / var(--slide-scale)); padding: calc(24px / var(--slide-scale)) calc(28px / var(--slide-scale)); translate: -50% -50%; display: grid; gap: calc(5px / var(--slide-scale)); justify-items: center; border: calc(2px / var(--slide-scale)) dashed color-mix(in srgb, var(--accent) 52%, transparent); border-radius: calc(10px / var(--slide-scale)); background: color-mix(in srgb, var(--panel) 26%, transparent); color: var(--accent); text-align: center; pointer-events: none; }
+.annotation-empty-state strong { font: 700 calc(19px / var(--slide-scale))/1.35 Arial, sans-serif; }
+.annotation-empty-state span { font: 400 calc(14px / var(--slide-scale))/1.4 Arial, sans-serif; opacity: .82; }
+.annotation-empty-state small { margin-top: calc(7px / var(--slide-scale)); font: 400 calc(11px / var(--slide-scale))/1.4 Arial, sans-serif; opacity: .58; }
 .annotation-order, .annotation-delete, .annotation-handle, .annotation-label, .annotation-label-static { position: absolute; z-index: 1; }
 .annotation-overlay-layer.interactive .annotation-order, .annotation-overlay-layer.interactive .annotation-delete, .annotation-overlay-layer.interactive .annotation-handle, .annotation-overlay-layer.interactive .annotation-label { pointer-events: auto; }
 .annotation-order, .annotation-delete { top: calc(4px / var(--slide-scale)); height: calc(22px / var(--slide-scale)); border: calc(1px / var(--slide-scale)) solid color-mix(in srgb, var(--accent) 70%, #211a0f); background: var(--accent); color: #211a0f; font: 700 calc(11px / var(--slide-scale))/1 Arial, sans-serif; }
