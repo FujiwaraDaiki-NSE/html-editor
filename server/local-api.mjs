@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
   acceptVariation,
   agentInstructions,
+  assertCommittable,
   archiveVariation,
   checkoutHistory,
   checkoutMain,
@@ -115,7 +116,7 @@ async function startEditorTurn(payload, { variation = false } = {}) {
   const prompt = requireText(payload.prompt, "Prompt");
   let branch = null;
   if (variation) branch = createVariationBranch();
-  const deck = await writeProject(payload.deck, false);
+  const deck = await writeProject(payload.deck);
   const thread = await codex.startThread({
     approvalPolicy: payload.approvalPolicy ?? "never",
     model: payload.model,
@@ -156,10 +157,21 @@ codex.client.on("notification", (message) => {
       await writeProject(project);
       /* Ordinary Agent edits remain an unsaved working result. A variation needs a
          commit because its branch is the durable unit switched by the direction tabs. */
+      let commitError;
       if (pending.variation) {
-        commitIfChanged(`Variation: ${pending.prompt.replace(/\s+/g, " ").slice(0, 100)}`);
+        try {
+          await assertCommittable();
+          commitIfChanged(`Variation: ${pending.prompt.replace(/\s+/g, " ").slice(0, 100)}`);
+        } catch (error) {
+          commitError = error.message;
+        }
       }
-      codex.events.publish("weave/project", { status: "updated", ...projectState(), deck: await readProject() });
+      codex.events.publish("weave/project", {
+        status: "updated",
+        ...projectState(),
+        deck: await readProject(),
+        ...(commitError ? { commitError } : {}),
+      });
     } catch (error) {
       codex.events.publish("weave/project", { status: "error", error: error.message });
     }
@@ -222,7 +234,8 @@ const server = createServer(async (request, response) => {
       if (idempotencyKey && completedSaves.has(idempotencyKey)) {
         return sendJson(request, response, 200, completedSaves.get(idempotencyKey));
       }
-      const deck = await writeProject(payload.deck, false, payload.expectedRevision);
+      const deck = await writeProject(payload.deck, payload.expectedRevision);
+      await assertCommittable();
       const commit = commitIfChanged(`Save: ${String(payload.message ?? deck.title).slice(0, 120)}`);
       const result = { ...(await statePayload()), commit };
       if (idempotencyKey) {
@@ -277,13 +290,14 @@ const server = createServer(async (request, response) => {
     }
     if (url.pathname === "/api/codex/turn/start") {
       const prompt = requireTurnPrompt(payload);
-      if (payload.deck) await writeProject(payload.deck, true);
+      if (payload.deck) await writeProject(payload.deck);
       const result = await codex.startTurn({ ...payload, prompt: `${prompt}${serializeEditorContext(payload)}` });
       pendingTurns.set(payload.threadId, { prompt, branch: null, variation: false });
       return sendJson(request, response, 202, result);
     }
     if (url.pathname === "/api/codex/turn/steer") {
       const prompt = requireTurnPrompt(payload);
+      // Steer only tells the agent what to point at; writing the DOM here could overwrite its in-progress file edits.
       return sendJson(request, response, 202, await codex.steerTurn({ ...payload, prompt: `${prompt}${serializeEditorContext(payload)}` }));
     }
     if (url.pathname === "/api/codex/turn/interrupt") {
