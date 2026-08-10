@@ -1594,6 +1594,14 @@ export default function Home() {
     const caret = event.target.selectionStart ?? next.length;
     const isComposing = compositionRef.current || compositionCommitRef.current || nativeEvent.isComposing || nativeEvent.keyCode === 229;
     setPromptDraft(next);
+    if (pointerPicking) {
+      if (next[caret - 1] === "@") pointerCaretRef.current = caret;
+      else {
+        setPointerPicking(false);
+        setAnnouncement("Element pointing canceled");
+      }
+      return;
+    }
     if (mode !== "preview" || annotationMode || isComposing || nativeEvent.data !== "@") return;
     pointerCaretRef.current = caret;
     setPointerPicking(true);
