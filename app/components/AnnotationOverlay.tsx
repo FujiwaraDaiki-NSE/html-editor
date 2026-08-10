@@ -92,6 +92,8 @@ function PointerPickingLayer({ candidates, annotations, onPick, onCancel }: {
           className={`pointer-pick-tab ${existing ? "existing" : ""}`}
           style={pointerTabStyle(candidate.rect)}
           key={`tab-${candidate.id}`}
+          tabIndex={-1}
+          aria-hidden="true"
           onPointerEnter={() => setHoveredId(candidate.id)}
           onPointerLeave={() => setHoveredId((current) => current === candidate.id ? null : current)}
           onPointerDown={(event) => { event.preventDefault(); event.stopPropagation(); }}

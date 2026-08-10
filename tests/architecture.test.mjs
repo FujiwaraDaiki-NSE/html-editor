@@ -185,6 +185,8 @@ test("pointer tabs stay persistent only when a frame needs an outside target", a
   assert.match(page, /containsCandidate: node\.querySelector\("\[data-weave-id\]"\) !== null/);
   assert.doesNotMatch(frames, /containsCandidate/);
   assert.match(tabs, /!existing && !candidate\.containsCandidate && hoveredId !== candidate\.id/);
+  assert.match(tabs, /tabIndex=\{-1\}/);
+  assert.match(tabs, /aria-hidden="true"/);
 });
 
 test("annotation mode draws regions without selecting or pointing at elements", async () => {
