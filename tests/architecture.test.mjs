@@ -44,6 +44,23 @@ test("generated protocol and required architecture modules exist", async () => {
   }
 });
 
+test("policy gates protect commits while turn writes stay available", async () => {
+  const [localApi, project] = await Promise.all([
+    readFile(new URL("../server/local-api.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../server/project.mjs", import.meta.url), "utf8"),
+  ]);
+  const save = localApi.slice(localApi.indexOf('url.pathname === "/api/save"'), localApi.indexOf('url.pathname === "/api/history/checkout"'));
+  const turnStart = localApi.slice(localApi.indexOf('url.pathname === "/api/codex/turn/start"'), localApi.indexOf('url.pathname === "/api/codex/turn/steer"'));
+  const steer = localApi.slice(localApi.indexOf('url.pathname === "/api/codex/turn/steer"'), localApi.indexOf('url.pathname === "/api/codex/turn/interrupt"'));
+  const writeBody = project.slice(project.indexOf("export async function writeProject"), project.indexOf("export async function assertCommittable"));
+  assert.ok(save.includes("assertCommittable"));
+  assert.ok(save.indexOf("assertCommittable") < save.indexOf("commitIfChanged"));
+  assert.match(turnStart, /writeProject\(payload\.deck\)/);
+  assert.doesNotMatch(turnStart, /writeProject\(payload\.deck,\s*[^)]/);
+  assert.doesNotMatch(steer, /writeProject/);
+  assert.doesNotMatch(writeBody, /auditContentPolicy/);
+});
+
 test("UI uses Thread APIs, reducer, item cards, steering, interrupt, approvals, and catalogs", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   for (const surface of [
