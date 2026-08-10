@@ -16,7 +16,7 @@ export type Annotation = {
 };
 export type ResizeHandle = "nw" | "ne" | "sw" | "se";
 export type AnnotationGestureKind = "move" | ResizeHandle;
-export type PointerCandidate = { id: string; rect: AnnotationRect; elementKind: string; textExcerpt: string };
+export type PointerCandidate = { id: string; rect: AnnotationRect; elementKind: string; textExcerpt: string; containsCandidate: boolean };
 
 type Props = {
   interactive: boolean;
@@ -85,6 +85,7 @@ function PointerPickingLayer({ candidates, annotations, onPick, onCancel }: {
       })}
       {candidates.map((candidate) => {
         const existing = annotations.find((annotation) => annotation.target.kind === "element" && annotation.target.weaveId === candidate.id);
+        if (!existing && !candidate.containsCandidate && hoveredId !== candidate.id) return null;
         const label = existing ? `@${existing.order}` : pointerTabText(candidate.elementKind, candidate.textExcerpt);
         return <button
           type="button"

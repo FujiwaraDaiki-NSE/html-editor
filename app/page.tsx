@@ -702,6 +702,7 @@ export default function Home() {
         rect: rectFromClientBox(node.getBoundingClientRect(), viewportBox, slideScale, scroll),
         elementKind: kindOfNode(node),
         textExcerpt: textExcerptOfNode(node),
+        containsCandidate: node.querySelector("[data-weave-id]") !== null,
       }] : [];
     });
   }, [slideScale]);
