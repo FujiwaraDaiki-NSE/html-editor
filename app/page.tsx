@@ -220,6 +220,26 @@ const serializeEditorNode = (node: HTMLElement): string => {
   return clone.outerHTML;
 };
 
+const sanitizePreviewHtml = (input: string): string => {
+  if (typeof DOMParser === "undefined") return input;
+  const document = new DOMParser().parseFromString(`<body>${input}</body>`, "text/html");
+  document.body.querySelectorAll("script, iframe, object, embed, style, link, base, meta, form").forEach((node) => node.remove());
+  document.body.querySelectorAll("*").forEach((node) => {
+    for (const attribute of [...node.attributes]) {
+      const name = attribute.name.toLowerCase();
+      if (name === "style" || name === "srcdoc" || name.startsWith("on")) {
+        node.removeAttribute(attribute.name);
+        continue;
+      }
+      if (["href", "src", "action", "formaction", "poster", "xlink:href"].includes(name)) {
+        const value = attribute.value.replace(/[\u0000-\u0020\u007f]+/g, "").toLowerCase();
+        if (value.startsWith("javascript:") || /^(?:https?:)?\/\//.test(value)) node.removeAttribute(attribute.name);
+      }
+    }
+  });
+  return document.body.innerHTML;
+};
+
 const kindOfNode = (node: HTMLElement): string => blockKinds.find((cls) => node.classList.contains(cls)) ?? node.tagName.toLowerCase();
 const refreshSlideAnnotations = (annotations: Annotation[], slideId: string, boxes: AnnotationBox[]) => {
   const refreshed = new Map<string, Annotation>(refreshAnnotations(annotations.filter((annotation) => annotation.slideId === slideId), boxes).map((annotation: Annotation): [string, Annotation] => [annotation.id, annotation]));
@@ -522,7 +542,7 @@ export default function Home() {
       const nextSlides = sourceSlides.map(slideFromHtml);
       slidesRef.current = nextSlides;
       setSlides(nextSlides);
-      setDeckCss(state.css?.includes("weave-tailwind-slide-v1") ? state.css : defaultDeckCss);
+      setDeckCss(defaultDeckCss);
       setTemplates(state.templates ?? []);
       setSaved(state.project.clean);
       reinject();
@@ -647,7 +667,7 @@ export default function Home() {
     setDraggedId(null);
     setEditingId(null);
     const previewHtml = templatePreviewHtmlRef.current;
-    host.innerHTML = previewHtml ?? templatePreviewSourceHtmlRef.current ?? slidesRef.current[activeSlide - 1]?.html ?? "";
+    host.innerHTML = sanitizePreviewHtml(previewHtml ?? templatePreviewSourceHtmlRef.current ?? slidesRef.current[activeSlide - 1]?.html ?? "");
     host.querySelectorAll<HTMLImageElement>('img[src^="assets/"]').forEach((node) => { const path = node.getAttribute("src") ?? ""; node.dataset.assetPath = path; node.src = `${apiBase}/${path}`; });
     host.querySelectorAll<HTMLElement>("[data-weave-id]").forEach((node) => { node.draggable = !annotationMode && !agentRunning && !isTitleSlot(node); });
     const root = host.querySelector<HTMLElement>(".weave-slide");
@@ -1404,7 +1424,7 @@ export default function Home() {
     const template = templates.find((item) => item.id === templateId);
     const index = activeRef.current - 1;
     templatePreviewHtmlRef.current = null;
-    if (templatePreviewSourceHtmlRef.current && canvasRef.current) canvasRef.current.innerHTML = templatePreviewSourceHtmlRef.current;
+    if (templatePreviewSourceHtmlRef.current && canvasRef.current) canvasRef.current.innerHTML = sanitizePreviewHtml(templatePreviewSourceHtmlRef.current);
     const captured = captureActive();
     const slide = captured[index];
     if (!template || !slide) return;
@@ -1417,7 +1437,7 @@ export default function Home() {
     const index = activeRef.current - 1;
     if (!template) return;
     templatePreviewHtmlRef.current = null;
-    if (templatePreviewSourceHtmlRef.current && canvasRef.current) canvasRef.current.innerHTML = templatePreviewSourceHtmlRef.current;
+    if (templatePreviewSourceHtmlRef.current && canvasRef.current) canvasRef.current.innerHTML = sanitizePreviewHtml(templatePreviewSourceHtmlRef.current);
     const captured = captureActive();
     templatePreviewSourceHtmlRef.current = null;
     const slide = captured[index];
@@ -1767,7 +1787,7 @@ export default function Home() {
       checkpoint();
       setDeckTitle(String(bundle.deck.title));
       setSlidesSynced(bundle.deck.slides.map(slideFromHtml));
-      setDeckCss(bundle.css.includes("weave-tailwind-slide-v1") ? bundle.css : defaultDeckCss);
+      setDeckCss(defaultDeckCss);
       activeRef.current = 1;
       setActiveSlideSynced(1);
       setSelectedId(null);
@@ -2076,7 +2096,7 @@ export default function Home() {
   /* Switching to Code mode captures the live DOM into `slides` first, so the code view can
      read the fresh HTML straight from state without touching a ref during render. */
   const codeView = mode === "code" ? slides[activeSlide - 1]?.html ?? "" : "";
-  const templatePreview = (template: TemplateDoc) => <span className="template-preview" aria-hidden="true" dangerouslySetInnerHTML={{ __html: template.html }} />;
+  const templatePreview = (template: TemplateDoc) => <span className="template-preview" aria-hidden="true" dangerouslySetInnerHTML={{ __html: sanitizePreviewHtml(template.html) }} />;
   const currentTemplate = templates.find((template) => template.id === currentTemplateId);
 
   const slideNavigator = (
@@ -2737,7 +2757,7 @@ export default function Home() {
           if (event.key === "Escape") setShowPresenter(false);
         }}>
           <style>{deckCss}</style>
-          <div className="presenter-stage" style={{ "--slide-scale": presenterScale } as React.CSSProperties} dangerouslySetInnerHTML={{ __html: slides[presentSlide - 1]?.html ?? "" }} />
+          <div className="presenter-stage" style={{ "--slide-scale": presenterScale } as React.CSSProperties} dangerouslySetInnerHTML={{ __html: sanitizePreviewHtml(slides[presentSlide - 1]?.html ?? "") }} />
           <footer>
             <button onClick={() => setPresentSlide((value) => Math.max(1, value - 1))}>← Previous</button>
             <span>{presentSlide} / {slides.length}</span>
