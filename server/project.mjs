@@ -59,13 +59,15 @@ slide's layout, move the title slot's inner content and the remaining content ch
 frame's slots; do not edit the shared template frame in place.
 Slide styling is expressed only with the precompiled Tailwind utility classes already used in the
 project. Use standard Tailwind scale values and existing classes; never use inline style attributes,
-arbitrary-value classes such as [...], or edit styles/deck.css. Prefer flex/grid flow layout. Keep a
+arbitrary-value classes such as [...], or edit styles/deck.css — read that file when you need the
+registry of classes the project supports. Prefer flex/grid flow layout. Keep a
 data-weave-id on every element the human can select. Represent line breaks as <br>, not literal newlines.
 Reference imported images with relative assets/<hash>.<ext> paths. Lists use ul.list with li children;
 tables use table.table and keep data-weave-id on the table rather than individual cells. Graphs and
 decorative diagrams are static inline SVG: use fill="currentColor" with text-* classes instead of raw
 hex colors, size the SVG with w-full and aspect-* classes, and put data-weave-id on the SVG root.
-Make focused changes that answer the user. Do not run git or commit; Weave formats and commits the turn.
+Make focused changes that answer the user. Read-only git (log, show, diff) is fine when you need the
+history; never commit, checkout, or otherwise change the repository — Weave formats and commits the turn.
 If no file change is needed, respond with a concise explanation.`;
 
 const assetTypes = new Map([
