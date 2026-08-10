@@ -6,6 +6,7 @@ import {
   auditCssSafety,
   auditHtmlSafety,
 } from "../shared/content-policy.mjs";
+import { slideFragmentFromBlocks } from "../shared/slide-design.mjs";
 import { migrateSlideHtmlToTailwind } from "../shared/tailwind-slide.mjs";
 
 test("self-contained declarative CSS and HTML pass", () => {
@@ -61,10 +62,10 @@ test("relative and embedded resources do not count as external URLs", () => {
 });
 
 test("Tailwind slide utilities pass while inline, arbitrary, and unknown styles fail", () => {
-  const valid = auditContentPolicy({ html: '<main class="weave-slide flex flex-col gap-6"><h1 class="heading text-6xl font-semibold">Title</h1></main>' });
+  const valid = auditContentPolicy({ html: '<main class="weave-slide flex flex-col gap-6"><h1 data-weave-id="title" class="heading text-6xl font-semibold">Title</h1></main>' });
   assert.equal(valid.ok, true);
 
-  const invalid = auditContentPolicy({ html: '<main class="weave-slide mystery" style="padding: 19px"><h1 class="text-[61px]">Title</h1></main>' });
+  const invalid = auditContentPolicy({ html: '<main class="weave-slide mystery" style="padding: 19px"><h1 data-weave-id="title" class="text-[61px]">Title</h1></main>' });
   assert.deepEqual(new Set(invalid.diagnostics.map((item) => item.code)), new Set([
     "design.inline-style",
     "design.unknown-class",
@@ -83,6 +84,35 @@ test("legacy slide styling migrates to Tailwind classes idempotently", () => {
 });
 
 test("image, list, table, grid span, decoration, and static SVG vocabulary passes", () => {
-  const html = `<main class="weave-slide"><img class="image w-full object-cover object-center aspect-4/3 rounded-lg" src="assets/example.png" alt="Example"><ul class="list list-disc pl-6"><li>One</li></ul><table class="table w-full border-collapse"><tbody><tr><td class="p-2 border-b border-slate-700">Cell</td></tr></tbody></table><div class="grid grid-cols-3"><div class="col-span-2 row-span-2 bg-slate-800 border border-slate-300 rounded-xl shadow-lg"></div></div><svg class="w-full aspect-video text-amber-400"><circle fill="currentColor" /></svg></main>`;
+  const html = `<main class="weave-slide"><img data-weave-id="image" class="image w-full object-cover object-center aspect-4/3 rounded-lg" src="assets/example.png" alt="Example"><ul data-weave-id="list" class="list list-disc pl-6"><li>One</li></ul><table data-weave-id="table" class="table w-full border-collapse"><tbody><tr><td class="p-2 border-b border-slate-700">Cell</td></tr></tbody></table><div class="grid grid-cols-3"><div class="col-span-2 row-span-2 bg-slate-800 border border-slate-300 rounded-xl shadow-lg"></div></div><svg data-weave-id="chart" class="w-full aspect-video text-amber-400"><circle fill="currentColor" /></svg></main>`;
   assert.deepEqual(auditContentPolicy({ html }).diagnostics, []);
+});
+
+test("selectable elements without weave ids produce non-blocking warnings", () => {
+  const result = auditContentPolicy({ html: '<main class="weave-slide"><h1>Title</h1><p>Body</p><table><tr><td>Cell</td></tr></table></main>' });
+  assert.equal(result.ok, true);
+  assert.equal(result.summary.errors, 0);
+  assert.equal(result.summary.warnings, 3);
+  assert.equal(new Set(result.diagnostics.map((item) => item.code)).size, 1);
+  assert.ok(result.diagnostics.every((item) => item.severity === "warning" && item.index >= 0 && item.length > 0));
+});
+
+test("id-bearing ancestors cover nested selectable elements, while list and table cells are exempt", () => {
+  const result = auditContentPolicy({ html: '<main class="weave-slide"><figure data-weave-id="figure"><img src="assets/a.png"></figure><div data-weave-id="copy"><p>Nested</p></div><ul data-weave-id="list"><li>Cell-like</li></ul><table data-weave-id="table"><tr><td>Cell</td><th>Header</th></tr></table></main>' });
+  assert.equal(result.summary.warnings, 0);
+});
+
+test("seed slide fragments have complete selectable-element coverage", () => {
+  const html = slideFragmentFromBlocks({
+    background: "orbit",
+    total: 1,
+    position: 1,
+    blocks: [
+      { id: "heading", kind: "heading", text: "Title" },
+      { id: "paragraph", kind: "paragraph", text: "Body" },
+      { id: "metrics", kind: "metrics", text: "24%|growth" },
+    ],
+  });
+  const result = auditContentPolicy({ html });
+  assert.equal(result.summary.warnings, 0);
 });
