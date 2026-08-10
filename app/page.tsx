@@ -2,7 +2,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any -- app-server catalog/request payloads are rendered defensively for forward compatibility. */
 /* eslint-disable react-hooks/refs -- the editor intentionally treats the live canvas DOM as its source of truth. */
 
-import { DragEvent, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
+import { DragEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import { actionFromStreamEvent } from "./codex/actions";
 import { defaultDeckCss, designHeight, designWidth, escapeHtml, renderDeckDocument } from "../shared/slide-design.mjs";
 import { auditContentPolicy } from "../shared/content-policy.mjs";
@@ -71,6 +71,16 @@ const slideNavStore = {
   read: (): SlideNav => (window.localStorage.getItem(slideNavKey) === "rail" ? "rail" : "filmstrip"),
   serverRead: (): SlideNav => "filmstrip",
   write(value: SlideNav) { window.localStorage.setItem(slideNavKey, value); slideNavListeners.forEach((listener) => listener()); },
+};
+
+const sidebarWidthKey = "weave.sidebarWidth";
+const sidebarWidthListeners = new Set<() => void>();
+const clampSidebarWidth = (value: number) => Math.min(560, Math.max(280, value));
+const sidebarWidthStore = {
+  subscribe(listener: () => void) { sidebarWidthListeners.add(listener); return () => { sidebarWidthListeners.delete(listener); }; },
+  read: () => clampSidebarWidth(Number(window.localStorage.getItem(sidebarWidthKey)) || 340),
+  serverRead: () => 340,
+  write(value: number) { window.localStorage.setItem(sidebarWidthKey, String(clampSidebarWidth(value))); sidebarWidthListeners.forEach((listener) => listener()); },
 };
 
 const createMessageId = () => `weave-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
@@ -247,6 +257,7 @@ export default function Home() {
   const [pointerCandidates, setPointerCandidates] = useState<PointerCandidate[]>([]);
   const [codexState, dispatchCodex] = useReducer(codexReducer, initialCodexState);
   const slideNav = useSyncExternalStore(slideNavStore.subscribe, slideNavStore.read, slideNavStore.serverRead);
+  const sidebarWidth = useSyncExternalStore(sidebarWidthStore.subscribe, sidebarWidthStore.read, sidebarWidthStore.serverRead);
   const [threadSearch, setThreadSearch] = useState("");
   const [showArchivedThreads, setShowArchivedThreads] = useState(false);
   const [activityView, setActivityView] = useState<ActivityView>("agent");
@@ -339,6 +350,28 @@ export default function Home() {
     ? `${activeOverlayTurnIndex >= 0 ? `Turn ${activeOverlayTurnIndex + 1}` : "Sent turn"} · ${activeOverlayAttachment.slideLabel}`
     : "";
   const recalledAnnotations = activeOverlayAttachment?.slideId === activeSlideId ? activeOverlayAttachment.annotations : [];
+
+  useEffect(() => { document.documentElement.style.setProperty("--weave-sidebar-width", `${sidebarWidth}px`); }, [sidebarWidth]);
+  const startSidebarResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = sidebarWidth;
+    let finalWidth = startWidth;
+    const move = (moveEvent: PointerEvent) => {
+      finalWidth = clampSidebarWidth(startWidth + moveEvent.clientX - startX);
+      document.documentElement.style.setProperty("--weave-sidebar-width", `${finalWidth}px`);
+    };
+    const end = () => {
+      document.removeEventListener("pointermove", move);
+      document.removeEventListener("pointerup", end);
+      document.removeEventListener("pointercancel", end);
+      sidebarWidthStore.write(finalWidth);
+    };
+    document.addEventListener("pointermove", move);
+    document.addEventListener("pointerup", end);
+    document.addEventListener("pointercancel", end);
+  };
+  const adjustSidebarWidth = (delta: number) => sidebarWidthStore.write(sidebarWidth + delta);
 
   const setSlidesSynced = (next: SlideDoc[]) => { slidesRef.current = next; setSlides(next); };
   const setActiveSlideSynced = (next: number) => { templatePreviewHtmlRef.current = null; templatePreviewSourceHtmlRef.current = null; setTitleDraft(null); setPointerPicking(false); setActiveSlide(next); };
@@ -2020,6 +2053,7 @@ export default function Home() {
         {slideNav === "rail" && <nav className="slide-nav slide-rail" aria-label="Slides">{slideNavigator}</nav>}
 
         <aside className="left-panel">
+          <div className="panel-resizer" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" aria-valuenow={sidebarWidth} aria-valuemin={280} aria-valuemax={560} tabIndex={0} onPointerDown={startSidebarResize} onKeyDown={(event) => { if (event.key === "ArrowLeft") { event.preventDefault(); adjustSidebarWidth(-16); } if (event.key === "ArrowRight") { event.preventDefault(); adjustSidebarWidth(16); } }} />
           {activityView === "agent" ? <section className="agent-panel">
             <div className="agent-heading">
               <span><i aria-hidden="true" className={`agent-status ${agentReady ? "" : "offline"}`} /> AGENT</span>
@@ -2071,7 +2105,7 @@ export default function Home() {
                     onRestore={() => restoreAnnotationAttachment(attachment)}
                     onToggleOverlay={() => toggleAttachmentOverlay(attachment)}
                   />)}
-                  <footer><span>{turn.status}</span>{turn.diff && <details><summary>Turn diff</summary><pre>{turn.diff}</pre></details>}</footer>
+                  {(turn.status !== "completed" || turn.diff) && <footer><span>{turn.status}</span>{turn.diff && <details><summary>Turn diff</summary><pre>{turn.diff}</pre></details>}</footer>}
                 </section>
               ))}
               {unmatchedAttachments.map((attachment) => <AnnotationAttachment
