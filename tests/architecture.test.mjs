@@ -22,6 +22,7 @@ test("clean-break architecture has no legacy chat persistence, RPC client, or en
     "class CodexAppServer ",
     "handleAgentTurn",
     "setMessages(",
+    "current-buffer",
   ]) {
     assert.equal(source.includes(legacy), false, `legacy symbol remains: ${legacy}`);
   }
@@ -42,6 +43,35 @@ test("generated protocol and required architecture modules exist", async () => {
   ]) {
     await access(new URL(file, import.meta.url));
   }
+});
+
+test("policy gates protect commits while turn writes stay available", async () => {
+  const [localApi, project] = await Promise.all([
+    readFile(new URL("../server/local-api.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../server/project.mjs", import.meta.url), "utf8"),
+  ]);
+  const save = localApi.slice(localApi.indexOf('url.pathname === "/api/save"'), localApi.indexOf('url.pathname === "/api/history/checkout"'));
+  const turnStart = localApi.slice(localApi.indexOf('url.pathname === "/api/codex/turn/start"'), localApi.indexOf('url.pathname === "/api/codex/turn/steer"'));
+  const steer = localApi.slice(localApi.indexOf('url.pathname === "/api/codex/turn/steer"'), localApi.indexOf('url.pathname === "/api/codex/turn/interrupt"'));
+  const writeBody = project.slice(project.indexOf("export async function writeProject"), project.indexOf("export async function assertCommittable"));
+  assert.ok(save.includes("assertCommittable"));
+  assert.ok(save.indexOf("assertCommittable") < save.indexOf("commitIfChanged"));
+  assert.match(turnStart, /writeProject\(payload\.deck\)/);
+  assert.doesNotMatch(turnStart, /writeProject\(payload\.deck,\s*[^)]/);
+  assert.doesNotMatch(steer, /writeProject/);
+  assert.doesNotMatch(writeBody, /auditContentPolicy/);
+});
+
+test("variation turns share prompt validation and editor annotation context", async () => {
+  const [localApi, page] = await Promise.all([
+    readFile(new URL("../server/local-api.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+  ]);
+  const startEditorTurn = localApi.slice(localApi.indexOf("async function startEditorTurn"), localApi.indexOf("codex.client.on"));
+  assert.match(startEditorTurn, /const prompt = requireTurnPrompt\(payload\)/);
+  const variation = page.slice(page.indexOf("const generateVariation"), page.indexOf("const acceptVariation"));
+  assert.match(variation, /collectTurnAnnotations\(prompt/);
+  assert.match(variation, /contextEnvelope\(variationAnnotations/);
 });
 
 test("UI uses Thread APIs, reducer, item cards, steering, interrupt, approvals, and catalogs", async () => {
@@ -74,6 +104,16 @@ test("activity rail destinations render their details in the left sidebar", asyn
   assert.match(page, /className="activity-panel settings-panel"/);
   assert.match(css, /\.activity-panel \{/);
   assert.doesNotMatch(page, /showHistory|history-popover|showCodexSettings|showHelp/);
+});
+
+test("the editor context stays with the composer instead of scrolling with the message log", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const messagesStart = page.indexOf('<div ref={messagesRef} className="messages"');
+  const chatStart = page.indexOf('<div className="chat-box">', messagesStart);
+  assert.notEqual(messagesStart, -1);
+  assert.notEqual(chatStart, -1);
+  assert.doesNotMatch(page.slice(messagesStart, chatStart), /className="context-chip"/);
+  assert.match(page.slice(chatStart), /<div className="chat-box">\s*<div className="context-chip"/);
 });
 
 test("transient lists share one dismissible popover contract", async () => {
@@ -149,6 +189,69 @@ test("block dragging previews reordering and separates move from text editing", 
   assert.doesNotMatch(page, /!session\.node\.classList\.contains\("weave-container"\)/);
   // A dropped block must not bounce: the container keeps its placeholder box around the ghost.
   assert.match(css, /:has\(> \.weave-dragging:only-child\)/);
+});
+
+test("a selected element can be referenced without knowing the pointing shortcut", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  const pointerReferenceHelper = page.match(/const pickPointerElement[\s\S]{0,200}?\n\s+(\w+)\([^;\n]*\);/)?.[1];
+  const buttonReferenceHelper = page.match(/const referenceSelectedElement[\s\S]{0,200}?\n\s+(\w+)\([^;\n]*\);/)?.[1];
+  const referenceButton = page.match(/agentReady &&[\s\S]{0,200}<button[^>]*className="canvas-reference-button"[^>]*>@[^<]*Reference<\/button>/)?.[0] ?? "";
+  assert.ok(pointerReferenceHelper);
+  assert.equal(buttonReferenceHelper, pointerReferenceHelper);
+  assert.match(referenceButton, /onClick=\{referenceSelectedElement\}/);
+  assert.match(css, /\.canvas-reference-button \{[^}]*margin: 0 4px/);
+  assert.match(css, /\.canvas-reference-button \{[^}]*pointer-events: auto/);
+});
+
+test("pointer tabs stay persistent only when a frame needs an outside target", async () => {
+  const [page, overlay] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/AnnotationOverlay.tsx", import.meta.url), "utf8"),
+  ]);
+  const frames = overlay.slice(overlay.indexOf("{candidates.map"), overlay.indexOf("{candidates.map", overlay.indexOf("{candidates.map") + 1));
+  const tabs = overlay.slice(overlay.indexOf("{candidates.map", overlay.indexOf("{candidates.map") + 1));
+  assert.match(page, /containsCandidate: node\.querySelector\("\[data-weave-id\]"\) !== null/);
+  assert.doesNotMatch(frames, /containsCandidate/);
+  assert.match(tabs, /!existing && !candidate\.containsCandidate && hoveredId !== candidate\.id/);
+  assert.match(tabs, /tabIndex=\{-1\}/);
+  assert.match(tabs, /aria-hidden="true"/);
+});
+
+test("annotation mode draws regions without selecting or pointing at elements", async () => {
+  const [page, readme] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../README.md", import.meta.url), "utf8"),
+  ]);
+  const gestureType = page.slice(page.indexOf("type AnnotationGesture"), page.indexOf("type AnnotationBox"));
+  const annotationPointerDown = page.slice(page.indexOf("if (annotationMode) {", page.indexOf("const onCanvasPointerDown")), page.indexOf("const target =", page.indexOf("const onCanvasPointerDown")));
+  const annotationPointerEnd = page.slice(page.indexOf("const onCanvasPointerEnd"), page.indexOf("const beginEdit"));
+  assert.doesNotMatch(gestureType, /elementId/);
+  assert.doesNotMatch(annotationPointerDown, /readSelection|setSelectedId/);
+  assert.doesNotMatch(annotationPointerEnd, /pointElement|target: \{ kind: "element" \}/);
+  for (const wording of ["Rough mode · drag to draw a frame", "Rough mode draws frames only", "Point to an element from the message composer"]) assert.match(page, new RegExp(wording));
+  /* The UI names the act; the umbrella term stays in the data vocabulary only (D10). */
+  assert.doesNotMatch(page, /Annotation mode/);
+  assert.match(page, /data-annotation-mode/);
+  assert.match(readme, /`@`[^\n]+要素[^\n]+矩形だけ/);
+});
+
+test("rough mode shows what it can do before anything is drawn", async () => {
+  const [overlay, css] = await Promise.all([
+    readFile(new URL("../app/components/AnnotationOverlay.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  /* The ghost is for the empty draft only, and it must never eat the drag that starts on it. */
+  assert.match(overlay, /interactive && annotations\.length === 0/);
+  assert.match(overlay, /annotation-empty-state" aria-hidden="true"/);
+  assert.match(css, /\.annotation-empty-state \{[^}]*pointer-events: none/);
+  /* The label teaches by example rather than naming the field. */
+  assert.match(overlay, /placeholder="What goes here\?/);
+  /* The paper belongs to the drafting layer: recall reads the result, so it is never veiled. */
+  assert.match(css, /\.annotation-overlay-layer\.interactive \{[^}]*backdrop-filter/);
+  assert.doesNotMatch(css, /\.annotation-recall-layer[^\n]*backdrop-filter/);
 });
 
 test("the object tree is an accessible collapsible section with stable body styling", async () => {

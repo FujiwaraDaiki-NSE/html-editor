@@ -4,6 +4,7 @@ import { join } from "node:path";
 import {
   acceptVariation,
   agentInstructions,
+  assertCommittable,
   archiveVariation,
   checkoutHistory,
   checkoutMain,
@@ -21,6 +22,8 @@ import {
   writeProject,
 } from "./project.mjs";
 import { CodexService } from "./codex/service.mjs";
+import { annotationPromptRules, canSendTurn } from "../shared/annotation.mjs";
+import { contextPromptRules, editorEnvelope } from "../shared/context.mjs";
 
 const apiPort = Number(process.env.WEAVE_API_PORT ?? 4317);
 const codex = new CodexService({ projectRoot, instructions: agentInstructions });
@@ -91,29 +94,39 @@ function requireText(value, name, limit = 20_000) {
   return text;
 }
 
+function requireTurnPrompt(payload) {
+  const text = String(payload.prompt ?? "");
+  const annotations = Array.isArray(payload.contextEnvelope?.annotations) ? payload.contextEnvelope.annotations : [];
+  if (!canSendTurn(text, annotations)) throw new Error("Prompt text or at least one annotation is required.");
+  return text.trim() ? requireText(text, "Prompt") : "Use the attached editor annotations as the request for this turn.";
+}
+
 function activeProjectTurn() {
   return codex.activeTurns.size > 0;
 }
 
 function serializeEditorContext(payload) {
   if (!payload.contextEnvelope || typeof payload.contextEnvelope !== "object") return "";
-  return `\n\nEditor context envelope (authoritative for this turn):\n${JSON.stringify(payload.contextEnvelope).slice(0, 120_000)}`;
+  const envelope = editorEnvelope(payload.contextEnvelope);
+  if (Object.keys(envelope).length === 0) return "";
+  const annotations = Array.isArray(envelope.annotations) ? envelope.annotations : [];
+  const annotationRules = annotations.length > 0 ? `\n\nAnnotation interpretation rules:\n${annotationPromptRules}` : "";
+  return `\n\nEditor context envelope:\n${JSON.stringify(envelope)}\n\nContext rules:\n${contextPromptRules}${annotationRules}`;
 }
 
 async function startEditorTurn(payload, { variation = false } = {}) {
   if (activeProjectTurn()) throw new Error("Another Agent turn is already running in this project.");
-  const prompt = requireText(payload.prompt, "Prompt");
+  const prompt = requireTurnPrompt(payload);
   let branch = null;
   if (variation) branch = createVariationBranch();
-  const deck = await writeProject(payload.deck, false);
+  const deck = await writeProject(payload.deck);
   const thread = await codex.startThread({
     approvalPolicy: payload.approvalPolicy ?? "never",
     model: payload.model,
   });
   const context = `${variation ? "Create a meaningfully different, polished direction. " : ""}User request: ${prompt}
 
-Current editor selection: ${String(payload.selectedId ?? "none")}
-The latest editor state has been written to slides/*.html and mirrored in .weave/current-buffer.json.
+The latest editor state has been written to slides/*.html.
 Inspect the current project and edit the slides/*.html files directly. Do not edit styles/deck.css.
 Do not commit; Weave will commit after this turn.${serializeEditorContext(payload)}`;
   const result = await codex.startTurn({
@@ -146,10 +159,21 @@ codex.client.on("notification", (message) => {
       await writeProject(project);
       /* Ordinary Agent edits remain an unsaved working result. A variation needs a
          commit because its branch is the durable unit switched by the direction tabs. */
+      let commitError;
       if (pending.variation) {
-        commitIfChanged(`Variation: ${pending.prompt.replace(/\s+/g, " ").slice(0, 100)}`);
+        try {
+          await assertCommittable();
+          commitIfChanged(`Variation: ${pending.prompt.replace(/\s+/g, " ").slice(0, 100)}`);
+        } catch (error) {
+          commitError = error.message;
+        }
       }
-      codex.events.publish("weave/project", { status: "updated", ...projectState(), deck: await readProject() });
+      codex.events.publish("weave/project", {
+        status: "updated",
+        ...projectState(),
+        deck: await readProject(),
+        ...(commitError ? { commitError } : {}),
+      });
     } catch (error) {
       codex.events.publish("weave/project", { status: "error", error: error.message });
     }
@@ -212,7 +236,8 @@ const server = createServer(async (request, response) => {
       if (idempotencyKey && completedSaves.has(idempotencyKey)) {
         return sendJson(request, response, 200, completedSaves.get(idempotencyKey));
       }
-      const deck = await writeProject(payload.deck, false, payload.expectedRevision);
+      const deck = await writeProject(payload.deck, payload.expectedRevision);
+      await assertCommittable();
       const commit = commitIfChanged(`Save: ${String(payload.message ?? deck.title).slice(0, 120)}`);
       const result = { ...(await statePayload()), commit };
       if (idempotencyKey) {
@@ -266,15 +291,16 @@ const server = createServer(async (request, response) => {
       return sendJson(request, response, 200, await codex.threadAction(payload.action, payload.params ?? {}));
     }
     if (url.pathname === "/api/codex/turn/start") {
-      const prompt = requireText(payload.prompt, "Prompt");
-      if (payload.deck) await writeProject(payload.deck, true);
+      const prompt = requireTurnPrompt(payload);
+      if (payload.deck) await writeProject(payload.deck);
       const result = await codex.startTurn({ ...payload, prompt: `${prompt}${serializeEditorContext(payload)}` });
       pendingTurns.set(payload.threadId, { prompt, branch: null, variation: false });
       return sendJson(request, response, 202, result);
     }
     if (url.pathname === "/api/codex/turn/steer") {
-      const prompt = requireText(payload.prompt, "Prompt");
-      return sendJson(request, response, 202, await codex.steerTurn({ ...payload, prompt }));
+      const prompt = requireTurnPrompt(payload);
+      // Steer only tells the agent what to point at; writing the DOM here could overwrite its in-progress file edits.
+      return sendJson(request, response, 202, await codex.steerTurn({ ...payload, prompt: `${prompt}${serializeEditorContext(payload)}` }));
     }
     if (url.pathname === "/api/codex/turn/interrupt") {
       return sendJson(request, response, 202, await codex.interruptTurn(payload.threadId));

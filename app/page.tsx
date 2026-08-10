@@ -2,12 +2,19 @@
 /* eslint-disable @typescript-eslint/no-explicit-any -- app-server catalog/request payloads are rendered defensively for forward compatibility. */
 /* eslint-disable react-hooks/refs -- the editor intentionally treats the live canvas DOM as its source of truth. */
 
-import { DragEvent, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
+import { DragEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import { actionFromStreamEvent } from "./codex/actions";
 import { defaultDeckCss, designHeight, designWidth, escapeHtml, renderDeckDocument } from "../shared/slide-design.mjs";
 import { auditContentPolicy } from "../shared/content-policy.mjs";
 import { applyTemplateToSlideHtml, contentSlotSelector, titleFromSlideHtml, titleSlotSelector } from "../shared/slide-slots.mjs";
 import { advancedControlKeys, allControlKeys, applyBlockPosition, applySize, applyUtilityClass, blockPositionOptions, containerControlKeys, decorationControlKeys, defaultSlideClasses, imageControlKeys, listControlKeys, migrateSlideHtmlToTailwind, ratioOptions, readBlockPosition, readSize, readUtilityClass, sizeIntents, slideControlGroups, textControlKeys } from "../shared/tailwind-slide.mjs";
+import { canSendTurn, insertReferenceAt, nextOrder, rectFromClientBox, rectFromPoints, refreshAnnotations, resizeRect, resolveReferences, toSlidePoint, translateRect } from "../shared/annotation.mjs";
+import { editorEnvelope, overflowingIds } from "../shared/context.mjs";
+import { AnnotationAttachment } from "./components/AnnotationAttachment";
+import { AnnotationLegend } from "./components/AnnotationLegend";
+import { AnnotationOverlay } from "./components/AnnotationOverlay";
+import type { Annotation, AnnotationGestureKind, AnnotationRect, PointerCandidate, ResizeHandle } from "./components/AnnotationOverlay";
+import { textExcerptOfNode } from "./components/editable-text-utils";
 import { ItemCard } from "./codex/components/ItemCard";
 import { ServerRequestCard } from "./codex/components/ServerRequestCard";
 import { codexReducer, initialCodexState } from "./codex/reducer";
@@ -64,6 +71,16 @@ const slideNavStore = {
   read: (): SlideNav => (window.localStorage.getItem(slideNavKey) === "rail" ? "rail" : "filmstrip"),
   serverRead: (): SlideNav => "filmstrip",
   write(value: SlideNav) { window.localStorage.setItem(slideNavKey, value); slideNavListeners.forEach((listener) => listener()); },
+};
+
+const sidebarWidthKey = "weave.sidebarWidth";
+const sidebarWidthListeners = new Set<() => void>();
+const clampSidebarWidth = (value: number) => Math.min(560, Math.max(280, value));
+const sidebarWidthStore = {
+  subscribe(listener: () => void) { sidebarWidthListeners.add(listener); return () => { sidebarWidthListeners.delete(listener); }; },
+  read: () => clampSidebarWidth(Number(window.localStorage.getItem(sidebarWidthKey)) || 340),
+  serverRead: () => 340,
+  write(value: number) { window.localStorage.setItem(sidebarWidthKey, String(clampSidebarWidth(value))); sidebarWidthListeners.forEach((listener) => listener()); },
 };
 
 const createMessageId = () => `weave-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
@@ -150,6 +167,60 @@ type BlockDragSession = {
   lastReorderX: number;
   lastReorderY: number;
 };
+type AnnotationGesture = {
+  pointerId: number;
+  startClient: { x: number; y: number };
+  startPoint: { x: number; y: number };
+} & (
+  | { kind: "draw"; slideId: string }
+  | { kind: "move"; annotationId: string; slideId: string; origin: AnnotationRect }
+  | { kind: "resize"; annotationId: string; slideId: string; origin: AnnotationRect; handle: ResizeHandle }
+);
+type AnnotationBox = { id: string; rect: AnnotationRect; html: string; elementKind: string; textExcerpt: string };
+type SentAnnotationAttachment = {
+  id: string;
+  threadId: string;
+  turnId: string | null;
+  slideId: string;
+  slideLabel: string;
+  annotations: Annotation[];
+};
+
+const cloneAnnotation = (annotation: Annotation): Annotation => ({
+  ...annotation,
+  target: annotation.target.kind === "element" ? { ...annotation.target } : { kind: "region" },
+  rect: { ...annotation.rect },
+  intersects: [...annotation.intersects],
+});
+
+const cloneMatches = (root: HTMLElement, selector: string): HTMLElement[] => [
+  ...(root.matches(selector) ? [root] : []),
+  ...Array.from(root.querySelectorAll<HTMLElement>(selector)),
+];
+
+const serializeEditorNode = (node: HTMLElement): string => {
+  const clone = node.cloneNode(true) as HTMLElement;
+  cloneMatches(clone, "[contenteditable], [data-editing], [draggable]").forEach((item) => {
+    item.removeAttribute("contenteditable");
+    item.removeAttribute("data-editing");
+    item.removeAttribute("draggable");
+  });
+  cloneMatches(clone, ".weave-selected, .weave-dragging, .weave-drop-before, .weave-drop-after, .weave-drop-horizontal").forEach((item) => {
+    item.classList.remove("weave-selected", "weave-dragging", "weave-drop-before", "weave-drop-after", "weave-drop-horizontal");
+  });
+  cloneMatches(clone, "img[data-asset-path]").forEach((item) => {
+    const path = item.getAttribute("data-asset-path") ?? item.getAttribute("src") ?? "";
+    item.setAttribute("src", path);
+    item.removeAttribute("data-asset-path");
+  });
+  return clone.outerHTML;
+};
+
+const kindOfNode = (node: HTMLElement): string => blockKinds.find((cls) => node.classList.contains(cls)) ?? node.tagName.toLowerCase();
+const refreshSlideAnnotations = (annotations: Annotation[], slideId: string, boxes: AnnotationBox[]) => {
+  const refreshed = new Map<string, Annotation>(refreshAnnotations(annotations.filter((annotation) => annotation.slideId === slideId), boxes).map((annotation: Annotation): [string, Annotation] => [annotation.id, annotation]));
+  return annotations.map((annotation) => refreshed.get(annotation.id) ?? annotation);
+};
 
 /* Live reordering rewrites the DOM under the cursor, so every move changes the geometry that
    decided it. Require the pointer to travel before re-deciding: without this, a container that
@@ -182,8 +253,11 @@ export default function Home() {
   const [openPopover, setOpenPopover] = useState<OpenPopover>(null);
   const [saved, setSaved] = useState(true);
   const [promptDraft, setPromptDraft] = useState("");
+  const [pointerPicking, setPointerPicking] = useState(false);
+  const [pointerCandidates, setPointerCandidates] = useState<PointerCandidate[]>([]);
   const [codexState, dispatchCodex] = useReducer(codexReducer, initialCodexState);
   const slideNav = useSyncExternalStore(slideNavStore.subscribe, slideNavStore.read, slideNavStore.serverRead);
+  const sidebarWidth = useSyncExternalStore(sidebarWidthStore.subscribe, sidebarWidthStore.read, sidebarWidthStore.serverRead);
   const [threadSearch, setThreadSearch] = useState("");
   const [showArchivedThreads, setShowArchivedThreads] = useState(false);
   const [activityView, setActivityView] = useState<ActivityView>("agent");
@@ -216,16 +290,28 @@ export default function Home() {
   const [currentTemplateId, setCurrentTemplateId] = useState("");
   // Keep raw input while focused because the derived title trims whitespace after every DOM sync.
   const [titleDraft, setTitleDraft] = useState<string | null>(null);
+  const [annotationMode, setAnnotationMode] = useState(false);
+  const [annotations, setAnnotations] = useState<Annotation[]>([]);
+  const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
+  const [draftAnnotationRect, setDraftAnnotationRect] = useState<AnnotationRect | null>(null);
+  const [focusAnnotationId, setFocusAnnotationId] = useState<string | null>(null);
+  const [includeRegionAnnotations, setIncludeRegionAnnotations] = useState(true);
+  const [annotationAttachments, setAnnotationAttachments] = useState<SentAnnotationAttachment[]>([]);
+  const [activeOverlayAttachmentId, setActiveOverlayAttachmentId] = useState<string | null>(null);
 
   const canvasRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
+  const annotationScrollRef = useRef<HTMLDivElement>(null);
   const presenterRef = useRef<HTMLDivElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const replacingImageRef = useRef(false);
   const messagesRef = useRef<HTMLDivElement>(null);
+  const promptRef = useRef<HTMLTextAreaElement>(null);
   const compositionRef = useRef(false);
+  const compositionCommitRef = useRef(false);
+  const pointerCaretRef = useRef(0);
   const turnInFlightRef = useRef(false);
   const shouldAutoScrollRef = useRef(true);
   const eventSequenceRef = useRef(0);
@@ -236,6 +322,7 @@ export default function Home() {
   const activeRef = useRef(activeSlide);
   const selectedRef = useRef(selectedId);
   const blockDragRef = useRef<BlockDragSession | null>(null);
+  const annotationGestureRef = useRef<AnnotationGesture | null>(null);
   const popoverTriggerRef = useRef<HTMLButtonElement | null>(null);
   // Preview stays outside slide state so save, sync, and undo cannot observe a candidate frame.
   const templatePreviewHtmlRef = useRef<string | null>(null);
@@ -246,9 +333,48 @@ export default function Home() {
   const activeTurns = selectThreadTurns(codexState, codexState.activeThreadId);
   const visibleTurns = activeTurns.slice(-100);
   const slideScale = manualZoom ?? fitScale;
+  const activeSlideId = slides[activeSlide - 1]?.id;
+  const activeAnnotations = annotations.filter((annotation) => annotation.slideId === activeSlideId);
+  const activeRegionAnnotations = activeAnnotations.filter((annotation) => annotation.target.kind === "region");
+  const activeElementAnnotations = activeAnnotations.filter((annotation) => annotation.target.kind === "element");
+  const referencedRegions = resolveReferences(promptDraft, activeRegionAnnotations);
+  const regionsWillSend = includeRegionAnnotations || referencedRegions.length > 0;
+  const sendableAnnotations = activeAnnotations.filter((annotation) => annotation.target.kind === "element" || regionsWillSend);
+  const activeThreadAttachments = annotationAttachments.filter((attachment) => attachment.threadId === codexState.activeThreadId);
+  const visibleTurnIds = new Set(visibleTurns.map((turn) => turn.id));
+  const unmatchedAttachments = activeThreadAttachments.filter((attachment) => !attachment.turnId || !visibleTurnIds.has(attachment.turnId));
+  const activeOverlayAttachment = annotationAttachments.find((attachment) => attachment.id === activeOverlayAttachmentId) ?? null;
+  const activeOverlayTurnIds = activeOverlayAttachment ? codexState.threads[activeOverlayAttachment.threadId]?.turnIds ?? [] : [];
+  const activeOverlayTurnIndex = activeOverlayAttachment?.turnId ? activeOverlayTurnIds.indexOf(activeOverlayAttachment.turnId) : -1;
+  const activeOverlayLabel = activeOverlayAttachment
+    ? `${activeOverlayTurnIndex >= 0 ? `Turn ${activeOverlayTurnIndex + 1}` : "Sent turn"} · ${activeOverlayAttachment.slideLabel}`
+    : "";
+  const recalledAnnotations = activeOverlayAttachment?.slideId === activeSlideId ? activeOverlayAttachment.annotations : [];
+
+  useEffect(() => { document.documentElement.style.setProperty("--weave-sidebar-width", `${sidebarWidth}px`); }, [sidebarWidth]);
+  const startSidebarResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = sidebarWidth;
+    let finalWidth = startWidth;
+    const move = (moveEvent: PointerEvent) => {
+      finalWidth = clampSidebarWidth(startWidth + moveEvent.clientX - startX);
+      document.documentElement.style.setProperty("--weave-sidebar-width", `${finalWidth}px`);
+    };
+    const end = () => {
+      document.removeEventListener("pointermove", move);
+      document.removeEventListener("pointerup", end);
+      document.removeEventListener("pointercancel", end);
+      sidebarWidthStore.write(finalWidth);
+    };
+    document.addEventListener("pointermove", move);
+    document.addEventListener("pointerup", end);
+    document.addEventListener("pointercancel", end);
+  };
+  const adjustSidebarWidth = (delta: number) => sidebarWidthStore.write(sidebarWidth + delta);
 
   const setSlidesSynced = (next: SlideDoc[]) => { slidesRef.current = next; setSlides(next); };
-  const setActiveSlideSynced = (next: number) => { templatePreviewHtmlRef.current = null; templatePreviewSourceHtmlRef.current = null; setTitleDraft(null); setActiveSlide(next); };
+  const setActiveSlideSynced = (next: number) => { templatePreviewHtmlRef.current = null; templatePreviewSourceHtmlRef.current = null; setTitleDraft(null); setPointerPicking(false); setActiveSlide(next); };
   const reinject = useCallback(() => setInjectKey((value) => value + 1), []);
   const cancelTemplatePreview = useCallback(() => {
     if (templatePreviewHtmlRef.current == null && templatePreviewSourceHtmlRef.current == null) return;
@@ -272,7 +398,7 @@ export default function Home() {
   const selectedNode = () => (selectedId ? canvasRef.current?.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(selectedId)}"]`) ?? null : null);
 
   const readSelection = (node: HTMLElement): SelState => {
-    const kind = blockKinds.find((cls) => node.classList.contains(cls)) ?? node.tagName.toLowerCase();
+    const kind = kindOfNode(node);
     const read: Record<string, string> = {};
     for (const key of allControlKeys) {
       read[key] = readUtilityClass([...node.classList], key);
@@ -293,13 +419,7 @@ export default function Home() {
   const serializeCanvas = (): string | null => {
     const root = slideRoot();
     if (!root) return null;
-    const clone = root.cloneNode(true) as HTMLElement;
-    clone.querySelectorAll("[contenteditable]").forEach((node) => node.removeAttribute("contenteditable"));
-    clone.querySelectorAll("[data-editing]").forEach((node) => node.removeAttribute("data-editing"));
-    clone.querySelectorAll(".weave-selected, .weave-dragging, .weave-drop-before, .weave-drop-after, .weave-drop-horizontal").forEach((node) => node.classList.remove("weave-selected", "weave-dragging", "weave-drop-before", "weave-drop-after", "weave-drop-horizontal"));
-    clone.querySelectorAll("[draggable]").forEach((node) => node.removeAttribute("draggable"));
-    clone.querySelectorAll<HTMLImageElement>('img[data-asset-path]').forEach((node) => { node.src = node.dataset.assetPath ?? node.getAttribute("src") ?? ""; node.removeAttribute("data-asset-path"); });
-    return clone.outerHTML;
+    return serializeEditorNode(root);
   };
 
   const captureActive = (list: SlideDoc[] = slidesRef.current): SlideDoc[] => {
@@ -335,20 +455,24 @@ export default function Home() {
 
   const deckPayload = () => ({ title: deckTitle, slides: captureActive() });
 
-  const contextEnvelope = () => ({
-    revision: serverRevision,
-    activeSlide,
-    selected: selectedId ? { id: selectedId, kind: sel?.kind ?? "", label: sel?.kind ?? "" } : null,
-    selectedText: typeof window === "undefined" ? "" : window.getSelection()?.toString().slice(0, 2_000) ?? "",
-    activeSlideHtml: (serializeCanvas() ?? slides[activeSlide - 1]?.html ?? "").slice(0, 30_000),
-    css: deckCss.slice(0, 30_000),
-    recentHistory: history.slice(0, 5).map(({ shortId, message }) => ({ shortId, message })),
+  const contextEnvelope = (annotationContext: Annotation[] = [], overflowing: string[] = []) => editorEnvelope({
+    slide: activeSlideId,
+    selected: selectedId ? {
+      id: selectedId,
+      kind: sel?.kind ?? "",
+      text: (() => {
+        const node = selectedNode();
+        return node ? textExcerptOfNode(node, 200) : "";
+      })(),
+    } : undefined,
+    annotations: annotationContext,
+    overflowing,
   });
 
   const quality = useMemo(() => {
     const html = slides.map((slide) => slide.html).join("\n");
     const result = auditContentPolicy({ css: deckCss, html });
-    return { ok: result.ok, diagnostics: result.diagnostics, errors: result.summary.errors, warnings: 0 };
+    return { ok: result.ok, diagnostics: result.diagnostics, errors: result.summary.errors, warnings: result.summary.warnings };
   }, [slides, deckCss]);
 
   const activeThread = codexState.activeThreadId ? codexState.threads[codexState.activeThreadId] : null;
@@ -487,7 +611,7 @@ export default function Home() {
     const previewHtml = templatePreviewHtmlRef.current;
     host.innerHTML = previewHtml ?? templatePreviewSourceHtmlRef.current ?? slidesRef.current[activeSlide - 1]?.html ?? "";
     host.querySelectorAll<HTMLImageElement>('img[src^="assets/"]').forEach((node) => { const path = node.getAttribute("src") ?? ""; node.dataset.assetPath = path; node.src = `${apiBase}/${path}`; });
-    host.querySelectorAll<HTMLElement>("[data-weave-id]").forEach((node) => { node.draggable = !agentRunning && !isTitleSlot(node); });
+    host.querySelectorAll<HTMLElement>("[data-weave-id]").forEach((node) => { node.draggable = !annotationMode && !agentRunning && !isTitleSlot(node); });
     const root = host.querySelector<HTMLElement>(".weave-slide");
     if (root) {
       setCurrentTemplateId(root.dataset.weaveTemplate ?? "");
@@ -496,7 +620,7 @@ export default function Home() {
       const activeAccent = accents.find((item) => root.querySelector(`.${item.className}`));
       setAccent(activeAccent?.color ?? accents[0].color);
     }
-  }, [activeSlide, injectKey, mode, agentRunning]);
+  }, [activeSlide, injectKey, mode, agentRunning, annotationMode]);
 
   /* Selection outline + inspector read-out follow the selected node without re-injecting. */
   useLayoutEffect(() => {
@@ -531,7 +655,7 @@ export default function Home() {
     setOutline(list);
     // `slides` is a dependency because every DOM edit flows back through it: without it the tree
     // keeps showing the pre-move order after a canvas or tree drag.
-  }, [selectedId, injectKey, activeSlide, mode, slides]);
+  }, [selectedId, injectKey, activeSlide, mode, slides, annotationMode]);
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
@@ -539,6 +663,18 @@ export default function Home() {
     const observer = new ResizeObserver(([entry]) => setFitScale(Math.min(entry.contentRect.width / designWidth, entry.contentRect.height / designHeight)));
     observer.observe(viewport);
     return () => observer.disconnect();
+  }, [mode]);
+
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    const scrollLayer = annotationScrollRef.current;
+    if (!viewport || !scrollLayer) return;
+    const syncScroll = () => {
+      scrollLayer.style.transform = `translate(${-viewport.scrollLeft}px, ${-viewport.scrollTop}px)`;
+    };
+    syncScroll();
+    viewport.addEventListener("scroll", syncScroll, { passive: true });
+    return () => viewport.removeEventListener("scroll", syncScroll);
   }, [mode]);
 
   useEffect(() => { slidesRef.current = slides; }, [slides]);
@@ -564,14 +700,298 @@ export default function Home() {
 
   /* --- Live-DOM editing on the canvas -------------------------------------------------- */
 
+  const annotationPoint = (event: { clientX: number; clientY: number }) => {
+    const viewport = viewportRef.current;
+    if (!viewport) return null;
+    return toSlidePoint(event, viewport.getBoundingClientRect(), slideScale, { left: viewport.scrollLeft, top: viewport.scrollTop });
+  };
+
+  const liveAnnotationBoxes = (): AnnotationBox[] => {
+    const viewport = viewportRef.current;
+    if (!viewport) return [];
+    const viewportBox = viewport.getBoundingClientRect();
+    const scroll = { left: viewport.scrollLeft, top: viewport.scrollTop };
+    return Array.from(viewport.querySelectorAll<HTMLElement>("[data-weave-id]")).flatMap((node) => {
+      const id = node.getAttribute("data-weave-id");
+      return id ? [{
+        id,
+        rect: rectFromClientBox(node.getBoundingClientRect(), viewportBox, slideScale, scroll),
+        html: serializeEditorNode(node),
+        elementKind: kindOfNode(node),
+        textExcerpt: textExcerptOfNode(node),
+      }] : [];
+    });
+  };
+
+  const collectTurnAnnotations = (prompt: string, boxes: AnnotationBox[] | null = viewportRef.current ? liveAnnotationBoxes() : null) => {
+    const slide = slidesRef.current[activeRef.current - 1];
+    const slideAnnotations = slide ? annotations.filter((annotation) => annotation.slideId === slide.id) : [];
+    const refreshed = (boxes ? refreshAnnotations(slideAnnotations, boxes) : slideAnnotations.map(cloneAnnotation)) as Annotation[];
+    const regionAnnotations = slideAnnotations.filter((annotation) => annotation.target.kind === "region");
+    const includeRegions = includeRegionAnnotations || resolveReferences(prompt, regionAnnotations).length > 0;
+    return refreshed
+      .filter((annotation) => annotation.target.kind === "element" || includeRegions)
+      .sort((a, b) => a.order - b.order);
+  };
+
+  /* Measured against the slide root rather than the viewport: the viewport scrolls under manual zoom,
+     and the annotation rects cannot serve here because clampRect trims them to the frame. Layout reads
+     stay out of the annotation and pointer frames — overflow is measured once, at send time. */
+  const liveOverflowMeasurements = () => {
+    const slide = slideRoot();
+    if (!slide) return [];
+    const slideBox = slide.getBoundingClientRect();
+    return Array.from(slide.querySelectorAll<HTMLElement>("[data-weave-id]")).flatMap((node) => {
+      const id = node.getAttribute("data-weave-id");
+      if (!id) return [];
+      const box = node.getBoundingClientRect();
+      return [{
+        id,
+        box: {
+          left: (box.left - slideBox.left) / slideScale,
+          top: (box.top - slideBox.top) / slideScale,
+          right: (box.right - slideBox.left) / slideScale,
+          bottom: (box.bottom - slideBox.top) / slideScale,
+        },
+        scrollHeight: node.scrollHeight,
+        clientHeight: node.clientHeight,
+      }];
+    });
+  };
+
+  const livePointerCandidates = useCallback((): PointerCandidate[] => {
+    const viewport = viewportRef.current;
+    if (!viewport) return [];
+    const viewportBox = viewport.getBoundingClientRect();
+    const scroll = { left: viewport.scrollLeft, top: viewport.scrollTop };
+    return Array.from(viewport.querySelectorAll<HTMLElement>("[data-weave-id]")).flatMap((node) => {
+      const id = node.getAttribute("data-weave-id");
+      return id ? [{
+        id,
+        rect: rectFromClientBox(node.getBoundingClientRect(), viewportBox, slideScale, scroll),
+        elementKind: kindOfNode(node),
+        textExcerpt: textExcerptOfNode(node),
+        containsCandidate: node.querySelector("[data-weave-id]") !== null,
+      }] : [];
+    });
+  }, [slideScale]);
+
+  useLayoutEffect(() => {
+    const frame = requestAnimationFrame(() => setPointerCandidates(pointerPicking ? livePointerCandidates() : []));
+    return () => cancelAnimationFrame(frame);
+  }, [livePointerCandidates, pointerPicking]);
+
+  const toggleAnnotationMode = () => {
+    setPointerPicking(false);
+    if (!annotationMode) canvasRef.current?.querySelector<HTMLElement>('[contenteditable="true"]')?.blur();
+    if (mode === "code") { reinject(); setMode("preview"); }
+    annotationGestureRef.current = null;
+    setDraftAnnotationRect(null);
+    setTreeDragId(null);
+    setTreeDrop(null);
+    setOpenPopover(null);
+    if (annotationMode) setSelectedAnnotationId(null);
+    setAnnotationMode(!annotationMode);
+    setAnnouncement(annotationMode ? "Rough mode left" : "Rough mode entered. Drag to draw a frame, then label it.");
+  };
+
+  const updateAnnotationGesture = (event: { clientX: number; clientY: number }) => {
+    const gesture = annotationGestureRef.current;
+    const point = annotationPoint(event);
+    if (!gesture || !point) return;
+    if (gesture.kind === "draw") {
+      setDraftAnnotationRect(rectFromPoints(gesture.startPoint, point));
+      return;
+    }
+    setAnnotations((current) => current.map((annotation) => {
+      if (annotation.id !== gesture.annotationId) return annotation;
+      const rect = gesture.kind === "move"
+        ? translateRect(gesture.origin, point.x - gesture.startPoint.x, point.y - gesture.startPoint.y)
+        : resizeRect(gesture.origin, gesture.handle, point);
+      return { ...annotation, rect };
+    }));
+  };
+
+  const onAnnotationGestureStart = (event: React.PointerEvent<HTMLElement>, annotationId: string, kind: AnnotationGestureKind) => {
+    if (!annotationMode || event.button !== 0) return;
+    const annotation = annotations.find((item) => item.id === annotationId);
+    const point = annotationPoint(event);
+    if (!annotation || !point) return;
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    annotationGestureRef.current = kind === "move"
+      ? { kind, pointerId: event.pointerId, annotationId, slideId: annotation.slideId, origin: annotation.rect, startPoint: point, startClient: { x: event.clientX, y: event.clientY } }
+      : { kind: "resize", handle: kind, pointerId: event.pointerId, annotationId, slideId: annotation.slideId, origin: annotation.rect, startPoint: point, startClient: { x: event.clientX, y: event.clientY } };
+    setSelectedAnnotationId(annotationId);
+  };
+
+  const onAnnotationGestureMove = (event: React.PointerEvent<HTMLElement>) => {
+    if (annotationGestureRef.current?.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    updateAnnotationGesture(event);
+  };
+
+  const onAnnotationGestureEnd = (event: React.PointerEvent<HTMLElement>) => {
+    const gesture = annotationGestureRef.current;
+    if (!gesture || gesture.kind === "draw" || gesture.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.type !== "pointercancel") updateAnnotationGesture(event);
+    const boxes = liveAnnotationBoxes();
+    setAnnotations((current) => refreshSlideAnnotations(current, gesture.slideId, boxes));
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    annotationGestureRef.current = null;
+  };
+
+  const deleteAnnotation = (id: string) => {
+    const annotation = annotations.find((item) => item.id === id);
+    setAnnotations((current) => current.filter((annotation) => annotation.id !== id));
+    setSelectedAnnotationId((current) => current === id ? null : current);
+    setFocusAnnotationId((current) => current === id ? null : current);
+    if (annotation) setAnnouncement(`Annotation ${annotation.order} deleted`);
+  };
+
+  const pointElement = (slideId: string, elementId: string): { annotation: Annotation; created: boolean } | null => {
+    const existing = annotations.find((annotation) => annotation.slideId === slideId && annotation.target.kind === "element" && annotation.target.weaveId === elementId);
+    if (existing) {
+      setSelectedAnnotationId(existing.id);
+      return { annotation: existing, created: false };
+    }
+    const boxes = liveAnnotationBoxes();
+    const elementBox = boxes.find((box) => box.id === elementId);
+    if (!elementBox) return null;
+    const id = createMessageId();
+    const order = nextOrder(annotations.filter((annotation) => annotation.slideId === slideId));
+    const created: Annotation = {
+      id,
+      order,
+      slideId,
+      target: {
+        kind: "element",
+        weaveId: elementId,
+        html: elementBox.html,
+        elementKind: elementBox.elementKind,
+        textExcerpt: elementBox.textExcerpt,
+      },
+      rect: elementBox.rect,
+      label: "",
+      intersects: [],
+    };
+    setAnnotations((current) => refreshSlideAnnotations([...current, created], slideId, boxes));
+    setSelectedAnnotationId(id);
+    return { annotation: created, created: true };
+  };
+
+  const insertPromptReference = (annotation: Annotation, caret: number, afterAtSign: boolean) => {
+    const inserted = insertReferenceAt(promptDraft, caret, annotation.order, { afterAtSign });
+    setPromptDraft(inserted.text);
+    requestAnimationFrame(() => {
+      promptRef.current?.focus();
+      promptRef.current?.setSelectionRange(inserted.caret, inserted.caret);
+    });
+  };
+
+  const referenceElement = (elementId: string, caret: number, afterAtSign: boolean) => {
+    const slideId = slidesRef.current[activeRef.current - 1]?.id;
+    if (!slideId) return;
+    const pointed = pointElement(slideId, elementId);
+    if (!pointed) return;
+    insertPromptReference(pointed.annotation, caret, afterAtSign);
+    setAnnouncement(pointed.created
+      ? `Element annotation ${pointed.annotation.order} created and referenced`
+      : `Element annotation ${pointed.annotation.order} reused`);
+  };
+
+  const pickPointerElement = (elementId: string) => {
+    if (!pointerPicking) return;
+    referenceElement(elementId, pointerCaretRef.current, true);
+    setPointerPicking(false);
+  };
+
+  const referenceSelectedElement = () => {
+    if (!agentReady || annotationMode || pointerPicking || !selectedId) return;
+    referenceElement(selectedId, promptDraft.length, false);
+  };
+
+  const restoreAnnotationAttachment = (attachment: SentAnnotationAttachment) => {
+    if (!slidesRef.current.some((slide) => slide.id === attachment.slideId)) {
+      setApiError("The slide for this annotation attachment no longer exists.");
+      return;
+    }
+    const restoredIds = attachment.annotations.map(() => createMessageId());
+    setAnnotations((current) => {
+      let order = nextOrder(current.filter((annotation) => annotation.slideId === attachment.slideId));
+      const restored = attachment.annotations.map((annotation, index) => ({
+        ...cloneAnnotation(annotation),
+        id: restoredIds[index],
+        order: order++,
+        slideId: attachment.slideId,
+      }));
+      return [...current, ...restored];
+    });
+    if (attachment.annotations.some((annotation) => annotation.target.kind === "region")) setIncludeRegionAnnotations(true);
+    setApiError(null);
+    setAnnouncement("Annotation attachment restored to draft");
+  };
+
   const onCanvasPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (pointerPicking) { event.preventDefault(); event.stopPropagation(); setPointerPicking(false); return; }
+    if (annotationMode) {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      setSelectedAnnotationId(null);
+      const point = annotationPoint(event);
+      const slideId = slidesRef.current[activeRef.current - 1]?.id;
+      if (!point || !slideId) return;
+      event.currentTarget.setPointerCapture(event.pointerId);
+      annotationGestureRef.current = { kind: "draw", pointerId: event.pointerId, slideId, startPoint: point, startClient: { x: event.clientX, y: event.clientY } };
+      setDraftAnnotationRect(rectFromPoints(point, point));
+      return;
+    }
     const target = (event.target as HTMLElement).closest<HTMLElement>("[data-weave-id]");
     if (!target || !canvasRef.current?.contains(target)) { setSelectedId(null); return; }
     if (target.getAttribute("contenteditable") === "true") return;
     setSelectedId(target.getAttribute("data-weave-id"));
   };
 
+  const onCanvasPointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const gesture = annotationGestureRef.current;
+    if (gesture?.kind !== "draw" || gesture.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    updateAnnotationGesture(event);
+  };
+
+  const onCanvasPointerEnd = (event: React.PointerEvent<HTMLDivElement>) => {
+    const gesture = annotationGestureRef.current;
+    if (gesture?.kind !== "draw" || gesture.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const point = annotationPoint(event);
+    const canceled = event.type === "pointercancel";
+    const draggedArea = Math.abs(event.clientX - gesture.startClient.x) >= 4 && Math.abs(event.clientY - gesture.startClient.y) >= 4;
+    if (!canceled && point && draggedArea) {
+      const rect = rectFromPoints(gesture.startPoint, point);
+      const id = createMessageId();
+      const boxes = liveAnnotationBoxes();
+      const order = nextOrder(annotations.filter((annotation) => annotation.slideId === gesture.slideId));
+      const created: Annotation = { id, order, slideId: gesture.slideId, target: { kind: "region" }, rect, label: "", intersects: [] };
+      setAnnotations((current) => refreshSlideAnnotations([...current, created], gesture.slideId, boxes));
+      setSelectedAnnotationId(id);
+      setFocusAnnotationId(id);
+      setIncludeRegionAnnotations(true);
+      setAnnouncement(`Region annotation ${order} created`);
+    }
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    annotationGestureRef.current = null;
+    setDraftAnnotationRect(null);
+  };
+
   const beginEdit = (node: HTMLElement) => {
+    if (annotationMode) return;
     if (node instanceof HTMLImageElement || [...node.classList].some((cls) => containerClasses.has(cls))) return;
     checkpoint();
     node.draggable = false;
@@ -582,6 +1002,7 @@ export default function Home() {
   };
 
   const onCanvasDoubleClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (annotationMode || pointerPicking) { event.preventDefault(); event.stopPropagation(); return; }
     const target = (event.target as HTMLElement).closest<HTMLElement>("[data-weave-id]");
     if (target) beginEdit(target);
   };
@@ -591,13 +1012,14 @@ export default function Home() {
     if (node.getAttribute?.("contenteditable") === "true") {
       node.removeAttribute("contenteditable");
       node.removeAttribute("data-editing");
-      node.draggable = !agentRunning && !isTitleSlot(node);
+      node.draggable = !annotationMode && !agentRunning && !isTitleSlot(node);
       setEditingId(null);
       syncFromDom();
     }
   };
 
   const onCanvasKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (annotationMode || pointerPicking) return;
     const node = selectedNode();
     if (!node) return;
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "b" && node.getAttribute("contenteditable") === "true") {
@@ -649,6 +1071,7 @@ export default function Home() {
   };
 
   const onCanvasDragStart = (event: DragEvent<HTMLDivElement>) => {
+    if (annotationMode) { event.preventDefault(); event.stopPropagation(); return; }
     const target = (event.target as HTMLElement).closest<HTMLElement>("[data-weave-id]");
     const id = target?.getAttribute("data-weave-id");
     if (!target || !id || isTitleSlot(target) || target.getAttribute("contenteditable") === "true" || !target.parentNode) {
@@ -667,6 +1090,7 @@ export default function Home() {
   };
 
   const onCanvasDragOver = (event: DragEvent<HTMLDivElement>) => {
+    if (annotationMode) { event.preventDefault(); event.stopPropagation(); return; }
     const session = blockDragRef.current;
     const host = canvasRef.current;
     if (!session || !host) return;
@@ -726,6 +1150,7 @@ export default function Home() {
 
   const onCanvasDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
+    if (annotationMode) { event.stopPropagation(); return; }
     const image = Array.from(event.dataTransfer.files).find((file) => file.type.startsWith("image/"));
     if (image) {
       const target = (event.target as HTMLElement).closest<HTMLElement>("[data-weave-id]");
@@ -757,6 +1182,7 @@ export default function Home() {
     const image = Array.from(event.clipboardData.files).find((file) => file.type.startsWith("image/"));
     if (!image) return;
     event.preventDefault();
+    if (annotationMode) { event.stopPropagation(); return; }
     void uploadImage(image);
   };
 
@@ -785,6 +1211,7 @@ export default function Home() {
   };
 
   const onTreeDragOver = (event: DragEvent<HTMLElement>, item: OutlineItem | null) => {
+    if (annotationMode) return;
     if (!treeDragId || !canDropInTree(treeDragId, item?.id ?? null)) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "move";
@@ -798,6 +1225,7 @@ export default function Home() {
 
   const onTreeDrop = (event: DragEvent<HTMLElement>, item: OutlineItem | null) => {
     event.preventDefault();
+    if (annotationMode) { event.stopPropagation(); return; }
     const host = canvasRef.current;
     const drop = treeDrop;
     const dragId = treeDragId;
@@ -977,7 +1405,22 @@ export default function Home() {
     activeRef.current = slideNumber;
     setActiveSlideSynced(slideNumber);
     setSelectedId(null);
+    setSelectedAnnotationId(null);
     reinject();
+  };
+
+  const toggleAttachmentOverlay = (attachment: SentAnnotationAttachment) => {
+    if (activeOverlayAttachmentId === attachment.id) {
+      setActiveOverlayAttachmentId(null);
+      setAnnouncement("Annotation overlay hidden");
+      return;
+    }
+    const slideIndex = slidesRef.current.findIndex((slide) => slide.id === attachment.slideId);
+    if (slideIndex < 0) return;
+    if (mode === "code") setMode("preview");
+    if (activeRef.current !== slideIndex + 1) switchSlide(slideIndex + 1);
+    setActiveOverlayAttachmentId(attachment.id);
+    setAnnouncement("Annotation overlay shown");
   };
 
   const setSlideTitle = (title: string) => {
@@ -1028,6 +1471,7 @@ export default function Home() {
 
   const deleteSlide = () => {
     if (slidesRef.current.length <= 1) return;
+    const deletedSlideId = slidesRef.current[activeRef.current - 1]?.id;
     checkpoint();
     const captured = captureActive().filter((_, index) => index !== activeRef.current - 1);
     const nextNumber = Math.min(activeRef.current, captured.length);
@@ -1035,6 +1479,8 @@ export default function Home() {
     activeRef.current = nextNumber;
     setActiveSlideSynced(nextNumber);
     setSelectedId(null);
+    setSelectedAnnotationId(null);
+    if (deletedSlideId) setAnnotations((current) => current.filter((annotation) => annotation.slideId !== deletedSlideId));
     setSaved(false);
     reinject();
   };
@@ -1055,8 +1501,11 @@ export default function Home() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
+      if (pointerPicking && event.key === "Escape") { event.preventDefault(); setPointerPicking(false); setAnnouncement("Element pointing canceled"); return; }
       if (target.matches("input, textarea, [contenteditable=true]")) return;
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") { event.preventDefault(); if (event.shiftKey) redo(); else undo(); }
+      if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "a") { event.preventDefault(); toggleAnnotationMode(); }
+      else if (annotationMode && selectedAnnotationId && (event.key === "Delete" || event.key === "Backspace")) { event.preventDefault(); deleteAnnotation(selectedAnnotationId); }
+      else if (!annotationMode && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") { event.preventDefault(); if (event.shiftKey) redo(); else undo(); }
       else if (event.key === "?") setActivityView("shortcuts");
       else if (event.key === "ArrowRight" && activeSlide < slides.length) switchSlide(activeSlide + 1);
       else if (event.key === "ArrowLeft" && activeSlide > 1) switchSlide(activeSlide - 1);
@@ -1170,13 +1619,16 @@ export default function Home() {
 
   const generateVariation = async () => {
     const prompt = variationPrompt.trim();
-    if (!prompt || turnInFlightRef.current) return;
+    const boxes = liveAnnotationBoxes();
+    const variationAnnotations = collectTurnAnnotations(prompt, boxes);
+    if (!canSendTurn(prompt, variationAnnotations) || turnInFlightRef.current) return;
     turnInFlightRef.current = true;
     setTurnSubmitting(true);
     setShowVariationPrompt(false);
     setApiError(null);
     try {
-      const response = await fetch(`${apiBase}/variations/generate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt, deck: deckPayload(), clientUserMessageId: createMessageId(), model: selectedModel || undefined, effort: reasoningEffort, approvalPolicy, contextEnvelope: contextEnvelope() }) });
+      // Variations are branch trials, so annotations stay on the canvas instead of being consumed.
+      const response = await fetch(`${apiBase}/variations/generate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt, deck: deckPayload(), clientUserMessageId: createMessageId(), model: selectedModel || undefined, effort: reasoningEffort, approvalPolicy, contextEnvelope: contextEnvelope(variationAnnotations, overflowingIds(liveOverflowMeasurements())) }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Could not generate direction.");
       setActiveVariation(result.branch);
@@ -1209,9 +1661,49 @@ export default function Home() {
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   };
 
+  const onPromptChange = (event: React.ChangeEvent<HTMLTextAreaElement>) => {
+    const nativeEvent = event.nativeEvent as InputEvent & { keyCode?: number };
+    const next = event.target.value;
+    const caret = event.target.selectionStart ?? next.length;
+    const isComposing = compositionRef.current || compositionCommitRef.current || nativeEvent.isComposing || nativeEvent.keyCode === 229;
+    setPromptDraft(next);
+    if (pointerPicking) {
+      if (next[caret - 1] === "@") pointerCaretRef.current = caret;
+      else {
+        setPointerPicking(false);
+        setAnnouncement("Element pointing canceled");
+      }
+      return;
+    }
+    if (mode !== "preview" || annotationMode || isComposing || nativeEvent.data !== "@") return;
+    pointerCaretRef.current = caret;
+    setPointerPicking(true);
+    setAnnouncement("Element pointing ready");
+  };
+
+  const onPromptCompositionEnd = () => {
+    compositionRef.current = false;
+    compositionCommitRef.current = true;
+    window.setTimeout(() => { compositionCommitRef.current = false; }, 0);
+  };
+
+  const onPromptKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    const nativeEvent = event.nativeEvent as KeyboardEvent;
+    const isComposing = compositionRef.current || nativeEvent.isComposing || nativeEvent.keyCode === 229;
+    if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !isComposing) { event.preventDefault(); void sendMessage(); }
+  };
+
   const sendMessage = async () => {
     const value = promptDraft.trim();
-    if (!value || turnInFlightRef.current) return;
+    const slide = slidesRef.current[activeRef.current - 1];
+    const slideNumber = activeRef.current;
+    const overflowing = overflowingIds(liveOverflowMeasurements());
+    const boxes = viewportRef.current ? liveAnnotationBoxes() : null;
+    const turnAnnotations = collectTurnAnnotations(value, boxes);
+    if (!canSendTurn(value, turnAnnotations) || turnInFlightRef.current) return;
+    if (slide && boxes) setAnnotations((current) => refreshSlideAnnotations(current, slide.id, boxes));
+    const requestDeck = deckPayload();
+    const requestEnvelope = contextEnvelope(turnAnnotations, overflowing);
     turnInFlightRef.current = true;
     setTurnSubmitting(true);
     shouldAutoScrollRef.current = true;
@@ -1225,11 +1717,30 @@ export default function Home() {
         threadId = started.thread.id;
         dispatchCodex({ type: "threadLoaded", thread: started.thread, activate: true });
       }
-      const endpoint = agentRunning ? "codex/turn/steer" : "codex/turn/start";
-      const response = await fetch(`${apiBase}/${endpoint}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId, prompt: value, clientUserMessageId: createMessageId(), selectedId, deck: deckPayload(), model: selectedModel || undefined, effort: reasoningEffort, approvalPolicy, contextEnvelope: contextEnvelope() }) });
+      if (!threadId) throw new Error("Could not resolve the active Thread.");
+      const steering = agentRunning;
+      const runningTurnId = codexState.activeTurnId;
+      const endpoint = steering ? "codex/turn/steer" : "codex/turn/start";
+      const response = await fetch(`${apiBase}/${endpoint}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId, prompt: value, clientUserMessageId: createMessageId(), selectedId, deck: requestDeck, model: selectedModel || undefined, effort: reasoningEffort, approvalPolicy, contextEnvelope: requestEnvelope }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Agent turn failed.");
+      if (turnAnnotations.length > 0 && slide) {
+        const turnId = steering ? runningTurnId ?? result.turn?.id ?? result.turnId ?? null : result.turn?.id ?? result.turnId ?? null;
+        setAnnotationAttachments((current) => [...current, {
+          id: createMessageId(),
+          threadId,
+          turnId,
+          slideId: slide.id,
+          slideLabel: `Slide ${slideNumber}${slide.title ? ` · ${slide.title}` : ""}`,
+          annotations: turnAnnotations.map(cloneAnnotation),
+        }]);
+        const sentIds = new Set(turnAnnotations.map((annotation) => annotation.id));
+        setAnnotations((current) => current.filter((annotation) => !sentIds.has(annotation.id)));
+        setSelectedAnnotationId((current) => current && sentIds.has(current) ? null : current);
+        setAnnouncement("Annotation attachment sent");
+      }
       setPromptDraft("");
+      setIncludeRegionAnnotations(true);
     } catch (error) {
       setApiError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -1461,7 +1972,7 @@ export default function Home() {
   const shortcutsSidebar = (
     <section className="activity-panel shortcuts-panel" aria-label="Keyboard shortcuts">
       <header className="activity-panel-heading"><span>KEYBOARD SHORTCUTS</span></header>
-      <div className="activity-panel-body"><dl><dt>← / →</dt><dd>Previous / next slide</dd><dt>Double-click or Enter</dt><dd>Edit selected text</dd><dt>Esc</dt><dd>Finish editing or close presentation</dd><dt>⌘/Ctrl Z</dt><dd>Undo</dd><dt>⌘/Ctrl Shift Z</dt><dd>Redo</dd><dt>?</dt><dd>Open this view</dd></dl></div>
+      <div className="activity-panel-body"><dl><dt>← / →</dt><dd>Previous / next slide</dd><dt>Double-click or Enter</dt><dd>Edit selected text</dd><dt>@</dt><dd>Point to an element from the message composer</dd><dt>A</dt><dd>Toggle rough mode</dd><dt>Esc</dt><dd>Finish editing, leave an annotation label, or close presentation</dd><dt>⌘/Ctrl Z</dt><dd>Undo</dd><dt>⌘/Ctrl Shift Z</dt><dd>Redo</dd><dt>?</dt><dd>Open this view</dd></dl></div>
     </section>
   );
 
@@ -1542,6 +2053,7 @@ export default function Home() {
         {slideNav === "rail" && <nav className="slide-nav slide-rail" aria-label="Slides">{slideNavigator}</nav>}
 
         <aside className="left-panel">
+          <div className="panel-resizer" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" aria-valuenow={sidebarWidth} aria-valuemin={280} aria-valuemax={560} tabIndex={0} onPointerDown={startSidebarResize} onKeyDown={(event) => { if (event.key === "ArrowLeft") { event.preventDefault(); adjustSidebarWidth(-16); } if (event.key === "ArrowRight") { event.preventDefault(); adjustSidebarWidth(16); } }} />
           {activityView === "agent" ? <section className="agent-panel">
             <div className="agent-heading">
               <span><i aria-hidden="true" className={`agent-status ${agentReady ? "" : "offline"}`} /> AGENT</span>
@@ -1578,26 +2090,58 @@ export default function Home() {
               </>
             )}
             <div ref={messagesRef} className="messages" role="log" aria-live="polite" aria-relevant="additions text" aria-label="Conversation with Agent" onScroll={(event) => { const element = event.currentTarget; shouldAutoScrollRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48; }}>
-              <div className="context-chip" role="status"><span aria-hidden="true">◎</span> Slide {activeSlide} in context · {agentActivity}</div>
               {!codexState.activeThreadId && <p className="empty-thread">Start or select a conversation.</p>}
               {activeTurns.length > visibleTurns.length && <p className="trimmed-log">Showing the latest {visibleTurns.length} turns.</p>}
               {visibleTurns.map((turn) => (
                 <section className="turn-group" key={turn.id}>
                   {selectTurnItems(codexState, turn.id).map((item) => <ItemCard key={item.id} item={item} />)}
-                  <footer><span>{turn.status}</span>{turn.diff && <details><summary>Turn diff</summary><pre>{turn.diff}</pre></details>}</footer>
+                  {activeThreadAttachments.filter((attachment) => attachment.turnId === turn.id).map((attachment) => <AnnotationAttachment
+                    key={attachment.id}
+                    slideLabel={attachment.slideLabel}
+                    annotations={attachment.annotations}
+                    canRestore={slides.some((slide) => slide.id === attachment.slideId)}
+                    canOverlay={slides.some((slide) => slide.id === attachment.slideId)}
+                    overlayActive={activeOverlayAttachmentId === attachment.id && slides.some((slide) => slide.id === attachment.slideId)}
+                    onRestore={() => restoreAnnotationAttachment(attachment)}
+                    onToggleOverlay={() => toggleAttachmentOverlay(attachment)}
+                  />)}
+                  {(turn.status !== "completed" || turn.diff) && <footer><span>{turn.status}</span>{turn.diff && <details><summary>Turn diff</summary><pre>{turn.diff}</pre></details>}</footer>}
                 </section>
               ))}
+              {unmatchedAttachments.map((attachment) => <AnnotationAttachment
+                key={attachment.id}
+                slideLabel={attachment.slideLabel}
+                annotations={attachment.annotations}
+                canRestore={slides.some((slide) => slide.id === attachment.slideId)}
+                canOverlay={slides.some((slide) => slide.id === attachment.slideId)}
+                overlayActive={activeOverlayAttachmentId === attachment.id && slides.some((slide) => slide.id === attachment.slideId)}
+                onRestore={() => restoreAnnotationAttachment(attachment)}
+                onToggleOverlay={() => toggleAttachmentOverlay(attachment)}
+              />)}
               {Object.values(codexState.pendingRequests).map((pending) => (
                 <ServerRequestCard key={String(pending.id)} request={pending} onResolve={(id, result) => void resolveServerRequest(id, result)} onReject={(id) => void rejectServerRequest(id)} />
               ))}
               <div ref={messagesEndRef} className="messages-end" />
             </div>
             <div className="chat-box">
-              <textarea value={promptDraft} onChange={(event) => setPromptDraft(event.target.value)} onCompositionStart={() => { compositionRef.current = true; }} onCompositionEnd={() => { compositionRef.current = false; }} onKeyDown={(event) => { const nativeEvent = event.nativeEvent as KeyboardEvent; const isComposing = compositionRef.current || nativeEvent.isComposing || nativeEvent.keyCode === 229; if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !isComposing) { event.preventDefault(); void sendMessage(); } }} placeholder={agentReady ? "Ask Agent to edit this slide…" : "Waiting for local Codex…"} aria-label="Message Agent" maxLength={20000} disabled={!agentReady} />
-              <div>
+              <div className="context-chip" role="group" aria-label="Editor context">
+                <span className="context-summary" role="status"><span className="context-icon" aria-hidden="true">◎</span> Slide {activeSlide} in context · {agentActivity}</span>
+                {activeElementAnnotations.length > 0 && <span className="context-annotation-count">{activeElementAnnotations.length} element{activeElementAnnotations.length === 1 ? "" : "s"}</span>}
+                {activeRegionAnnotations.length > 0 && <button
+                  type="button"
+                  className={regionsWillSend ? "active" : "held"}
+                  aria-pressed={regionsWillSend}
+                  disabled={referencedRegions.length > 0}
+                  title={referencedRegions.length > 0 ? "Referenced regions must be included" : "Toggle region annotations for the next turn"}
+                  onClick={() => setIncludeRegionAnnotations((current) => !current)}
+                >{activeRegionAnnotations.length} region{activeRegionAnnotations.length === 1 ? "" : "s"} · {regionsWillSend ? "Send" : "Held"}</button>}
+                {activeAnnotations.length > 0 && <AnnotationLegend annotations={activeAnnotations} />}
+              </div>
+              <textarea ref={promptRef} value={promptDraft} onChange={onPromptChange} onCompositionStart={() => { compositionRef.current = true; }} onCompositionEnd={onPromptCompositionEnd} onKeyDown={onPromptKeyDown} placeholder={agentReady ? "Ask Agent to edit this slide…" : "Waiting for local Codex…"} aria-label="Message Agent" maxLength={20000} disabled={!agentReady} />
+              <div className="chat-actions">
                 <span>⌘ / Ctrl ↵</span>
                 {agentRunning && <button className="stop-button" onClick={() => void interruptAgent()} aria-label="Stop Agent" title="Stop Agent">■</button>}
-                <button className="send-button" onClick={() => void sendMessage()} disabled={!agentReady || !promptDraft.trim() || turnSubmitting} aria-label="Send message">↑</button>
+                <button className="send-button" onClick={() => void sendMessage()} disabled={!agentReady || !canSendTurn(promptDraft, sendableAnnotations) || turnSubmitting} aria-label="Send message">↑</button>
               </div>
             </div>
           </section> : activityView === "history" ? historySidebar : activityView === "shortcuts" ? shortcutsSidebar : settingsSidebar}
@@ -1623,7 +2167,7 @@ export default function Home() {
               )}
               <div className="view-toggle" role="group" aria-label="Editor view">
                 <button className={mode === "preview" ? "active" : ""} onClick={() => { if (mode === "code") reinject(); setMode("preview"); }}>▣ <span>Preview</span></button>
-                <button className={mode === "code" ? "active" : ""} onClick={() => { setSlidesSynced(captureActive()); setMode("code"); }}>‹› <span>Code</span></button>
+                <button className={mode === "code" ? "active" : ""} onClick={() => { setSlidesSynced(captureActive()); setSelectedAnnotationId(null); setPointerPicking(false); if (annotationMode) setAnnouncement("Rough mode left"); setAnnotationMode(false); setMode("code"); }}>‹› <span>Code</span></button>
               </div>
             </div>
           </div>
@@ -1643,15 +2187,29 @@ export default function Home() {
                 {/* The project stylesheet is the only thing styling the slide; the editor's
                     own chrome lives in globals.css and never overlaps these rules. */}
                 <style>{deckCss}</style>
-                <div className={`canvas-interaction-status ${draggedId ? "dragging" : editingId ? "editing" : selectedId ? "selected" : ""}`} role="status">
-                  {draggedId ? "Moving block · release to place" : editingId ? "Editing text · Esc to finish" : selectedId ? "Move mode · drag to reorder · double-click to edit" : "Click a block to select it"}
+                <div className={`canvas-interaction-status ${pointerPicking ? "picking" : annotationMode ? "annotating" : recalledAnnotations.length > 0 ? "recalling" : draggedId ? "dragging" : editingId ? "editing" : selectedId ? "selected" : ""}`} role="status">
+                  {pointerPicking
+                    ? "Pointing · click an element to reference it · Esc to cancel"
+                    : annotationMode
+                    ? `Rough mode · drag to draw a frame${recalledAnnotations.length > 0 ? ` · Comparing ${activeOverlayLabel}` : ""}`
+                    : recalledAnnotations.length > 0
+                      ? `Comparing sent annotations · ${activeOverlayLabel}`
+                      : draggedId ? "Moving block · release to place" : editingId ? "Editing text · Esc to finish" : selectedId ? <>
+                        Move mode · drag to reorder · double-click to edit
+                        {agentReady && <><span aria-hidden="true"> · </span><button type="button" className="canvas-reference-button" onClick={referenceSelectedElement}>@ Reference</button></>}
+                      </> : "Click a block to select it"}
                 </div>
                 <div
                   className="slide-viewport"
                   data-zoom-mode={manualZoom == null ? "fit" : "manual"}
+                  data-annotation-mode={annotationMode ? "true" : undefined}
+                  data-pointer-picking={pointerPicking ? "true" : undefined}
                   ref={(node) => { viewportRef.current = node; canvasRef.current = node; }}
                   style={{ "--slide-scale": slideScale } as React.CSSProperties}
                   onPointerDown={onCanvasPointerDown}
+                  onPointerMove={onCanvasPointerMove}
+                  onPointerUp={onCanvasPointerEnd}
+                  onPointerCancel={onCanvasPointerEnd}
                   onDoubleClick={onCanvasDoubleClick}
                   onBlurCapture={onCanvasBlurCapture}
                   onKeyDown={onCanvasKeyDown}
@@ -1661,13 +2219,38 @@ export default function Home() {
                   onPaste={onCanvasPaste}
                   onDragEnd={onCanvasDragEnd}
                 />
+                <div
+                  className="annotation-overlay"
+                  style={{ "--slide-scale": slideScale } as React.CSSProperties}
+                >
+                  <AnnotationOverlay
+                    interactive={annotationMode}
+                    pointerPicking={pointerPicking}
+                    pointerCandidates={pointerCandidates}
+                    annotations={activeAnnotations}
+                    recalledAnnotations={recalledAnnotations}
+                    selectedId={selectedAnnotationId}
+                    draftRect={draftAnnotationRect}
+                    focusAnnotationId={focusAnnotationId}
+                    scrollRef={annotationScrollRef}
+                    onFocusHandled={() => setFocusAnnotationId(null)}
+                    onPointerPick={pickPointerElement}
+                    onPointerPickCancel={() => { setPointerPicking(false); setAnnouncement("Element pointing canceled"); }}
+                    onSelect={setSelectedAnnotationId}
+                    onLabelChange={(id, label) => setAnnotations((current) => current.map((annotation) => annotation.id === id ? { ...annotation, label } : annotation))}
+                    onDelete={deleteAnnotation}
+                    onGestureStart={onAnnotationGestureStart}
+                    onGestureMove={onAnnotationGestureMove}
+                    onGestureEnd={onAnnotationGestureEnd}
+                  />
+                </div>
                 <div className="canvas-toolbar">
                   <div className="canvas-tool-group history-tools" role="group" aria-label="Edit history">
-                    <button onClick={undo} disabled={historyState.undo === 0} aria-label="Undo" title="Undo">↶</button>
-                    <button onClick={redo} disabled={historyState.redo === 0} aria-label="Redo" title="Redo">↷</button>
+                    <button onClick={undo} disabled={annotationMode || historyState.undo === 0} aria-label="Undo" title="Undo">↶</button>
+                    <button onClick={redo} disabled={annotationMode || historyState.redo === 0} aria-label="Redo" title="Redo">↷</button>
                   </div>
                   <div className="canvas-tool-group content-tools" role="group" aria-label="Slide content">
-                    <button onClick={(event) => togglePopover("addBlock", event.currentTarget)} className={openPopover === "addBlock" ? "active" : ""} aria-expanded={openPopover === "addBlock"} aria-haspopup="menu">＋ Add block</button>
+                    <button onClick={(event) => togglePopover("addBlock", event.currentTarget)} className={openPopover === "addBlock" ? "active" : ""} aria-expanded={openPopover === "addBlock"} aria-haspopup="menu" disabled={annotationMode}>＋ Add block</button>
                     <input ref={imageInputRef} className="sr-only" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml,image/gif" onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadImage(file); }} />
                   </div>
                   <div className="canvas-tool-group slide-tools" role="group" aria-label="Slide operations">
@@ -1689,6 +2272,15 @@ export default function Home() {
                       title={canvasFocused ? "Show editor panels" : "Hide panels and focus the canvas"}
                       onClick={() => setCanvasFocused((value) => !value)}
                     >⛶</button>
+                  </div>
+                  <div className="canvas-tool-group annotation-tools" role="group" aria-label="Annotations">
+                    <button
+                      className={annotationMode ? "active" : ""}
+                      aria-pressed={annotationMode}
+                      aria-keyshortcuts="A"
+                      title="Toggle rough mode (A)"
+                      onClick={toggleAnnotationMode}
+                    >▱ <span>Rough</span></button>
                   </div>
                 </div>
                 {openPopover === "addBlock" && (
@@ -1739,9 +2331,9 @@ export default function Home() {
                   key={item.id}
                   style={{ paddingLeft: 14 + item.depth * 14 }}
                   className={[selectedId === item.id ? "active" : "", treeDragId === item.id ? "dragging" : "", treeDrop?.id === item.id ? `drop-${treeDrop.position}` : ""].filter(Boolean).join(" ")}
-                  draggable={!agentRunning && !item.locked}
+                  draggable={!annotationMode && !agentRunning && !item.locked}
                   onClick={() => setSelectedId(item.id)}
-                  onDragStart={(event) => { if (item.locked) { event.preventDefault(); return; } event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", item.id); setTreeDragId(item.id); setSelectedId(item.id); }}
+                  onDragStart={(event) => { if (annotationMode || item.locked) { event.preventDefault(); return; } event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", item.id); setTreeDragId(item.id); setSelectedId(item.id); }}
                   onDragOver={(event) => onTreeDragOver(event, item)}
                   onDrop={(event) => onTreeDrop(event, item)}
                   onDragEnd={() => { setTreeDragId(null); setTreeDrop(null); }}
@@ -1751,6 +2343,8 @@ export default function Home() {
               ))}
             </div>}
           </section>
+          {annotationMode && <div className="annotation-inspector-notice" role="status">Rough mode draws frames only. Editing is off while sketching.</div>}
+          <fieldset className="inspector-editing" disabled={annotationMode}>
           {sel && (
             <>
               {/* What every block has, whatever it is. A block is a flex child before it is a
@@ -1852,12 +2446,13 @@ export default function Home() {
             <div>{accents.map((item) => <button key={item.color} style={{ background: item.color }} className={accent === item.color ? "active" : ""} onClick={() => setSlideAccent(item.color)} aria-label={`Use accent ${item.color}`} />)}</div>
           </section>
           <button className="delete-block" onClick={deleteSelected} disabled={!sel || outline.length <= 1 || outline.some((item) => item.id === selectedId && item.locked)}>Delete selected block</button>
+          </fieldset>
         </aside> : <button className="open-inspector" onClick={() => setInspectorOpen(true)}>Inspector</button>}
       </div>
 
       <footer className="statusbar">
         <div>
-          <button className={`quality-button ${quality.ok ? "ok" : "error"}`} onClick={(event) => togglePopover("quality", event.currentTarget)} aria-expanded={openPopover === "quality"}>Quality {quality.ok ? "✓" : `${quality.errors} errors`}</button>
+          <button className={`quality-button ${quality.ok ? "ok" : "error"}`} onClick={(event) => togglePopover("quality", event.currentTarget)} aria-expanded={openPopover === "quality"}>Quality {quality.ok ? (quality.warnings ? `${quality.warnings} warnings` : "✓") : `${quality.errors} errors`}</button>
           <span>{project ? `${project.branch} · ${project.commit}` : "Connecting…"}</span>
           {apiError && <span className="status-error">{apiError}</span>}
         </div>
@@ -1871,7 +2466,7 @@ export default function Home() {
             <header><strong>Deck quality</strong><button onClick={() => dismissPopover()}>×</button></header>
             {quality.ok && <p className="quality-empty">No blocking quality issues.</p>}
             {quality.diagnostics.map((item: any, index: number) => (
-              <div key={`${item.code}-${index}`} className="quality-row"><i className="error" /><span><strong>{item.message}</strong><small>{item.code} · {item.source}</small></span></div>
+              <div key={`${item.code}-${index}`} className="quality-row"><i className={item.severity === "warning" ? "warning" : "error"} /><span><strong>{item.message}</strong><small>{item.code} · {item.source}</small></span></div>
             ))}
           </aside>
         </>

@@ -14,7 +14,6 @@ export const projectRoot = process.env.WEAVE_PROJECT_ROOT
   ? resolve(process.env.WEAVE_PROJECT_ROOT)
   : join(repoRoot, "workspaces", "northstar");
 const manifestPath = join(projectRoot, ".weave", "deck.json");
-const bufferPath = join(projectRoot, ".weave", "current-buffer.json");
 const slidesRoot = join(projectRoot, "slides");
 const stylesRoot = join(projectRoot, "styles");
 const assetsRoot = join(projectRoot, "assets");
@@ -60,14 +59,15 @@ slide's layout, move the title slot's inner content and the remaining content ch
 frame's slots; do not edit the shared template frame in place.
 Slide styling is expressed only with the precompiled Tailwind utility classes already used in the
 project. Use standard Tailwind scale values and existing classes; never use inline style attributes,
-arbitrary-value classes such as [...], or edit styles/deck.css. Prefer flex/grid flow layout. Keep a
+arbitrary-value classes such as [...], or edit styles/deck.css — read that file when you need the
+registry of classes the project supports. Prefer flex/grid flow layout. Keep a
 data-weave-id on every element the human can select. Represent line breaks as <br>, not literal newlines.
 Reference imported images with relative assets/<hash>.<ext> paths. Lists use ul.list with li children;
 tables use table.table and keep data-weave-id on the table rather than individual cells. Graphs and
 decorative diagrams are static inline SVG: use fill="currentColor" with text-* classes instead of raw
 hex colors, size the SVG with w-full and aspect-* classes, and put data-weave-id on the SVG root.
-Before editing, read .weave/current-buffer.json when present — it is the authoritative unsaved state.
-Make focused changes that answer the user. Do not run git or commit; Weave formats and commits the turn.
+Make focused changes that answer the user. Read-only git (log, show, diff) is fine when you need the
+history; never commit, checkout, or otherwise change the repository — Weave formats and commits the turn.
 If no file change is needed, respond with a concise explanation.`;
 
 const assetTypes = new Map([
@@ -196,16 +196,6 @@ export function assertRevision(expectedRevision) {
   }
 }
 
-async function atomicWriteFile(path, contents) {
-  const temporaryPath = `${path}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporaryPath, contents);
-    await rename(temporaryPath, path);
-  } finally {
-    await rm(temporaryPath, { force: true });
-  }
-}
-
 /* deck.css is authored directly (human via inspector overrides, agent via this file). It is never
    regenerated — read it as-is, falling back to the shipped default only when absent. */
 export async function readDeckCss() {
@@ -310,7 +300,7 @@ export async function readProject() {
 }
 
 /** Write the project: every slide file (formatted) plus the manifest, transactionally. */
-export async function writeProject(input, bufferOnly = false, expectedRevision = null) {
+export async function writeProject(input, expectedRevision = null) {
   const project = validateProject(input);
   const slides = await Promise.all(project.slides.map(async (slide) => ({
     ...slide,
@@ -318,30 +308,9 @@ export async function writeProject(input, bufferOnly = false, expectedRevision =
   })));
   const manifest = { title: project.title, slides: slides.map(({ id, title, notes }) => ({ id, title, notes })) };
   const manifestJson = `${JSON.stringify(manifest, null, 2)}\n`;
-  /* The buffer keeps the full project (HTML included) so the Agent sees unsaved edits. */
-  const bufferJson = `${JSON.stringify({ title: project.title, slides }, null, 2)}\n`;
 
   await mkdir(join(projectRoot, ".weave"), { recursive: true });
-  if (bufferOnly) {
-    await atomicWriteFile(bufferPath, bufferJson);
-    return { title: project.title, slides };
-  }
-
   assertRevision(expectedRevision);
-  const css = await readDeckCss();
-  const canonicalCss = await formatDeckCss(defaultDeckCss);
-  if (await formatDeckCss(css) !== canonicalCss) {
-    const error = new Error("styles/deck.css is generated from the supported Tailwind utility registry and cannot be edited.");
-    error.code = "WEAVE_TAILWIND_STYLESHEET";
-    throw error;
-  }
-  const policy = auditContentPolicy({ css, html: slides.map((slide) => slide.html).join("\n") });
-  if (!policy.ok) {
-    const error = new Error(`Content policy gate failed: ${policy.summary.errors} error(s).`);
-    error.code = "WEAVE_CONTENT_POLICY";
-    error.diagnostics = policy.diagnostics;
-    throw error;
-  }
 
   const transactionId = randomUUID();
   const stagedSlidesRoot = join(projectRoot, `.slides-${transactionId}.staged`);
@@ -377,7 +346,6 @@ export async function writeProject(input, bufferOnly = false, expectedRevision =
     }
     await rename(stagedManifestPath, manifestPath);
     installedManifest = true;
-    await atomicWriteFile(bufferPath, bufferJson);
     await Promise.all([
       rm(previousSlidesRoot, { recursive: true, force: true }),
       rm(previousManifestPath, { force: true }),
@@ -399,6 +367,25 @@ export async function writeProject(input, bufferOnly = false, expectedRevision =
   return { title: project.title, slides };
 }
 
+/* The commit gate checks disk because that is what commitIfChanged will persist; writes stay inspectable. */
+export async function assertCommittable() {
+  const css = await readDeckCss();
+  const canonicalCss = await formatDeckCss(defaultDeckCss);
+  if (await formatDeckCss(css) !== canonicalCss) {
+    const error = new Error("styles/deck.css is generated from the supported Tailwind utility registry and cannot be edited.");
+    error.code = "WEAVE_TAILWIND_STYLESHEET";
+    throw error;
+  }
+  const project = await readProject();
+  const policy = auditContentPolicy({ css, html: project.slides.map((slide) => slide.html).join("\n") });
+  if (!policy.ok) {
+    const error = new Error(`Content policy gate failed: ${policy.summary.errors} error(s).`);
+    error.code = "WEAVE_CONTENT_POLICY";
+    error.diagnostics = policy.diagnostics;
+    throw error;
+  }
+}
+
 export function commitIfChanged(message) {
   runGit(["add", ".weave/deck.json", "slides", "styles", "AGENTS.md", ...(existsSync(assetsRoot) ? ["assets"] : []), ...(existsSync(templatesRoot) ? ["templates"] : [])]);
   if (!runGit(["diff", "--cached", "--name-only"])) return null;
@@ -408,9 +395,7 @@ export function commitIfChanged(message) {
 
 function commitPathsIfChanged(message, paths) {
   if (!paths.length) return null;
-  const regularPaths = paths.filter((path) => path !== ".weave/current-buffer.json");
-  if (regularPaths.length) runGit(["add", "--", ...regularPaths]);
-  if (paths.includes(".weave/current-buffer.json")) runGit(["add", "-u", "--", ".weave/current-buffer.json"]);
+  runGit(["add", "--", ...paths]);
   const changed = runGit(["diff", "--cached", "--name-only", "--", ...paths]);
   if (!changed) return null;
   runGit(["-c", "user.name=Weave", "-c", "user.email=weave@localhost", "commit", "--only", "-m", message, "--", ...paths]);
@@ -456,8 +441,6 @@ export async function checkoutHistory(commit) {
   if (runGit(["ls-tree", "-d", "--name-only", commit, "assets"])) runGit(["restore", "--source", commit, "--staged", "--worktree", "--", "assets"]);
   if (runGit(["ls-tree", "-d", "--name-only", commit, "templates"])) runGit(["restore", "--source", commit, "--staged", "--worktree", "--", "templates"]);
   const restored = commitIfChanged(`Restore history ${commit.slice(0, 12)}`);
-  const project = await readProject();
-  await atomicWriteFile(bufferPath, `${JSON.stringify(project, null, 2)}\n`);
   return restored ?? getRevision();
 }
 
@@ -530,25 +513,6 @@ async function removeLegacyChatData() {
   }
 }
 
-async function excludeCurrentBuffer() {
-  const excludePath = join(projectRoot, ".git", "info", "exclude");
-  const rule = ".weave/current-buffer.json";
-  const current = await readFile(excludePath, "utf8").catch(() => "");
-  if (!current.split("\n").some((line) => line.trim() === rule)) {
-    await writeFile(excludePath, `${current}${current && !current.endsWith("\n") ? "\n" : ""}${rule}\n`);
-  }
-  let tracked = false;
-  try {
-    tracked = Boolean(runGit(["ls-files", "--error-unmatch", rule], { stdio: ["ignore", "pipe", "ignore"] }));
-  } catch {
-    // Expected for new projects and projects already migrated.
-  }
-  if (tracked) {
-    runGit(["rm", "--cached", "--ignore-unmatch", "--", rule]);
-  }
-  return tracked;
-}
-
 async function recoverInterruptedTransactions() {
   const rootEntries = await readdir(projectRoot).catch(() => []);
   const previousSlides = rootEntries.filter((name) => /^\.slides-[\w-]+\.previous$/.test(name));
@@ -599,7 +563,6 @@ export async function ensureProject() {
   await recoverInterruptedTransactions();
   await removeLegacyChatData();
   const migrationPaths = [];
-  if (await excludeCurrentBuffer()) migrationPaths.push(".weave/current-buffer.json");
 
   await mkdir(stylesRoot, { recursive: true });
   const canonicalCss = await formatDeckCss(defaultDeckCss);

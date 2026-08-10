@@ -19,25 +19,29 @@ test("deck saves are revision-guarded, replace slide files, and restore history 
     const initialRevision = project.getRevision();
     assert.match(initialRevision, /^[0-9a-f]{40}$/);
     assert.equal(project.projectState().project.revision, initialRevision);
-    assert.equal(git(root, ["ls-files", ".weave/current-buffer.json"]), "");
+    assert.equal((await readdir(join(root, ".weave"))).includes("current-buffer.json"), false);
 
     const onlySlide = { ...initial.slides[0], id: "renamed-slide", title: "Renamed and saved" };
     const saved = { title: "Transactional deck", slides: [onlySlide] };
-    await project.writeProject(saved, false, initialRevision);
+    await project.writeProject(saved, initialRevision);
+    assert.equal((await readdir(join(root, ".weave"))).includes("current-buffer.json"), false);
     assert.deepEqual(await readdir(join(root, "slides")), ["renamed-slide.html"]);
     const savedCommit = project.commitIfChanged("Save transactional deck");
     assert.match(savedCommit, /^[0-9a-f]{40}$/);
     assert.equal(git(root, ["status", "--porcelain"]), "");
 
     await assert.rejects(
-      project.writeProject({ ...saved, title: "Stale overwrite" }, false, initialRevision),
+      project.writeProject({ ...saved, title: "Stale overwrite" }, initialRevision),
       (error) => error.code === "WEAVE_REVISION_CONFLICT"
         && error.expectedRevision === initialRevision
         && error.actualRevision === savedCommit,
     );
     assert.equal(JSON.parse(await readFile(join(root, ".weave", "deck.json"), "utf8")).title, "Transactional deck");
 
-    await project.writeProject({ ...saved, title: "Transient buffer" }, true);
+    await project.writeProject({ ...saved, title: "Transient buffer" });
+    assert.equal((await project.readProject()).title, "Transient buffer");
+    assert.notEqual(git(root, ["status", "--porcelain"]), "");
+    git(root, ["restore", "--staged", "--worktree", "--", ".weave/deck.json", "slides"]);
     assert.equal(git(root, ["status", "--porcelain"]), "");
 
     const restoreRevision = await project.checkoutHistory(initialRevision);
@@ -57,6 +61,38 @@ test("deck saves are revision-guarded, replace slide files, and restore history 
     assert.equal((await project.readProject()).title, initial.title);
     assert.equal((await readdir(root)).some((name) => name.includes("crash")), false);
     assert.equal((await readdir(join(root, ".weave"))).some((name) => name.includes("crash")), false);
+  } finally {
+    if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
+    else process.env.WEAVE_PROJECT_ROOT = previousRoot;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("writes keep policy failures inspectable until the commit gate", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weave-policy-gate-"));
+  const previousRoot = process.env.WEAVE_PROJECT_ROOT;
+  process.env.WEAVE_PROJECT_ROOT = root;
+  try {
+    const project = await import(`../server/project.mjs?policy-gate=${Date.now()}`);
+    await project.ensureProject();
+    const initial = await project.readProject();
+    const unsafe = {
+      ...initial,
+      slides: [{
+        ...initial.slides[0],
+        html: '<main class="weave-slide" data-weave-slide><script>alert(1)</script></main>',
+      }],
+    };
+
+    await project.writeProject(unsafe);
+    assert.match(await readFile(join(root, "slides", `${unsafe.slides[0].id}.html`), "utf8"), /<script>\s*alert\(1\);?\s*<\/script>/);
+    await assert.rejects(project.assertCommittable(), (error) => error.code === "WEAVE_CONTENT_POLICY");
+
+    await project.writeProject(initial);
+    await project.assertCommittable();
+
+    await writeFile(join(root, "styles", "deck.css"), "body { color: red; }\n");
+    await assert.rejects(project.assertCommittable(), (error) => error.code === "WEAVE_TAILWIND_STYLESHEET");
   } finally {
     if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
     else process.env.WEAVE_PROJECT_ROOT = previousRoot;
