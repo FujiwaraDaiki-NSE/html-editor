@@ -199,7 +199,7 @@
         <rect x="180" y="250" width="690" height="98" rx="8" fill="none" stroke="currentColor" stroke-width="1.5" />
         <text x="204" y="278" font-size="14" font-weight="700" fill="var(--text)">プロジェクト（それ自体が独立したgitリポジトリ）</text>
         <text x="204" y="303" font-size="11.5" font-family="ui-monospace, monospace" fill="currentColor">slides/&lt;id&gt;.html — 真実　templates/&lt;id&gt;.html — 型　styles/deck.css — 生成物</text>
-        <text x="204" y="325" font-size="11.5" font-family="ui-monospace, monospace" fill="currentColor">assets/&lt;sha256&gt;.png　.weave/deck.json — 目次　.weave/current-buffer.json — 未保存</text>
+        <text x="204" y="325" font-size="11.5" font-family="ui-monospace, monospace" fill="currentColor">assets/&lt;sha256&gt;.png　.weave/deck.json — 目次</text>
 
         <line x1="400" y1="148" x2="400" y2="250" stroke="var(--human)" stroke-width="2" marker-end="url(#a1h)" />
         <text x="390" y="200" text-anchor="end" font-size="11" fill="currentColor">保存 · 履歴 · コミット</text>
@@ -252,7 +252,6 @@
       <ul>
         <li><code>.weave/deck.json</code> は<strong>目次</strong>。並び順・名前・スピーカーノートだけを持つ。名前はHTMLのタイトルスロットから導出される表示用の値で、原本ではない</li>
         <li><code>styles/deck.css</code> は<strong>生成物</strong>。内容が正準と一致しなければ保存を弾く（実質read-only）</li>
-        <li><code>.weave/current-buffer.json</code> は<strong>未保存の作業状態</strong>。Agentが「いま画面に出ているもの」を読めるようにするための置き場で、gitからは <code>.git/info/exclude</code> で外している</li>
         <li><code>assets/</code> は内容のsha256をファイル名にする。同じ画像が二重に入らない</li>
       </ul>
       <p>結果として、Agentへの指示は「このファイルを編集して」で済む。人間の操作とAgentの操作が、同じ対象への別々の書き込み手段になる。</p>
@@ -402,7 +401,7 @@
         <li><strong>型は生成する</strong> — <code>codex app-server generate-ts</code> の出力を <code>generated/codex-app-server/</code> に置く。生成時のCLI版（現在 <code>0.146.0</code>）を記録し、起動時に実際のCLI版と比較して、食い違えば画面に出す。プロトコルの変化を黙って踏まない</li>
         <li><strong>イベントは連番付きNDJSON</strong> — <code>/api/codex/events?after=N</code> でストリームする。直近2000件をメモリに保持しているので、再接続時に続きから受け取れる</li>
         <li><strong>承認要求は逆方向のRPC</strong> — コマンド実行やファイル変更の承認、MCPの問い合わせはサーバ→クライアント方向の要求として届く。ローカルAPIがUIに出せるものだけを選んで画面へ渡し、返答を戻す</li>
-        <li><strong>文脈は自動で渡す</strong> — 未保存バッファ、選択中の要素、現在のスライドHTML、CSS、直近の履歴</li>
+        <li><strong>文脈は自動で渡す</strong> — 選択中の要素、直近の履歴などAgentがファイルから得られない視点</li>
         <li><strong>作法はAGENTS.mdで伝える</strong> — HTMLが真実であること、使えるクラス、スロットの語彙、装飾はinline SVGにすること。プロジェクト内のファイルなので、Agentが普通に読む</li>
       </ul>
     </div>
