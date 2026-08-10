@@ -202,6 +202,7 @@ test("reference tokens resolve known orders and ignore email-like text", () => {
 
 test("references insert after a typed at sign at the caret", () => {
   assert.deepEqual(insertReferenceAt("Make @ larger", 6, 2, { afterAtSign: true }), { text: "Make @2 larger", caret: 7 });
+  assert.deepEqual(insertReferenceAt("@", 1, 1, { afterAtSign: true }), { text: "@1", caret: 2 });
 });
 
 test("typed references insert in the middle and at the end without moving surrounding text", () => {

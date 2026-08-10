@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
+import { pointerTabText } from "../../shared/annotation.mjs";
 
 export type AnnotationRect = { x: number; y: number; w: number; h: number };
 export type Annotation = {
@@ -15,9 +16,12 @@ export type Annotation = {
 };
 export type ResizeHandle = "nw" | "ne" | "sw" | "se";
 export type AnnotationGestureKind = "move" | ResizeHandle;
+export type PointerCandidate = { id: string; rect: AnnotationRect; elementKind: string; textExcerpt: string };
 
 type Props = {
   interactive: boolean;
+  pointerPicking: boolean;
+  pointerCandidates: PointerCandidate[];
   annotations: Annotation[];
   recalledAnnotations: Annotation[];
   selectedId: string | null;
@@ -25,6 +29,8 @@ type Props = {
   focusAnnotationId: string | null;
   scrollRef: React.RefObject<HTMLDivElement | null>;
   onFocusHandled: () => void;
+  onPointerPick: (weaveId: string) => void;
+  onPointerCancel: () => void;
   onSelect: (id: string) => void;
   onLabelChange: (id: string, label: string) => void;
   onDelete: (id: string) => void;
@@ -40,8 +46,65 @@ const rectStyle = (rect: AnnotationRect): CSSProperties => ({
   height: rect.h,
 });
 
+const pointerTabStyle = (rect: AnnotationRect): CSSProperties => ({
+  left: rect.x,
+  "--pointer-tab-y": `${rect.y}px`,
+} as CSSProperties);
+
+function PointerPickingLayer({ candidates, annotations, onPick, onCancel }: {
+  candidates: PointerCandidate[];
+  annotations: Annotation[];
+  onPick: (weaveId: string) => void;
+  onCancel: () => void;
+}) {
+  const [hoveredId, setHoveredId] = useState<string | null>(null);
+  return (
+    <div
+      className="annotation-overlay-layer pointer-picking-layer"
+      onPointerDown={(event) => {
+        if (event.target !== event.currentTarget || event.button !== 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        onCancel();
+      }}
+    >
+      {candidates.map((candidate) => {
+        const existing = annotations.find((annotation) => annotation.target.kind === "element" && annotation.target.weaveId === candidate.id);
+        const label = existing ? `@${existing.order}` : pointerTabText(candidate.elementKind, candidate.textExcerpt);
+        return <button
+          type="button"
+          className={`pointer-pick-frame ${hoveredId === candidate.id ? "hovered" : ""}`}
+          style={rectStyle(candidate.rect)}
+          aria-label={`${existing ? "Select" : "Point to"} ${label}`}
+          key={`frame-${candidate.id}`}
+          onPointerEnter={() => setHoveredId(candidate.id)}
+          onPointerLeave={() => setHoveredId((current) => current === candidate.id ? null : current)}
+          onPointerDown={(event) => { event.preventDefault(); event.stopPropagation(); }}
+          onClick={(event) => { event.stopPropagation(); onPick(candidate.id); }}
+        />;
+      })}
+      {candidates.map((candidate) => {
+        const existing = annotations.find((annotation) => annotation.target.kind === "element" && annotation.target.weaveId === candidate.id);
+        const label = existing ? `@${existing.order}` : pointerTabText(candidate.elementKind, candidate.textExcerpt);
+        return <button
+          type="button"
+          className={`pointer-pick-tab ${existing ? "existing" : ""}`}
+          style={pointerTabStyle(candidate.rect)}
+          key={`tab-${candidate.id}`}
+          onPointerEnter={() => setHoveredId(candidate.id)}
+          onPointerLeave={() => setHoveredId((current) => current === candidate.id ? null : current)}
+          onPointerDown={(event) => { event.preventDefault(); event.stopPropagation(); }}
+          onClick={(event) => { event.stopPropagation(); onPick(candidate.id); }}
+        >{label}</button>;
+      })}
+    </div>
+  );
+}
+
 export function AnnotationOverlay({
   interactive,
+  pointerPicking,
+  pointerCandidates,
   annotations,
   recalledAnnotations,
   selectedId,
@@ -49,6 +112,8 @@ export function AnnotationOverlay({
   focusAnnotationId,
   scrollRef,
   onFocusHandled,
+  onPointerPick,
+  onPointerCancel,
   onSelect,
   onLabelChange,
   onDelete,
@@ -164,6 +229,7 @@ export function AnnotationOverlay({
         ))}
         {interactive && draftRect && <div className="annotation-box annotation-draft" style={rectStyle(draftRect)} />}
       </div>
+      {pointerPicking && <PointerPickingLayer candidates={pointerCandidates} annotations={annotations} onPick={onPointerPick} onCancel={onPointerCancel} />}
     </div>
   );
 }
