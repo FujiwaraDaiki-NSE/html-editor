@@ -160,7 +160,7 @@ type AnnotationGesture = {
   startClient: { x: number; y: number };
   startPoint: { x: number; y: number };
 } & (
-  | { kind: "draw"; slideId: string; elementId: string | null }
+  | { kind: "draw"; slideId: string }
   | { kind: "move"; annotationId: string; slideId: string; origin: AnnotationRect }
   | { kind: "resize"; annotationId: string; slideId: string; origin: AnnotationRect; handle: ResizeHandle }
 );
@@ -868,22 +868,20 @@ export default function Home() {
 
   const onCanvasPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     if (pointerPicking) { event.preventDefault(); event.stopPropagation(); setPointerPicking(false); return; }
-    const target = (event.target as HTMLElement).closest<HTMLElement>("[data-weave-id]");
     if (annotationMode) {
       if (event.button !== 0) return;
       event.preventDefault();
       event.stopPropagation();
-      const selection = target && canvasRef.current?.contains(target) ? readSelection(target) : null;
-      setSelectedId(selection?.id ?? null);
       setSelectedAnnotationId(null);
       const point = annotationPoint(event);
       const slideId = slidesRef.current[activeRef.current - 1]?.id;
       if (!point || !slideId) return;
       event.currentTarget.setPointerCapture(event.pointerId);
-      annotationGestureRef.current = { kind: "draw", pointerId: event.pointerId, slideId, elementId: selection?.id ?? null, startPoint: point, startClient: { x: event.clientX, y: event.clientY } };
+      annotationGestureRef.current = { kind: "draw", pointerId: event.pointerId, slideId, startPoint: point, startClient: { x: event.clientX, y: event.clientY } };
       setDraftAnnotationRect(rectFromPoints(point, point));
       return;
     }
+    const target = (event.target as HTMLElement).closest<HTMLElement>("[data-weave-id]");
     if (!target || !canvasRef.current?.contains(target)) { setSelectedId(null); return; }
     if (target.getAttribute("contenteditable") === "true") return;
     setSelectedId(target.getAttribute("data-weave-id"));
@@ -916,12 +914,6 @@ export default function Home() {
       setFocusAnnotationId(id);
       setIncludeRegionAnnotations(true);
       setAnnouncement(`Region annotation ${order} created`);
-    } else if (!canceled && gesture.elementId) {
-      const pointed = pointElement(gesture.slideId, gesture.elementId);
-      if (pointed?.created) setPromptDraft((current) => {
-        const draft = current.trimEnd();
-        return insertReferenceAt(draft, draft.length, pointed.annotation.order, { afterAtSign: false }).text;
-      });
     }
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     annotationGestureRef.current = null;
@@ -1911,7 +1903,7 @@ export default function Home() {
   const shortcutsSidebar = (
     <section className="activity-panel shortcuts-panel" aria-label="Keyboard shortcuts">
       <header className="activity-panel-heading"><span>KEYBOARD SHORTCUTS</span></header>
-      <div className="activity-panel-body"><dl><dt>← / →</dt><dd>Previous / next slide</dd><dt>Double-click or Enter</dt><dd>Edit selected text</dd><dt>A</dt><dd>Toggle annotation mode</dd><dt>Esc</dt><dd>Finish editing, leave an annotation label, or close presentation</dd><dt>⌘/Ctrl Z</dt><dd>Undo</dd><dt>⌘/Ctrl Shift Z</dt><dd>Redo</dd><dt>?</dt><dd>Open this view</dd></dl></div>
+      <div className="activity-panel-body"><dl><dt>← / →</dt><dd>Previous / next slide</dd><dt>Double-click or Enter</dt><dd>Edit selected text</dd><dt>@</dt><dd>Point to an element from the message composer</dd><dt>A</dt><dd>Toggle region annotation mode</dd><dt>Esc</dt><dd>Finish editing, leave an annotation label, or close presentation</dd><dt>⌘/Ctrl Z</dt><dd>Undo</dd><dt>⌘/Ctrl Shift Z</dt><dd>Redo</dd><dt>?</dt><dd>Open this view</dd></dl></div>
     </section>
   );
 
@@ -2129,7 +2121,7 @@ export default function Home() {
                   {pointerPicking
                     ? "Pointing · click an element to reference it · Esc to cancel"
                     : annotationMode
-                    ? `Annotation mode · click an element or drag a region${recalledAnnotations.length > 0 ? ` · Comparing ${activeOverlayLabel}` : ""}`
+                    ? `Annotation mode · drag to draw a region${recalledAnnotations.length > 0 ? ` · Comparing ${activeOverlayLabel}` : ""}`
                     : recalledAnnotations.length > 0
                       ? `Comparing sent annotations · ${activeOverlayLabel}`
                       : draggedId ? "Moving block · release to place" : editingId ? "Editing text · Esc to finish" : selectedId ? <>
@@ -2281,7 +2273,7 @@ export default function Home() {
               ))}
             </div>}
           </section>
-          {annotationMode && <div className="annotation-inspector-notice" role="status">Editing is off while annotating. Selection stays available in the object tree.</div>}
+          {annotationMode && <div className="annotation-inspector-notice" role="status">Annotation mode draws regions only. Editing is off while annotating.</div>}
           <fieldset className="inspector-editing" disabled={annotationMode}>
           {sel && (
             <>
