@@ -439,7 +439,7 @@ export default function Home() {
   const quality = useMemo(() => {
     const html = slides.map((slide) => slide.html).join("\n");
     const result = auditContentPolicy({ css: deckCss, html });
-    return { ok: result.ok, diagnostics: result.diagnostics, errors: result.summary.errors, warnings: 0 };
+    return { ok: result.ok, diagnostics: result.diagnostics, errors: result.summary.errors, warnings: result.summary.warnings };
   }, [slides, deckCss]);
 
   const activeThread = codexState.activeThreadId ? codexState.threads[codexState.activeThreadId] : null;
@@ -688,6 +688,17 @@ export default function Home() {
         textExcerpt: textExcerptOfNode(node),
       }] : [];
     });
+  };
+
+  const collectTurnAnnotations = (prompt: string, boxes: AnnotationBox[] | null = viewportRef.current ? liveAnnotationBoxes() : null) => {
+    const slide = slidesRef.current[activeRef.current - 1];
+    const slideAnnotations = slide ? annotations.filter((annotation) => annotation.slideId === slide.id) : [];
+    const refreshed = (boxes ? refreshAnnotations(slideAnnotations, boxes) : slideAnnotations.map(cloneAnnotation)) as Annotation[];
+    const regionAnnotations = slideAnnotations.filter((annotation) => annotation.target.kind === "region");
+    const includeRegions = includeRegionAnnotations || resolveReferences(prompt, regionAnnotations).length > 0;
+    return refreshed
+      .filter((annotation) => annotation.target.kind === "element" || includeRegions)
+      .sort((a, b) => a.order - b.order);
   };
 
   /* Measured against the slide root rather than the viewport: the viewport scrolls under manual zoom,
@@ -1575,13 +1586,16 @@ export default function Home() {
 
   const generateVariation = async () => {
     const prompt = variationPrompt.trim();
-    if (!prompt || turnInFlightRef.current) return;
+    const boxes = liveAnnotationBoxes();
+    const variationAnnotations = collectTurnAnnotations(prompt, boxes);
+    if (!canSendTurn(prompt, variationAnnotations) || turnInFlightRef.current) return;
     turnInFlightRef.current = true;
     setTurnSubmitting(true);
     setShowVariationPrompt(false);
     setApiError(null);
     try {
-      const response = await fetch(`${apiBase}/variations/generate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt, deck: deckPayload(), clientUserMessageId: createMessageId(), model: selectedModel || undefined, effort: reasoningEffort, approvalPolicy, contextEnvelope: contextEnvelope([], overflowingIds(liveOverflowMeasurements())) }) });
+      // Variations are branch trials, so annotations stay on the canvas instead of being consumed.
+      const response = await fetch(`${apiBase}/variations/generate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt, deck: deckPayload(), clientUserMessageId: createMessageId(), model: selectedModel || undefined, effort: reasoningEffort, approvalPolicy, contextEnvelope: contextEnvelope(variationAnnotations, overflowingIds(liveOverflowMeasurements())) }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Could not generate direction.");
       setActiveVariation(result.branch);
@@ -1650,14 +1664,9 @@ export default function Home() {
     const value = promptDraft.trim();
     const slide = slidesRef.current[activeRef.current - 1];
     const slideNumber = activeRef.current;
-    const slideAnnotations = slide ? annotations.filter((annotation) => annotation.slideId === slide.id) : [];
     const overflowing = overflowingIds(liveOverflowMeasurements());
     const boxes = viewportRef.current ? liveAnnotationBoxes() : null;
-    const refreshedAnnotations = (boxes ? refreshAnnotations(slideAnnotations, boxes) : slideAnnotations.map(cloneAnnotation)) as Annotation[];
-    const sendableIds = new Set(sendableAnnotations.map((annotation) => annotation.id));
-    const turnAnnotations = refreshedAnnotations
-      .filter((annotation) => sendableIds.has(annotation.id))
-      .sort((a, b) => a.order - b.order);
+    const turnAnnotations = collectTurnAnnotations(value, boxes);
     if (!canSendTurn(value, turnAnnotations) || turnInFlightRef.current) return;
     if (slide && boxes) setAnnotations((current) => refreshSlideAnnotations(current, slide.id, boxes));
     const requestDeck = deckPayload();
@@ -2409,7 +2418,7 @@ export default function Home() {
 
       <footer className="statusbar">
         <div>
-          <button className={`quality-button ${quality.ok ? "ok" : "error"}`} onClick={(event) => togglePopover("quality", event.currentTarget)} aria-expanded={openPopover === "quality"}>Quality {quality.ok ? "✓" : `${quality.errors} errors`}</button>
+          <button className={`quality-button ${quality.ok ? "ok" : "error"}`} onClick={(event) => togglePopover("quality", event.currentTarget)} aria-expanded={openPopover === "quality"}>Quality {quality.ok ? (quality.warnings ? `${quality.warnings} warnings` : "✓") : `${quality.errors} errors`}</button>
           <span>{project ? `${project.branch} · ${project.commit}` : "Connecting…"}</span>
           {apiError && <span className="status-error">{apiError}</span>}
         </div>
@@ -2423,7 +2432,7 @@ export default function Home() {
             <header><strong>Deck quality</strong><button onClick={() => dismissPopover()}>×</button></header>
             {quality.ok && <p className="quality-empty">No blocking quality issues.</p>}
             {quality.diagnostics.map((item: any, index: number) => (
-              <div key={`${item.code}-${index}`} className="quality-row"><i className="error" /><span><strong>{item.message}</strong><small>{item.code} · {item.source}</small></span></div>
+              <div key={`${item.code}-${index}`} className="quality-row"><i className={item.severity === "warning" ? "warning" : "error"} /><span><strong>{item.message}</strong><small>{item.code} · {item.source}</small></span></div>
             ))}
           </aside>
         </>

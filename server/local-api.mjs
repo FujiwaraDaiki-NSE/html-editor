@@ -116,7 +116,7 @@ function serializeEditorContext(payload) {
 
 async function startEditorTurn(payload, { variation = false } = {}) {
   if (activeProjectTurn()) throw new Error("Another Agent turn is already running in this project.");
-  const prompt = requireText(payload.prompt, "Prompt");
+  const prompt = requireTurnPrompt(payload);
   let branch = null;
   if (variation) branch = createVariationBranch();
   const deck = await writeProject(payload.deck);
