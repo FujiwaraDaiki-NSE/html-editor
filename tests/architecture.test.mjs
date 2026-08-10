@@ -166,9 +166,12 @@ test("a selected element can be referenced without knowing the pointing shortcut
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
-  assert.match(page, /const referenceElement = \(elementId: string, caret: number, afterAtSign: boolean\)/);
-  assert.match(page, /referenceElement\(selectedId, promptDraft\.length, false\)/);
-  assert.match(page, /agentReady && <><span aria-hidden="true"> · <\/span><button[^>]*>@ Reference<\/button>/);
+  const pointerReferenceHelper = page.match(/const pickPointerElement[\s\S]{0,200}?\n\s+(\w+)\([^;\n]*\);/)?.[1];
+  const buttonReferenceHelper = page.match(/const referenceSelectedElement[\s\S]{0,200}?\n\s+(\w+)\([^;\n]*\);/)?.[1];
+  const referenceButton = page.match(/agentReady &&[\s\S]{0,200}<button[^>]*className="canvas-reference-button"[^>]*>@[^<]*Reference<\/button>/)?.[0] ?? "";
+  assert.ok(pointerReferenceHelper);
+  assert.equal(buttonReferenceHelper, pointerReferenceHelper);
+  assert.match(referenceButton, /onClick=\{referenceSelectedElement\}/);
   assert.match(css, /\.canvas-reference-button \{[^}]*pointer-events: auto/);
 });
 
@@ -183,7 +186,7 @@ test("annotation mode draws regions without selecting or pointing at elements", 
   assert.doesNotMatch(gestureType, /elementId/);
   assert.doesNotMatch(annotationPointerDown, /readSelection|setSelectedId/);
   assert.doesNotMatch(annotationPointerEnd, /pointElement|target: \{ kind: "element" \}/);
-  for (const wording of ["Annotation mode · drag to draw a region", "Annotation mode draws regions only", "Point to an element from the message composer"]) assert.match(page, new RegExp(wording.replace(/[·]/g, "·")));
+  for (const wording of ["Annotation mode · drag to draw a region", "Annotation mode draws regions only", "Point to an element from the message composer"]) assert.match(page, new RegExp(wording));
   assert.match(readme, /`@`[^\n]+要素[^\n]+矩形だけ/);
 });
 
