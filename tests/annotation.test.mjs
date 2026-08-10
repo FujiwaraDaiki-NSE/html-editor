@@ -169,7 +169,7 @@ test("the annotation envelope sorts both target kinds and copies defensively", (
   const envelope = annotationEnvelope(annotations);
   assert.deepEqual(envelope, [
     {
-      id: "element-id", order: 1, target: { kind: "element", weaveId: "heading", html: '<h1 data-weave-id="heading">Title</h1>' },
+      id: "element-id", order: 1, target: { kind: "element", weaveId: "heading", elementKind: "heading", textExcerpt: "Title" },
       rect: { x: 10, y: 15, w: 300, h: 80 }, label: "Two lines", intersects: ["heading"],
     },
     {
@@ -180,7 +180,7 @@ test("the annotation envelope sorts both target kinds and copies defensively", (
   assert.equal("html" in envelope[1].target, false);
 
   envelope[0].target.weaveId = "changed";
-  envelope[0].target.html = "changed";
+  envelope[0].target.textExcerpt = "changed";
   envelope[0].rect.x = 999;
   envelope[0].intersects.push("changed");
   assert.deepEqual(annotations[1], {
