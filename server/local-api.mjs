@@ -82,10 +82,14 @@ async function readJson(request, limit = 1_500_000) {
   let size = 0;
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > limit) throw new Error("Request is too large.");
+    if (size > limit) throw Object.assign(new Error("Request is too large."), { code: "WEAVE_REQUEST_TOO_LARGE" });
     chunks.push(chunk);
   }
-  return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+  } catch {
+    throw Object.assign(new Error("Request body must be valid JSON."), { code: "WEAVE_INVALID_JSON" });
+  }
 }
 
 async function statePayload() {
@@ -152,26 +156,31 @@ async function startEditorTurn(payload, { variation = false } = {}) {
   const prompt = requireTurnPrompt(payload);
   let branch = null;
   if (variation) branch = createVariationBranch();
-  const deck = await writeProject(payload.deck);
-  const thread = await codex.startThread({
-    approvalPolicy: payload.approvalPolicy ?? "never",
-    model: payload.model,
-  });
-  const context = `${variation ? "Create a meaningfully different, polished direction. " : ""}User request: ${prompt}
+  try {
+    const deck = await writeProject(payload.deck);
+    const thread = await codex.startThread({
+      approvalPolicy: payload.approvalPolicy ?? "never",
+      model: payload.model,
+    });
+    const context = `${variation ? "Create a meaningfully different, polished direction. " : ""}User request: ${prompt}
 
 The latest editor state has been written to slides/*.html.
 Inspect the current project and edit the slides/*.html files directly. Do not edit styles/deck.css.
 Do not commit; Weave will commit after this turn.${serializeEditorContext(payload)}`;
-  const result = await codex.startTurn({
-    threadId: thread.id,
-    prompt: context,
-    clientUserMessageId: payload.clientUserMessageId,
-    model: payload.model,
-    effort: payload.effort,
-    approvalPolicy: payload.approvalPolicy ?? "never",
-  });
-  pendingTurns.set(thread.id, { prompt, branch, variation, deckTitle: deck.title });
-  return { thread, turn: result.turn, branch };
+    const result = await codex.startTurn({
+      threadId: thread.id,
+      prompt: context,
+      clientUserMessageId: payload.clientUserMessageId,
+      model: payload.model,
+      effort: payload.effort,
+      approvalPolicy: payload.approvalPolicy ?? "never",
+    });
+    pendingTurns.set(thread.id, { prompt, branch, variation, deckTitle: deck.title });
+    return { thread, turn: result.turn, branch };
+  } catch (error) {
+    if (variation && branch) discardVariation(branch);
+    throw error;
+  }
 }
 
 codex.on("notification", (message) => {
@@ -221,6 +230,22 @@ const server = createServer(async (request, response) => {
       return response.end();
     }
     const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
+    const routeMethods = [
+      [/^\/healthz$/, "GET"],
+      [/^\/api\/(?:state|projects|codex\/events|codex\/threads)$/, "GET"],
+      [/^\/api\/(?:assets|projects\/[^/]+\/assets)\//, "GET"],
+      [/^\/api\/projects$/, "POST"],
+      [/^\/api\/projects\/current$/, "POST"],
+      [/^\/api\/projects\/[^/]+$/, "PATCH"],
+      [/^\/api\/projects\/[^/]+\/(?:duplicate|archive)$/, "POST"],
+      [/^\/api\/(?:assets|save|history\/checkout|history\/main|variations\/(?:checkout|generate|accept|archive))$/, "POST"],
+      [/^\/api\/codex\/(?:thread\/(?:start|read|resume|fork|action)|turn\/(?:start|steer|interrupt)|request\/(?:resolve|reject)|catalog\/refresh|skill\/config|account\/(?:login|logout)|mcp\/(?:oauth|resource\/read|tool\/call))$/, "POST"],
+    ];
+    const routeMethod = routeMethods.find(([pattern]) => pattern.test(url.pathname))?.[1];
+    if (routeMethod && request.method !== routeMethod) {
+      response.setHeader("allow", routeMethod);
+      return sendJson(request, response, 405, { error: `Method ${request.method} is not allowed.` });
+    }
 
     if (request.method === "GET" && url.pathname === "/healthz") {
       return sendJson(request, response, 200, { ok: true, codex: codex.ready });
@@ -306,7 +331,7 @@ const server = createServer(async (request, response) => {
       if (idempotencyKey && completedSaves.has(idempotencyKey)) {
         return sendJson(request, response, 200, completedSaves.get(idempotencyKey));
       }
-      const { deck, commit } = await saveProject(
+      const { commit } = await saveProject(
         payload.deck,
         payload.expectedRevision,
         `Save: ${String(payload.message ?? payload.deck?.title ?? "Deck").slice(0, 120)}`,
@@ -363,6 +388,7 @@ const server = createServer(async (request, response) => {
       return sendJson(request, response, 200, await codex.threadAction(payload.action, payload.params ?? {}));
     }
     if (url.pathname === "/api/codex/turn/start") {
+      if (activeProjectTurn()) return sendJson(request, response, 409, { error: "Another Agent turn is already running in this project." });
       const prompt = requireTurnPrompt(payload);
       if (payload.deck) await writeProject(payload.deck);
       const result = await codex.startTurn({ ...payload, prompt: `${prompt}${serializeEditorContext(payload)}` });
@@ -422,6 +448,8 @@ const server = createServer(async (request, response) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const status = error?.code === "WEAVE_REVISION_CONFLICT" ? 409
+      : error?.code === "WEAVE_REQUEST_TOO_LARGE" ? 413
+      : error?.code === "WEAVE_INVALID_JSON" ? 400
       : ["WEAVE_QUALITY_FAILED", "WEAVE_CONTENT_POLICY"].includes(error?.code) ? 422
       : ["WEAVE_PROJECT_DIRTY", "WEAVE_PROJECT_BLOCKED", "WEAVE_TURN_RUNNING"].includes(error?.code) ? 409
       : /required|invalid|unknown|not offered/i.test(message) ? 400

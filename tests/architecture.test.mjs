@@ -54,8 +54,10 @@ test("policy gates protect commits while turn writes stay available", async () =
   const turnStart = localApi.slice(localApi.indexOf('url.pathname === "/api/codex/turn/start"'), localApi.indexOf('url.pathname === "/api/codex/turn/steer"'));
   const steer = localApi.slice(localApi.indexOf('url.pathname === "/api/codex/turn/steer"'), localApi.indexOf('url.pathname === "/api/codex/turn/interrupt"'));
   const writeBody = project.slice(project.indexOf("export async function writeProject"), project.indexOf("export async function assertCommittable"));
-  assert.ok(save.includes("assertCommittable"));
-  assert.ok(save.indexOf("assertCommittable") < save.indexOf("commitIfChanged"));
+  const atomicSave = project.slice(project.indexOf("export async function saveProject"), project.indexOf("export async function assertCommittable"));
+  assert.ok(save.includes("saveProject"));
+  assert.ok(atomicSave.includes("assertCommittable"));
+  assert.ok(atomicSave.indexOf("assertCommittable") < atomicSave.indexOf("commitIfChanged"));
   assert.match(turnStart, /writeProject\(payload\.deck\)/);
   assert.doesNotMatch(turnStart, /writeProject\(payload\.deck,\s*[^)]/);
   assert.doesNotMatch(steer, /writeProject/);

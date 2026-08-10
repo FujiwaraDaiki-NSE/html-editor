@@ -61,6 +61,17 @@ export class CodexService extends EventEmitter {
     this.client.on("notification", (message) => this.handleNotification(message));
     this.client.on("connection", (connection) => {
       this.ready = false;
+      if (connection.status === "disconnected") {
+        for (const [threadId, turnId] of this.activeTurns) {
+          this.handleNotification({
+            method: "turn/completed",
+            params: {
+              threadId,
+              turn: { id: turnId, status: "failed", error: connection.error ?? "Codex disconnected." },
+            },
+          });
+        }
+      }
       this.events.publish("codex/connection", connection);
       if (connection.status === "connected") void this.initialize();
     });

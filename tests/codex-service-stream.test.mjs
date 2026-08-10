@@ -79,6 +79,37 @@ test("event stream replays missed events and then forwards live events", () => {
   assert.deepEqual(events.map((event) => event.sequence), [1, 2]);
 });
 
+test("event stream reports when requested history has expired", () => {
+  const stream = new CodexEventStream({ limit: 2 });
+  stream.publish("one", {});
+  stream.publish("two", {});
+  stream.publish("three", {});
+  const response = new EventEmitter();
+  Object.assign(response, { destroyed: false, writableEnded: false, output: "" });
+  response.write = (chunk) => { response.output += chunk; return true; };
+  stream.attach(response, 0);
+  response.emit("close");
+  const events = response.output.trim().split("\n").map(JSON.parse);
+  assert.deepEqual(events.map((event) => event.type), ["codex/gap", "two", "three"]);
+  assert.deepEqual(events[0].payload, { requested: 0, oldest: 2, latest: 3 });
+});
+
+test("disconnect finalizes active turns so a retry is not blocked", () => {
+  const client = new FakeClient();
+  const service = new CodexService({ projectRoot: "/workspace", instructions: "test", client });
+  service.activeTurns.set("new", "turn-active");
+  service.interruptingThreads.add("new");
+  const completed = [];
+  service.on("notification", (message) => {
+    if (message.method === "turn/completed") completed.push(message);
+  });
+  client.emit("connection", { status: "disconnected", error: "socket closed" });
+  assert.equal(service.activeTurns.size, 0);
+  assert.equal(service.interruptingThreads.size, 0);
+  assert.equal(completed[0].params.turn.status, "failed");
+  service.router.dispose();
+});
+
 test("deduplicates repeated Stop requests for the same active turn", async () => {
   const client = new FakeClient();
   const service = new CodexService({ projectRoot: "/workspace", instructions: "test", client });
