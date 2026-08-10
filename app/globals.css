@@ -401,8 +401,8 @@ button.project-card { cursor: pointer; }
 
 .canvas-area { min-height: 0; position: relative; container-type: size; display: grid; place-items: center; overflow: hidden; background-color: #0c0e11; background-image: radial-gradient(#23272d 1px, transparent 1px); background-size: 18px 18px; }
 .light .canvas-area { background-color: #dfe1e5; background-image: radial-gradient(#c8cbd0 1px, transparent 1px); }
-.slide-shell { position: relative; width: min(calc(100cqw - 24px), calc(160cqh - 19.2px), 1280px); aspect-ratio: 16 / 10; display: grid; place-items: center; }
-.canvas-interaction-status { position: absolute; z-index: 5; top: 4px; left: 50%; translate: -50% 0; min-height: 24px; padding: 0 9px; display: flex; align-items: center; border: 1px solid var(--line-strong); border-radius: 999px; background: color-mix(in srgb, var(--panel) 92%, transparent); color: var(--muted); box-shadow: 0 4px 12px rgb(0 0 0 / .18); font-size: 8px; white-space: nowrap; pointer-events: none; }
+.slide-shell { position: relative; width: min(calc(100cqw - 24px), calc(177.7778cqh - 131.5556px), 1280px); aspect-ratio: 16 / 10; display: grid; place-items: center; }
+.canvas-interaction-status { position: absolute; z-index: 5; bottom: calc(95% + 1px); left: 50%; translate: -50% 0; min-height: 24px; padding: 0 9px; display: flex; align-items: center; border: 1px solid var(--line-strong); border-radius: 999px; background: color-mix(in srgb, var(--panel) 92%, transparent); color: var(--muted); box-shadow: 0 4px 12px rgb(0 0 0 / .18); font-size: 8px; white-space: nowrap; pointer-events: none; }
 .canvas-interaction-status.selected { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); color: var(--text); }
 .canvas-interaction-status.dragging { border-color: var(--accent); background: var(--accent); color: #211a0f; font-weight: 700; }
 .canvas-interaction-status.editing { border-style: dashed; color: var(--accent); }
@@ -533,7 +533,7 @@ button.project-card { cursor: pointer; }
 .inspector .scale-options button.active { background: var(--accent); border-color: var(--accent); color: #211a0f; }
 .inspector .scale-custom { width: 54px; height: 24px; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--panel); color: inherit; font-size: 11px; }
 
-.canvas-toolbar { position: absolute; left: 50%; bottom: 0; transform: translateX(-50%); min-height: 31px; padding: 3px; display: flex; align-items: center; gap: 0; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel); box-shadow: 0 7px 18px rgba(0,0,0,.28); }
+.canvas-toolbar { position: absolute; top: calc(95% + 1px); left: 50%; transform: translateX(-50%); min-height: 31px; padding: 3px; display: flex; align-items: center; gap: 0; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel); box-shadow: 0 7px 18px rgba(0,0,0,.28); }
 .canvas-tool-group { min-height: 23px; padding: 0 3px; display: flex; align-items: center; gap: 1px; }
 .canvas-tool-group + .canvas-tool-group { border-left: 1px solid var(--line-strong); }
 .canvas-toolbar button { height: 23px; min-width: 24px; border: 0; border-radius: 3px; background: transparent; color: var(--muted); font-size: 9px; cursor: pointer; }
