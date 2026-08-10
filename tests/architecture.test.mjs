@@ -22,6 +22,7 @@ test("clean-break architecture has no legacy chat persistence, RPC client, or en
     "class CodexAppServer ",
     "handleAgentTurn",
     "setMessages(",
+    "current-buffer",
   ]) {
     assert.equal(source.includes(legacy), false, `legacy symbol remains: ${legacy}`);
   }
