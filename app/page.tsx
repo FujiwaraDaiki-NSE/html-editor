@@ -792,7 +792,7 @@ export default function Home() {
     setOpenPopover(null);
     if (annotationMode) setSelectedAnnotationId(null);
     setAnnotationMode(!annotationMode);
-    setAnnouncement(annotationMode ? "Annotation mode left" : "Annotation mode entered");
+    setAnnouncement(annotationMode ? "Rough mode left" : "Rough mode entered. Drag to draw a frame, then label it.");
   };
 
   const updateAnnotationGesture = (event: { clientX: number; clientY: number }) => {
@@ -1972,7 +1972,7 @@ export default function Home() {
   const shortcutsSidebar = (
     <section className="activity-panel shortcuts-panel" aria-label="Keyboard shortcuts">
       <header className="activity-panel-heading"><span>KEYBOARD SHORTCUTS</span></header>
-      <div className="activity-panel-body"><dl><dt>← / →</dt><dd>Previous / next slide</dd><dt>Double-click or Enter</dt><dd>Edit selected text</dd><dt>@</dt><dd>Point to an element from the message composer</dd><dt>A</dt><dd>Toggle region annotation mode</dd><dt>Esc</dt><dd>Finish editing, leave an annotation label, or close presentation</dd><dt>⌘/Ctrl Z</dt><dd>Undo</dd><dt>⌘/Ctrl Shift Z</dt><dd>Redo</dd><dt>?</dt><dd>Open this view</dd></dl></div>
+      <div className="activity-panel-body"><dl><dt>← / →</dt><dd>Previous / next slide</dd><dt>Double-click or Enter</dt><dd>Edit selected text</dd><dt>@</dt><dd>Point to an element from the message composer</dd><dt>A</dt><dd>Toggle rough mode</dd><dt>Esc</dt><dd>Finish editing, leave an annotation label, or close presentation</dd><dt>⌘/Ctrl Z</dt><dd>Undo</dd><dt>⌘/Ctrl Shift Z</dt><dd>Redo</dd><dt>?</dt><dd>Open this view</dd></dl></div>
     </section>
   );
 
@@ -2167,7 +2167,7 @@ export default function Home() {
               )}
               <div className="view-toggle" role="group" aria-label="Editor view">
                 <button className={mode === "preview" ? "active" : ""} onClick={() => { if (mode === "code") reinject(); setMode("preview"); }}>▣ <span>Preview</span></button>
-                <button className={mode === "code" ? "active" : ""} onClick={() => { setSlidesSynced(captureActive()); setSelectedAnnotationId(null); setPointerPicking(false); if (annotationMode) setAnnouncement("Annotation mode left"); setAnnotationMode(false); setMode("code"); }}>‹› <span>Code</span></button>
+                <button className={mode === "code" ? "active" : ""} onClick={() => { setSlidesSynced(captureActive()); setSelectedAnnotationId(null); setPointerPicking(false); if (annotationMode) setAnnouncement("Rough mode left"); setAnnotationMode(false); setMode("code"); }}>‹› <span>Code</span></button>
               </div>
             </div>
           </div>
@@ -2191,7 +2191,7 @@ export default function Home() {
                   {pointerPicking
                     ? "Pointing · click an element to reference it · Esc to cancel"
                     : annotationMode
-                    ? `Annotation mode · drag to draw a region${recalledAnnotations.length > 0 ? ` · Comparing ${activeOverlayLabel}` : ""}`
+                    ? `Rough mode · drag to draw a frame${recalledAnnotations.length > 0 ? ` · Comparing ${activeOverlayLabel}` : ""}`
                     : recalledAnnotations.length > 0
                       ? `Comparing sent annotations · ${activeOverlayLabel}`
                       : draggedId ? "Moving block · release to place" : editingId ? "Editing text · Esc to finish" : selectedId ? <>
@@ -2278,9 +2278,9 @@ export default function Home() {
                       className={annotationMode ? "active" : ""}
                       aria-pressed={annotationMode}
                       aria-keyshortcuts="A"
-                      title="Toggle annotation mode (A)"
+                      title="Toggle rough mode (A)"
                       onClick={toggleAnnotationMode}
-                    >▱ <span>Annotate</span></button>
+                    >▱ <span>Rough</span></button>
                   </div>
                 </div>
                 {openPopover === "addBlock" && (
@@ -2343,7 +2343,7 @@ export default function Home() {
               ))}
             </div>}
           </section>
-          {annotationMode && <div className="annotation-inspector-notice" role="status">Annotation mode draws regions only. Editing is off while annotating.</div>}
+          {annotationMode && <div className="annotation-inspector-notice" role="status">Rough mode draws frames only. Editing is off while sketching.</div>}
           <fieldset className="inspector-editing" disabled={annotationMode}>
           {sel && (
             <>
