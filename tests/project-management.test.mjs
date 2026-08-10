@@ -27,9 +27,17 @@ test("projects are independent repositories with lifecycle operations", async ()
     await access(join(rootPath, "styles", "deck.css"));
 
     const second = await project.createProject({ title: "Second", template: "plain" });
+    const assetFilename = `${"a".repeat(64)}.png`;
+    await mkdir(join(rootPath, "assets"), { recursive: true });
+    await writeFile(join(rootPath, "assets", assetFilename), "png");
+    await writeFile(join(rootPath, "slides", "cover.html"), `<main><img src="assets/${assetFilename}"><img src="assets/example.png"></main>`);
+    git(rootPath, ["add", "."]);
+    git(rootPath, ["-c", "user.name=Weave", "-c", "user.email=weave@localhost", "commit", "-m", "Add thumbnail asset"]);
     const listed = await project.listProjects();
     assert.deepEqual(new Set(listed.map(({ slug: id }) => id)), new Set([slug, second]));
     assert.equal(listed.every((item) => item.slideCount === 1 && item.thumbnailHtml.length > 0), true);
+    assert.match(listed.find((item) => item.slug === slug).thumbnailHtml, new RegExp(`src="[^\"]*/api/projects/${slug}/assets/${assetFilename}"`));
+    assert.match(listed.find((item) => item.slug === slug).thumbnailHtml, /src="assets\/example\.png"/);
     await mkdir(join(workspaces, ".hidden"));
     await mkdir(join(workspaces, "not-a-project"));
     assert.equal((await project.listProjects()).length, 2);

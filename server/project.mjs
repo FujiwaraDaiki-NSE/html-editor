@@ -14,6 +14,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspacesRoot = process.env.WEAVE_WORKSPACES_ROOT ? resolve(process.env.WEAVE_WORKSPACES_ROOT) : join(repoRoot, "workspaces");
 const archiveRoot = join(workspacesRoot, ".archive");
 const currentPath = process.env.WEAVE_WORKSPACES_ROOT ? join(dirname(workspacesRoot), ".weave", "current.json") : join(repoRoot, ".weave", "current.json");
+const assetApiBase = `http://127.0.0.1:${process.env.WEAVE_API_PORT ?? 4317}/api`;
 let currentProjectRoot = process.env.WEAVE_PROJECT_ROOT ? resolve(process.env.WEAVE_PROJECT_ROOT) : join(workspacesRoot, "northstar");
 export const projectRoot = () => currentProjectRoot;
 const manifestPath = () => join(currentProjectRoot, ".weave", "deck.json");
@@ -621,10 +622,22 @@ export async function ensureProject() {
 }
 
 const slugPattern = /^[a-z0-9-]+$/;
+const assetFilenamePattern = /^[0-9a-f]{64}\.(?:png|jpg|webp|svg|gif)$/;
 function assertSlug(slug) {
   if (!slugPattern.test(String(slug ?? ""))) throw new Error("Invalid project id.");
   return slug;
 }
+
+export function assertAssetFilename(filename) {
+  if (!assetFilenamePattern.test(String(filename ?? ""))) throw new Error("Asset not found.");
+  return filename;
+}
+
+export function projectAssetPath(slug, filename) {
+  return join(workspacesRoot, assertSlug(slug), "assets", assertAssetFilename(filename));
+}
+
+const rewriteThumbnailAssets = (html, slug) => html.replace(/\bsrc=(['"])assets\/([0-9a-f]{64}\.(?:png|jpg|webp|svg|gif))\1/g, (_match, quote, filename) => `src=${quote}${assetApiBase}/projects/${slug}/assets/${filename}${quote}`);
 
 function generatedSlug(title) {
   return projectSlug(title);
@@ -717,7 +730,8 @@ export async function listProjects() {
         variations = gitAt(root, ["for-each-ref", "--format=%(refname:short)", "refs/heads/weave/variation"]).split("\n").filter(Boolean);
         updatedAt = gitAt(root, ["log", "-1", "--pretty=%cI"]) || null;
       } catch {}
-      return { slug: entry.name, title: String(manifest.title ?? ""), slideCount: slides.length, updatedAt, current: root === currentProjectRoot, blocked: variations.length > 0, blockedCount: variations.length, thumbnailHtml: first ? await readFile(join(root, "slides", `${first}.html`), "utf8").catch(() => "") : "", css: await readFile(join(root, "styles", "deck.css"), "utf8").catch(() => defaultDeckCss) };
+      const thumbnailHtml = first ? await readFile(join(root, "slides", `${first}.html`), "utf8").catch(() => "") : "";
+      return { slug: entry.name, title: String(manifest.title ?? ""), slideCount: slides.length, updatedAt, current: root === currentProjectRoot, blocked: variations.length > 0, blockedCount: variations.length, thumbnailHtml: rewriteThumbnailAssets(thumbnailHtml, entry.name), css: await readFile(join(root, "styles", "deck.css"), "utf8").catch(() => defaultDeckCss) };
     } catch { return null; }
   }));
   return projects.filter(Boolean).sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
