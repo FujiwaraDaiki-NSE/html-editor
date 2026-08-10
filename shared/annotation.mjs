@@ -105,10 +105,15 @@ export const annotationEnvelope = (annotations) => annotations
     id: annotation.id,
     order: annotation.order,
     target: annotation.target.kind === "element"
-      ? { kind: "element", weaveId: annotation.target.weaveId, html: String(annotation.target.html ?? "") }
+      ? {
+          kind: "element",
+          weaveId: annotation.target.weaveId,
+          elementKind: String(annotation.target.elementKind ?? ""),
+          textExcerpt: String(annotation.target.textExcerpt ?? "").replace(/\s+/g, " ").trim().slice(0, 200),
+        }
       : { kind: "region" },
     rect: { x: annotation.rect.x, y: annotation.rect.y, w: annotation.rect.w, h: annotation.rect.h },
-    label: annotation.label ?? "",
+    label: String(annotation.label ?? "").slice(0, 200),
     intersects: [...(annotation.intersects ?? [])],
   }))
   .sort((a, b) => a.order - b.order);
