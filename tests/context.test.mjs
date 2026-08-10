@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { editorEnvelope, contextPromptRules } from "../shared/context.mjs";
+import { editorEnvelope, overflowingIds, contextPromptRules } from "../shared/context.mjs";
+import { designHeight, designWidth } from "../shared/slide-design.mjs";
 
 const typicalAnnotations = [
   {
@@ -22,6 +23,7 @@ test("editor envelopes keep only the compact perspective", () => {
     revision: "rev-1", recentHistory: [{ message: "old" }], selectedText: "browser range",
     selected: { id: "headline", kind: "heading", label: "heading", text: "Northstar growth outlook" },
     annotations: typicalAnnotations,
+    overflowing: ["headline", "metrics", "body"],
   });
   assert.deepEqual(envelope.selected, { id: "headline", kind: "heading", text: "Northstar growth outlook" });
   assert.equal("activeSlideHtml" in envelope, false);
@@ -31,6 +33,7 @@ test("editor envelopes keep only the compact perspective", () => {
   assert.equal("selectedText" in envelope, false);
   assert.equal("label" in envelope.selected, false);
   assert.equal(envelope.slide, "opportunity");
+  assert.deepEqual(envelope.overflowing, ["headline", "metrics", "body"]);
   assert.equal(`slides/${envelope.slide}.html`, "slides/opportunity.html");
   /* The slide HTML travels as a file path, so the element target names the element instead of quoting it. */
   assert.equal("html" in envelope.annotations[0].target, false);
@@ -46,9 +49,49 @@ test("empty and invalid inputs fail safe", () => {
   assert.deepEqual(editorEnvelope({ slide: 4, annotations: "not an array", selected: [] }), { slide: "4" });
 });
 
+test("overflowingIds reports frame and content overflow in input order", () => {
+  assert.deepEqual(overflowingIds([
+    { id: "left", box: { left: -2, top: 0, right: 100, bottom: 100 }, scrollHeight: 100, clientHeight: 100 },
+    { id: "bottom", box: { left: 0, top: 0, right: 100, bottom: 722 }, scrollHeight: 100, clientHeight: 100 },
+    { id: "content", box: { left: 0, top: 0, right: 100, bottom: 100 }, scrollHeight: 121, clientHeight: 100 },
+    { id: "left", box: { left: -4, top: 0, right: 100, bottom: 100 }, scrollHeight: 200, clientHeight: 100 },
+  ]), ["left", "bottom", "content"]);
+});
+
+test("overflowingIds stays empty for a slide that fits", () => {
+  assert.deepEqual(overflowingIds([
+    { id: "eyebrow", box: { left: 80, top: 64, right: 520, bottom: 88 }, scrollHeight: 24, clientHeight: 24 },
+    { id: "heading", box: { left: 80, top: 180, right: 1120, bottom: 380 }, scrollHeight: 200, clientHeight: 200 },
+    { id: "note", box: { left: 80, top: 620, right: 600, bottom: 656 }, scrollHeight: 36, clientHeight: 36 },
+  ]), []);
+});
+
+test("overflowingIds ignores a one-pixel-or-less excess", () => {
+  assert.deepEqual(overflowingIds([
+    { id: "edge-left", box: { left: -1, top: 0, right: 100, bottom: 100 }, scrollHeight: 100, clientHeight: 100 },
+    { id: "edge-right", box: { left: 0, top: 0, right: designWidth + 1, bottom: designHeight }, scrollHeight: 101, clientHeight: 100 },
+    { id: "edge-bottom", box: { left: 0, top: 0, right: 100, bottom: designHeight + 1 }, scrollHeight: 100, clientHeight: 100 },
+  ]), []);
+});
+
+test("overflowingIds caps the result at twenty unique ids", () => {
+  const measurements = Array.from({ length: 25 }, (_, index) => ({
+    id: `overflow-${index}`,
+    box: { left: 0, top: 0, right: designWidth, bottom: designHeight + 2 },
+    scrollHeight: 100, clientHeight: 100,
+  }));
+  assert.equal(overflowingIds(measurements).length, 20);
+});
+
+test("editor envelopes include non-empty overflowing ids only", () => {
+  assert.deepEqual(editorEnvelope({ overflowing: ["headline", "body", "", "headline"] }).overflowing, ["headline", "body"]);
+  assert.equal("overflowing" in editorEnvelope({ overflowing: [] }), false);
+});
+
 test("context rules describe the file-backed truth", () => {
   assert.match(contextPromptRules, /slide HTML, CSS, templates, and history from project files/);
   assert.match(contextPromptRules, /slides\/<slide>\.html/);
   assert.match(contextPromptRules, /data-weave-id/);
   assert.match(contextPromptRules, /prefer the id/);
+  assert.match(contextPromptRules, /rendering result/);
 });
