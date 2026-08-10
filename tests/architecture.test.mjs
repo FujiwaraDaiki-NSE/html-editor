@@ -153,6 +153,25 @@ test("commands are grouped by editing, project, and delivery intent", async () =
   assert.match(css, /\.canvas-tool-group \+ \.canvas-tool-group/);
 });
 
+test("project changes preserve browser-only edits until they are saved", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const switchProject = page.slice(page.indexOf("const switchProject = async"), page.indexOf("const galleryMutation"));
+  const createProject = page.slice(page.indexOf("const createProject = async"), page.indexOf("const relativeProjectTime"));
+  assert.match(switchProject, /if \(!saved && !savedLocally\)/);
+  assert.match(createProject, /if \(!saved && !savedLocally\)/);
+  assert.match(page, /galleryDialog\.kind === "create"/);
+  assert.match(page, /return unchanged;/);
+});
+
+test("project writes bind to an explicit root across asynchronous work", async () => {
+  const project = await readFile(new URL("../server/project.mjs", import.meta.url), "utf8");
+  const writeProject = project.slice(project.indexOf("export async function writeProject"), project.indexOf("export async function assertCommittable"));
+  const createProject = project.slice(project.indexOf("async function createProjectUnlocked"), project.indexOf("export async function createProject"));
+  assert.match(writeProject, /writeProjectUnlocked\(input, expectedRevision, root\)/);
+  assert.match(createProject, /writeProjectUnlocked\([^;]+, null, root\)/);
+  assert.doesNotMatch(project, /function withProjectRoot/);
+});
+
 test("the content-bearing local slide library is removed", async () => {
   const [page, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),

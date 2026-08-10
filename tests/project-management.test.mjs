@@ -18,11 +18,14 @@ test("projects are independent repositories with lifecycle operations", async ()
   try {
     const project = await import(`../server/project.mjs?management=${Date.now()}`);
     await project.ensureProject();
-    const slug = await project.createProject({ title: "A <Deck>", template: "grid" });
+    const slug = await project.createProject({ title: "A $& <Deck>", template: "grid" });
+    assert.equal(project.projectRoot(), startup);
     const rootPath = join(workspaces, slug);
     assert.equal(git(rootPath, ["rev-list", "--count", "HEAD"]), "1");
     assert.equal(JSON.parse(await readFile(join(rootPath, ".weave", "deck.json"), "utf8")).slides.length, 1);
-    assert.equal((await readFile(join(rootPath, "slides", "cover.html"), "utf8")).includes("A &lt;Deck&gt;"), true);
+    const coverHtml = await readFile(join(rootPath, "slides", "cover.html"), "utf8");
+    assert.equal(coverHtml.includes("A $&amp; &lt;Deck&gt;"), true);
+    assert.equal(coverHtml.match(/<h1\b/g)?.length, 1);
     await access(join(rootPath, "AGENTS.md"));
     await access(join(rootPath, "styles", "deck.css"));
 
