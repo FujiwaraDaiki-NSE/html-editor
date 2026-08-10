@@ -9,7 +9,7 @@ import { auditContentPolicy } from "../shared/content-policy.mjs";
 import { applyTemplateToSlideHtml, contentSlotSelector, titleFromSlideHtml, titleSlotSelector } from "../shared/slide-slots.mjs";
 import { advancedControlKeys, allControlKeys, applyBlockPosition, applySize, applyUtilityClass, blockPositionOptions, containerControlKeys, decorationControlKeys, defaultSlideClasses, imageControlKeys, listControlKeys, migrateSlideHtmlToTailwind, ratioOptions, readBlockPosition, readSize, readUtilityClass, sizeIntents, slideControlGroups, textControlKeys } from "../shared/tailwind-slide.mjs";
 import { canSendTurn, insertReferenceAt, nextOrder, rectFromClientBox, rectFromPoints, refreshAnnotations, resizeRect, resolveReferences, toSlidePoint, translateRect } from "../shared/annotation.mjs";
-import { editorEnvelope } from "../shared/context.mjs";
+import { editorEnvelope, overflowingIds } from "../shared/context.mjs";
 import { AnnotationAttachment } from "./components/AnnotationAttachment";
 import { AnnotationLegend } from "./components/AnnotationLegend";
 import { AnnotationOverlay } from "./components/AnnotationOverlay";
@@ -422,7 +422,7 @@ export default function Home() {
 
   const deckPayload = () => ({ title: deckTitle, slides: captureActive() });
 
-  const contextEnvelope = (annotationContext: Annotation[] = []) => editorEnvelope({
+  const contextEnvelope = (annotationContext: Annotation[] = [], overflowing: string[] = []) => editorEnvelope({
     slide: activeSlideId,
     selected: selectedId ? {
       id: selectedId,
@@ -433,6 +433,7 @@ export default function Home() {
       })(),
     } : undefined,
     annotations: annotationContext,
+    overflowing,
   });
 
   const quality = useMemo(() => {
@@ -686,6 +687,31 @@ export default function Home() {
         elementKind: kindOfNode(node),
         textExcerpt: textExcerptOfNode(node),
       }] : [];
+    });
+  };
+
+  /* Measured against the slide root rather than the viewport: the viewport scrolls under manual zoom,
+     and the annotation rects cannot serve here because clampRect trims them to the frame. Layout reads
+     stay out of the annotation and pointer frames — overflow is measured once, at send time. */
+  const liveOverflowMeasurements = () => {
+    const slide = slideRoot();
+    if (!slide) return [];
+    const slideBox = slide.getBoundingClientRect();
+    return Array.from(slide.querySelectorAll<HTMLElement>("[data-weave-id]")).flatMap((node) => {
+      const id = node.getAttribute("data-weave-id");
+      if (!id) return [];
+      const box = node.getBoundingClientRect();
+      return [{
+        id,
+        box: {
+          left: (box.left - slideBox.left) / slideScale,
+          top: (box.top - slideBox.top) / slideScale,
+          right: (box.right - slideBox.left) / slideScale,
+          bottom: (box.bottom - slideBox.top) / slideScale,
+        },
+        scrollHeight: node.scrollHeight,
+        clientHeight: node.clientHeight,
+      }];
     });
   };
 
@@ -1555,7 +1581,7 @@ export default function Home() {
     setShowVariationPrompt(false);
     setApiError(null);
     try {
-      const response = await fetch(`${apiBase}/variations/generate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt, deck: deckPayload(), clientUserMessageId: createMessageId(), model: selectedModel || undefined, effort: reasoningEffort, approvalPolicy, contextEnvelope: contextEnvelope() }) });
+      const response = await fetch(`${apiBase}/variations/generate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt, deck: deckPayload(), clientUserMessageId: createMessageId(), model: selectedModel || undefined, effort: reasoningEffort, approvalPolicy, contextEnvelope: contextEnvelope([], overflowingIds(liveOverflowMeasurements())) }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Could not generate direction.");
       setActiveVariation(result.branch);
@@ -1625,6 +1651,7 @@ export default function Home() {
     const slide = slidesRef.current[activeRef.current - 1];
     const slideNumber = activeRef.current;
     const slideAnnotations = slide ? annotations.filter((annotation) => annotation.slideId === slide.id) : [];
+    const overflowing = overflowingIds(liveOverflowMeasurements());
     const boxes = viewportRef.current ? liveAnnotationBoxes() : null;
     const refreshedAnnotations = (boxes ? refreshAnnotations(slideAnnotations, boxes) : slideAnnotations.map(cloneAnnotation)) as Annotation[];
     const sendableIds = new Set(sendableAnnotations.map((annotation) => annotation.id));
@@ -1634,7 +1661,7 @@ export default function Home() {
     if (!canSendTurn(value, turnAnnotations) || turnInFlightRef.current) return;
     if (slide && boxes) setAnnotations((current) => refreshSlideAnnotations(current, slide.id, boxes));
     const requestDeck = deckPayload();
-    const requestEnvelope = contextEnvelope(turnAnnotations);
+    const requestEnvelope = contextEnvelope(turnAnnotations, overflowing);
     turnInFlightRef.current = true;
     setTurnSubmitting(true);
     shouldAutoScrollRef.current = true;
