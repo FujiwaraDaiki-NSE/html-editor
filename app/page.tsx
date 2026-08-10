@@ -817,13 +817,11 @@ export default function Home() {
   };
 
   const insertPromptReference = (annotation: Annotation, caret: number, afterAtSign: boolean) => {
-    setPromptDraft((current) => {
-      const inserted = insertReferenceAt(current, caret, annotation.order, { afterAtSign });
-      requestAnimationFrame(() => {
-        promptRef.current?.focus();
-        promptRef.current?.setSelectionRange(inserted.caret, inserted.caret);
-      });
-      return inserted.text;
+    const inserted = insertReferenceAt(promptDraft, caret, annotation.order, { afterAtSign });
+    setPromptDraft(inserted.text);
+    requestAnimationFrame(() => {
+      promptRef.current?.focus();
+      promptRef.current?.setSelectionRange(inserted.caret, inserted.caret);
     });
   };
 
