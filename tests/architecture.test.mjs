@@ -172,6 +172,7 @@ test("a selected element can be referenced without knowing the pointing shortcut
   assert.ok(pointerReferenceHelper);
   assert.equal(buttonReferenceHelper, pointerReferenceHelper);
   assert.match(referenceButton, /onClick=\{referenceSelectedElement\}/);
+  assert.match(css, /\.canvas-reference-button \{[^}]*margin: 0 4px/);
   assert.match(css, /\.canvas-reference-button \{[^}]*pointer-events: auto/);
 });
 
