@@ -163,6 +163,15 @@ test("project changes preserve browser-only edits until they are saved", async (
   assert.match(page, /return unchanged;/);
 });
 
+test("project writes bind to an explicit root across asynchronous work", async () => {
+  const project = await readFile(new URL("../server/project.mjs", import.meta.url), "utf8");
+  const writeProject = project.slice(project.indexOf("export async function writeProject"), project.indexOf("export async function assertCommittable"));
+  const createProject = project.slice(project.indexOf("async function createProjectUnlocked"), project.indexOf("export async function createProject"));
+  assert.match(writeProject, /writeProjectUnlocked\(input, expectedRevision, root\)/);
+  assert.match(createProject, /writeProjectUnlocked\([^;]+, null, root\)/);
+  assert.doesNotMatch(project, /function withProjectRoot/);
+});
+
 test("the content-bearing local slide library is removed", async () => {
   const [page, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),

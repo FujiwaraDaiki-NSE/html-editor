@@ -19,6 +19,7 @@ test("projects are independent repositories with lifecycle operations", async ()
     const project = await import(`../server/project.mjs?management=${Date.now()}`);
     await project.ensureProject();
     const slug = await project.createProject({ title: "A <Deck>", template: "grid" });
+    assert.equal(project.projectRoot(), startup);
     const rootPath = join(workspaces, slug);
     assert.equal(git(rootPath, ["rev-list", "--count", "HEAD"]), "1");
     assert.equal(JSON.parse(await readFile(join(rootPath, ".weave", "deck.json"), "utf8")).slides.length, 1);

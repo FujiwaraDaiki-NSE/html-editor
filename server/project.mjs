@@ -17,12 +17,12 @@ const currentPath = process.env.WEAVE_WORKSPACES_ROOT ? join(dirname(workspacesR
 const assetApiBase = `http://127.0.0.1:${process.env.WEAVE_API_PORT ?? 4317}/api`;
 let currentProjectRoot = process.env.WEAVE_PROJECT_ROOT ? resolve(process.env.WEAVE_PROJECT_ROOT) : join(workspacesRoot, "northstar");
 export const projectRoot = () => currentProjectRoot;
-const manifestPath = () => join(currentProjectRoot, ".weave", "deck.json");
-const slidesRoot = () => join(currentProjectRoot, "slides");
-const stylesRoot = () => join(currentProjectRoot, "styles");
-const assetsRoot = () => join(currentProjectRoot, "assets");
-export const templatesRoot = () => join(currentProjectRoot, "templates");
-const deckCssPath = () => join(stylesRoot(), "deck.css");
+const manifestPath = (root = currentProjectRoot) => join(root, ".weave", "deck.json");
+const slidesRoot = (root = currentProjectRoot) => join(root, "slides");
+const stylesRoot = (root = currentProjectRoot) => join(root, "styles");
+const assetsRoot = (root = currentProjectRoot) => join(root, "assets");
+export const templatesRoot = (root = currentProjectRoot) => join(root, "templates");
+const deckCssPath = (root = currentProjectRoot) => join(stylesRoot(root), "deck.css");
 const projectWriteQueues = new Map();
 
 export async function runProjectExclusive(task, root = currentProjectRoot) {
@@ -97,6 +97,7 @@ const assetTypes = new Map([
 const maxAssetBytes = 10 * 1024 * 1024;
 
 export async function importImageAsset({ data, mimeType }) {
+  const root = currentProjectRoot;
   const extension = assetTypes.get(String(mimeType ?? "").toLowerCase());
   if (!extension) throw new Error("Unsupported image type. Use PNG, JPEG, WebP, SVG, or GIF.");
   const bytes = Buffer.from(String(data ?? ""), "base64");
@@ -113,8 +114,8 @@ export async function importImageAsset({ data, mimeType }) {
   }
   const hash = createHash("sha256").update(bytes).digest("hex");
   const filename = `${hash}.${extension}`;
-  await mkdir(assetsRoot(), { recursive: true });
-  await writeFile(join(assetsRoot(), filename), bytes);
+  await mkdir(assetsRoot(root), { recursive: true });
+  await writeFile(join(assetsRoot(root), filename), bytes);
   return { path: `assets/${filename}`, mimeType, size: bytes.length };
 }
 
@@ -196,17 +197,17 @@ function runGit(args, options = {}) {
   }).trim();
 }
 
-export function getRevision() {
+export function getRevision(root = currentProjectRoot) {
   try {
-    return runGit(["rev-parse", "HEAD"]);
+    return runGit(["rev-parse", "HEAD"], { cwd: root });
   } catch {
     return null;
   }
 }
 
-export function assertRevision(expectedRevision) {
+export function assertRevision(expectedRevision, root = currentProjectRoot) {
   if (expectedRevision == null) return;
-  const actualRevision = getRevision();
+  const actualRevision = getRevision(root);
   if (expectedRevision !== actualRevision) {
     const error = new Error("The deck changed after it was loaded. Refresh before saving again.");
     error.code = "WEAVE_REVISION_CONFLICT";
@@ -218,9 +219,9 @@ export function assertRevision(expectedRevision) {
 
 /* deck.css is authored directly (human via inspector overrides, agent via this file). It is never
    regenerated — read it as-is, falling back to the shipped default only when absent. */
-export async function readDeckCss() {
+export async function readDeckCss(root = currentProjectRoot) {
   try {
-    return await readFile(deckCssPath(), "utf8");
+    return await readFile(deckCssPath(root), "utf8");
   } catch {
     return defaultDeckCss;
   }
@@ -228,12 +229,12 @@ export async function readDeckCss() {
 
 const templateAttribute = (opening, name) => opening.match(new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>]+))`, "i"))?.slice(1).find((value) => value !== undefined)?.trim() ?? "";
 
-export async function readTemplates() {
-  const entries = await readdir(templatesRoot(), { withFileTypes: true }).catch(() => []);
+export async function readTemplates(root = currentProjectRoot) {
+  const entries = await readdir(templatesRoot(root), { withFileTypes: true }).catch(() => []);
   const templates = [];
   for (const entry of entries.filter((item) => item.isFile() && item.name.endsWith(".html")).sort((a, b) => a.name.localeCompare(b.name))) {
     try {
-      const html = await readFile(join(templatesRoot(), entry.name), "utf8");
+      const html = await readFile(join(templatesRoot(root), entry.name), "utf8");
       const policy = auditContentPolicy({ html });
       if (!policy.ok) continue;
       const opening = html.match(/<main\b[^>]*>/i)?.[0] ?? "";
@@ -248,15 +249,15 @@ export async function readTemplates() {
   return templates;
 }
 
-export async function ensureTemplates() {
-  await mkdir(templatesRoot(), { recursive: true });
+export async function ensureTemplates(root = currentProjectRoot) {
+  await mkdir(templatesRoot(root), { recursive: true });
   const canonical = await Promise.all(builtInTemplates.map(async (template) => ({
     ...template,
     html: await formatSlideHtml(template.html),
   })));
   const touched = [];
   for (const template of canonical) {
-    const path = join(templatesRoot(), template.filename);
+    const path = join(templatesRoot(root), template.filename);
     if (await readFile(path, "utf8").catch(() => "") === template.html) continue;
     await writeFile(path, template.html);
     touched.push(`templates/${template.filename}`);
@@ -290,37 +291,37 @@ export function validateProject(input) {
   return { title: String(input.title ?? seedTitle).slice(0, 200), slides };
 }
 
-async function readSlideHtml(id) {
+async function readSlideHtml(id, root = currentProjectRoot) {
   try {
-    return await readFile(join(slidesRoot(), `${id}.html`), "utf8");
+    return await readFile(join(slidesRoot(root), `${id}.html`), "utf8");
   } catch {
     return "";
   }
 }
 
-async function readManifest() {
+async function readManifest(root = currentProjectRoot) {
   try {
-    return JSON.parse(await readFile(manifestPath(), "utf8"));
+    return JSON.parse(await readFile(manifestPath(root), "utf8"));
   } catch {
     return null;
   }
 }
 
 /** The project as the editor loads it: manifest joined with each slide's HTML fragment. */
-export async function readProject() {
-  const manifest = await readManifest();
+export async function readProject(root = currentProjectRoot) {
+  const manifest = await readManifest(root);
   if (!manifest || !Array.isArray(manifest.slides)) return seedProject();
   const slides = await Promise.all(manifest.slides.map(async (slide, index) => ({
     id: slide.id,
     title: String(slide.title ?? `Slide ${index + 1}`),
     notes: String(slide.notes ?? ""),
-    html: await readSlideHtml(slide.id),
+    html: await readSlideHtml(slide.id, root),
   })));
   return { title: String(manifest.title ?? seedTitle), slides };
 }
 
 /** Write the project: every slide file (formatted) plus the manifest, transactionally. */
-async function writeProjectUnlocked(input, expectedRevision = null) {
+async function writeProjectUnlocked(input, expectedRevision = null, root = currentProjectRoot) {
   const project = validateProject(input);
   const slides = await Promise.all(project.slides.map(async (slide) => ({
     ...slide,
@@ -329,14 +330,14 @@ async function writeProjectUnlocked(input, expectedRevision = null) {
   const manifest = { title: project.title, slides: slides.map(({ id, title, notes }) => ({ id, title, notes })) };
   const manifestJson = `${JSON.stringify(manifest, null, 2)}\n`;
 
-  await mkdir(join(currentProjectRoot, ".weave"), { recursive: true });
-  assertRevision(expectedRevision);
+  await mkdir(join(root, ".weave"), { recursive: true });
+  assertRevision(expectedRevision, root);
 
   const transactionId = randomUUID();
-  const stagedSlidesRoot = join(currentProjectRoot, `.slides-${transactionId}.staged`);
-  const previousSlidesRoot = join(currentProjectRoot, `.slides-${transactionId}.previous`);
-  const stagedManifestPath = join(currentProjectRoot, ".weave", `.deck-${transactionId}.staged`);
-  const previousManifestPath = join(currentProjectRoot, ".weave", `.deck-${transactionId}.previous`);
+  const stagedSlidesRoot = join(root, `.slides-${transactionId}.staged`);
+  const previousSlidesRoot = join(root, `.slides-${transactionId}.previous`);
+  const stagedManifestPath = join(root, ".weave", `.deck-${transactionId}.staged`);
+  const previousManifestPath = join(root, ".weave", `.deck-${transactionId}.previous`);
   let movedPreviousSlides = false;
   let installedSlides = false;
   let movedPreviousManifest = false;
@@ -349,32 +350,32 @@ async function writeProjectUnlocked(input, expectedRevision = null) {
     ]);
 
     // Re-check just before publishing so a concurrent commit is not silently overwritten.
-    assertRevision(expectedRevision);
+    assertRevision(expectedRevision, root);
     try {
-      await rename(slidesRoot(), previousSlidesRoot);
+      await rename(slidesRoot(root), previousSlidesRoot);
       movedPreviousSlides = true;
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
     }
-    await rename(stagedSlidesRoot, slidesRoot());
+    await rename(stagedSlidesRoot, slidesRoot(root));
     installedSlides = true;
     try {
-      await rename(manifestPath(), previousManifestPath);
+      await rename(manifestPath(root), previousManifestPath);
       movedPreviousManifest = true;
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
     }
-    await rename(stagedManifestPath, manifestPath());
+    await rename(stagedManifestPath, manifestPath(root));
     installedManifest = true;
     await Promise.all([
       rm(previousSlidesRoot, { recursive: true, force: true }),
       rm(previousManifestPath, { force: true }),
     ]);
   } catch (error) {
-    if (installedManifest) await rm(manifestPath(), { force: true });
-    if (movedPreviousManifest) await rename(previousManifestPath, manifestPath()).catch(() => {});
-    if (installedSlides) await rm(slidesRoot(), { recursive: true, force: true });
-    if (movedPreviousSlides) await rename(previousSlidesRoot, slidesRoot()).catch(() => {});
+    if (installedManifest) await rm(manifestPath(root), { force: true });
+    if (movedPreviousManifest) await rename(previousManifestPath, manifestPath(root)).catch(() => {});
+    if (installedSlides) await rm(slidesRoot(root), { recursive: true, force: true });
+    if (movedPreviousSlides) await rename(previousSlidesRoot, slidesRoot(root)).catch(() => {});
     throw error;
   } finally {
     await Promise.all([
@@ -390,7 +391,7 @@ async function writeProjectUnlocked(input, expectedRevision = null) {
 export async function writeProject(input, expectedRevision = null) {
   const root = currentProjectRoot;
   return await runProjectExclusive(
-    () => writeProjectUnlocked(input, expectedRevision),
+    () => writeProjectUnlocked(input, expectedRevision, root),
     root,
   );
 }
@@ -398,23 +399,23 @@ export async function writeProject(input, expectedRevision = null) {
 export async function saveProject(input, expectedRevision, message) {
   const root = currentProjectRoot;
   return await runProjectExclusive(async () => {
-    const deck = await writeProjectUnlocked(input, expectedRevision);
-    await assertCommittable();
-    const commit = commitIfChanged(message ?? `Save: ${deck.title}`);
+    const deck = await writeProjectUnlocked(input, expectedRevision, root);
+    await assertCommittable(root);
+    const commit = commitIfChanged(message ?? `Save: ${deck.title}`, root);
     return { deck, commit };
   }, root);
 }
 
 /* The commit gate checks disk because that is what commitIfChanged will persist; writes stay inspectable. */
-export async function assertCommittable() {
-  const css = await readDeckCss();
+export async function assertCommittable(root = currentProjectRoot) {
+  const css = await readDeckCss(root);
   const canonicalCss = await formatDeckCss(defaultDeckCss);
   if (await formatDeckCss(css) !== canonicalCss) {
     const error = new Error("styles/deck.css is generated from the supported Tailwind utility registry and cannot be edited.");
     error.code = "WEAVE_TAILWIND_STYLESHEET";
     throw error;
   }
-  const project = await readProject();
+  const project = await readProject(root);
   const policy = auditContentPolicy({ css, html: project.slides.map((slide) => slide.html).join("\n") });
   if (!policy.ok) {
     const error = new Error(`Content policy gate failed: ${policy.summary.errors} error(s).`);
@@ -428,18 +429,18 @@ export async function assertCommittable() {
 /* Keep optional paths in status so a tracked-but-deleted assets or templates directory remains dirty. */
 const managedPaths = [".weave/deck.json", "slides", "styles", "AGENTS.md", "assets", "templates"];
 
-function managedStatus() {
-  return runGit(["status", "--porcelain", "--", ...managedPaths]);
+function managedStatus(root = currentProjectRoot) {
+  return runGit(["status", "--porcelain", "--", ...managedPaths], { cwd: root });
 }
 
-export function commitIfChanged(message) {
+export function commitIfChanged(message, root = currentProjectRoot) {
   const pathsToAdd = managedPaths
     .filter((path) => path !== "assets" && path !== "templates")
-    .concat(existsSync(assetsRoot()) ? ["assets"] : [], existsSync(templatesRoot()) ? ["templates"] : []);
-  runGit(["add", ...pathsToAdd]);
-  if (!runGit(["diff", "--cached", "--name-only"])) return null;
-  runGit(["-c", "user.name=Weave", "-c", "user.email=weave@localhost", "commit", "-m", message.slice(0, 180)]);
-  return runGit(["rev-parse", "HEAD"]);
+    .concat(existsSync(assetsRoot(root)) ? ["assets"] : [], existsSync(templatesRoot(root)) ? ["templates"] : []);
+  runGit(["add", ...pathsToAdd], { cwd: root });
+  if (!runGit(["diff", "--cached", "--name-only"], { cwd: root })) return null;
+  runGit(["-c", "user.name=Weave", "-c", "user.email=weave@localhost", "commit", "-m", message.slice(0, 180)], { cwd: root });
+  return runGit(["rev-parse", "HEAD"], { cwd: root });
 }
 
 function commitPathsIfChanged(message, paths) {
@@ -607,28 +608,22 @@ async function migrateLegacyDeck() {
   return true;
 }
 
-async function ensureProjectScaffolding() {
+async function ensureProjectScaffolding(root = currentProjectRoot) {
   const migrationPaths = [];
-  await mkdir(stylesRoot(), { recursive: true });
+  await mkdir(stylesRoot(root), { recursive: true });
   const canonicalCss = await formatDeckCss(defaultDeckCss);
-  const existingCss = await readFile(deckCssPath(), "utf8").catch(() => "");
+  const existingCss = await readFile(deckCssPath(root), "utf8").catch(() => "");
   if (existingCss !== canonicalCss) {
-    await writeFile(deckCssPath(), canonicalCss);
+    await writeFile(deckCssPath(root), canonicalCss);
     migrationPaths.push("styles/deck.css");
   }
-  migrationPaths.push(...await ensureTemplates());
+  migrationPaths.push(...await ensureTemplates(root));
   const instructions = `${agentInstructions}\n`;
-  if (await readFile(join(currentProjectRoot, "AGENTS.md"), "utf8").catch(() => null) !== instructions) {
-    await writeFile(join(currentProjectRoot, "AGENTS.md"), instructions);
+  if (await readFile(join(root, "AGENTS.md"), "utf8").catch(() => null) !== instructions) {
+    await writeFile(join(root, "AGENTS.md"), instructions);
     migrationPaths.push("AGENTS.md");
   }
   return migrationPaths;
-}
-
-async function withProjectRoot(root, fn) {
-  const previous = currentProjectRoot;
-  currentProjectRoot = root;
-  try { return await fn(); } finally { currentProjectRoot = previous; }
 }
 
 export async function ensureProject() {
@@ -760,11 +755,9 @@ async function createProjectUnlocked({ title, template = "orbit" }) {
   };
   try {
     gitAt(root, ["init", "-b", "main"]);
-    await withProjectRoot(root, async () => {
-      await writeProject({ title: name, slides: [cover] });
-      await ensureProjectScaffolding();
-      commitIfChanged("Create project");
-    });
+    await writeProjectUnlocked({ title: name, slides: [cover] }, null, root);
+    await ensureProjectScaffolding(root);
+    commitIfChanged("Create project", root);
     return slug;
   } catch (error) {
     await rm(root, { recursive: true, force: true });
