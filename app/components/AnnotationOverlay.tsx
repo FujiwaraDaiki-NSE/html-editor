@@ -164,6 +164,13 @@ export function AnnotationOverlay({
         </div>
       )}
       <div className={`annotation-overlay-layer ${interactive ? "interactive" : "readonly"}`}>
+        {interactive && annotations.length === 0 && (
+          <div className="annotation-empty-state" aria-hidden="true">
+            <strong>Drag to draw a frame</strong>
+            <span>→ then write what goes in it</span>
+            <small>Frames are sent to Agent together</small>
+          </div>
+        )}
         {annotations.map((annotation) => (
           <div
             className={`annotation-box annotation-${annotation.target.kind} ${selectedId === annotation.id ? "selected" : ""}`}
@@ -192,7 +199,8 @@ export function AnnotationOverlay({
                     className="annotation-label"
                     value={annotation.label}
                     aria-label={`Annotation ${annotation.order} label`}
-                    placeholder="Label"
+                    placeholder="What goes here? (e.g. photo, one-line metric band)"
+                    title="What goes here? (e.g. photo, one-line metric band)"
                     onFocus={() => onSelect(annotation.id)}
                     onPointerDown={(event) => { event.stopPropagation(); onSelect(annotation.id); }}
                     onKeyDown={(event) => {

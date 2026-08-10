@@ -231,8 +231,27 @@ test("annotation mode draws regions without selecting or pointing at elements", 
   assert.doesNotMatch(gestureType, /elementId/);
   assert.doesNotMatch(annotationPointerDown, /readSelection|setSelectedId/);
   assert.doesNotMatch(annotationPointerEnd, /pointElement|target: \{ kind: "element" \}/);
-  for (const wording of ["Annotation mode · drag to draw a region", "Annotation mode draws regions only", "Point to an element from the message composer"]) assert.match(page, new RegExp(wording));
+  for (const wording of ["Rough mode · drag to draw a frame", "Rough mode draws frames only", "Point to an element from the message composer"]) assert.match(page, new RegExp(wording));
+  /* The UI names the act; the umbrella term stays in the data vocabulary only (D10). */
+  assert.doesNotMatch(page, /Annotation mode/);
+  assert.match(page, /data-annotation-mode/);
   assert.match(readme, /`@`[^\n]+要素[^\n]+矩形だけ/);
+});
+
+test("rough mode shows what it can do before anything is drawn", async () => {
+  const [overlay, css] = await Promise.all([
+    readFile(new URL("../app/components/AnnotationOverlay.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  /* The ghost is for the empty draft only, and it must never eat the drag that starts on it. */
+  assert.match(overlay, /interactive && annotations\.length === 0/);
+  assert.match(overlay, /annotation-empty-state" aria-hidden="true"/);
+  assert.match(css, /\.annotation-empty-state \{[^}]*pointer-events: none/);
+  /* The label teaches by example rather than naming the field. */
+  assert.match(overlay, /placeholder="What goes here\?/);
+  /* The paper belongs to the drafting layer: recall reads the result, so it is never veiled. */
+  assert.match(css, /\.annotation-overlay-layer\.interactive \{[^}]*backdrop-filter/);
+  assert.doesNotMatch(css, /\.annotation-recall-layer[^\n]*backdrop-filter/);
 });
 
 test("the object tree is an accessible collapsible section with stable body styling", async () => {
