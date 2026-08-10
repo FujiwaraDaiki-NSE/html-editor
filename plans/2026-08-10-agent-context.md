@@ -94,36 +94,47 @@ steer時はagentがファイルを編集中なので、人間側のDOMを書き�
 
 **マークアップの経路は増やさない。** ライブDOMに値打ちがあるのは計測としてであって、2つ目のマークアップ供給源としてではない（D1）。
 
+### D6: ポリシー検査はコミットの門であって、書き込みの門ではない
+
+D1でチャット送信時にもファイルを書くことになるが、`writeProject` は content-policy 監査と `deck.css` 検査を抱えている（[server/project.mjs:331](../server/project.mjs)）。このまま呼ぶと、違反した状態のときに **`codex.startTurn` へ到達する前に422で落ち、「直して」という依頼自体がagentに届かない**。
+
+そもそもこのゲートは `slides/*.html` を守れていない。agentは自分のファイル編集ツールで直接書くので `writeProject` を通らず、違反HTMLは普通にファイルに入る。実際そうなっていて、ターン完了処理の `writeProject` がそこで初めてゲートに当たり `{status: "error"}` を publish して終わる（[server/local-api.mjs:155](../server/local-api.mjs)）。ファイルは違反したまま残り、**更新後のデッキがクライアントへ届かないので人間は結果を見ることすらできない。**
+
+ゲートが実際に守っているのは **commit（保存ボタンとvariation確定）だけ**である。ならば書き込み経路ではなくコミット経路に置く。
+
+副次的に次が直る。
+
+- 違反した生成結果もキャンバスに出る。`quality` 表示（[app/page.tsx:434](../app/page.tsx)）が違反を指し、保存だけが止まる。**直す前に見られる**
+- agentが直接書いたときと、Weaveが人間のDOMを書いたときで、同じファイルに違う基準がかかる不整合が消える
+
 ---
 
-## P1: ターン開始でスライドファイルまで書く
+## P1: 書き込みとゲートを分け、ターン開始でスライドファイルまで書く
 
 **やること**
 
-- `writeProject(input, bufferOnly, expectedRevision)` の第2引数を `mode: "buffer" | "turn" | "save"` に置き換える
-  - `"save"` — 現状の `bufferOnly=false`。ポリシーゲート＋deck.css検査＋トランザクション書き込み
-  - `"turn"` — ファイルとマニフェストは書くが、**ポリシーゲートと deck.css 検査は通さない**
-  - `"buffer"` — P2で消えるまでの互換。P2完了時に削除
-- `/api/codex/turn/start` を `"turn"` に切り替える（[server/local-api.mjs:280](../server/local-api.mjs)）
+- `writeProject` からポリシー検査と `deck.css` 検査を外す（[server/project.mjs:331](../server/project.mjs)）。**書くだけの関数**にする
+- 外した検査を `assertCommittable()` として切り出し、**コミットの直前**で呼ぶ。コミット経路は2つだけ
+  - `/api/save`（[server/local-api.mjs:226](../server/local-api.mjs)）
+  - variation完了時の `commitIfChanged`（[server/local-api.mjs:160](../server/local-api.mjs)）
+- `writeProject` の `bufferOnly` 引数を落とし、`/api/codex/turn/start` でスライドファイルまで書く（[server/local-api.mjs:280](../server/local-api.mjs)）
 - `/api/codex/turn/steer` はファイルを書かない。理由をコメントで残す（D4）
-- `/api/variations/generate` は `"turn"` に変更（現状 `false`＝`"save"` 相当でゲートを通している）
-
-**なぜ `"turn"` でゲートを外すか**
-
-`writeProject(deck, false)` は content-policy 監査を通す（[server/project.mjs:338](../server/project.mjs)）。ターン開始でこれを走らせると、**人間の未保存編集がポリシー違反のとき送信が422で弾かれる**。「壊れているのでagentに直してほしい」ができなくなる。ゲートは保存＝コミットの門であって、agentに見せる門ではない。
 
 **確認すること**
 
-- ターン開始でファイルを書くと作業ツリーが未コミットになる。checkout系エンドポイントは `activeProjectTurn()` でガード済み（[server/local-api.mjs:235](../server/local-api.mjs)）。通常ターンは完了後もコミットしないので今も未コミットにはなっており、新種の状態ではないことを確認する
+- 起動時の seed / legacy migration も `writeProject` を通る（[server/project.mjs:586](../server/project.mjs) 他）。ゲートが外れると、違反を含む既存プロジェクトでも起動できるようになる（改善方向）
+- ターン開始でファイルを書くと作業ツリーが未コミットになる。checkout系は `activeProjectTurn()` でガード済み（[server/local-api.mjs:235](../server/local-api.mjs)）。通常ターンは完了後もコミットしないので今も未コミットにはなっており、新種の状態ではないことを確認する
 - ターンが起動に失敗した場合、書き込んだファイルは残る。これも既存挙動と同じであることを確認する
 
 **テスト**
 
 - ターン開始後、`slides/*.html` が送信したキャンバス内容と一致する
-- ポリシー違反のHTMLでもターンは開始でき、`/api/save` は従来どおり422で弾く
+- ポリシー違反のHTMLでもターンは開始でき、キャンバスにも反映される
+- `/api/save` は従来どおり422で弾く
+- 違反したvariationはコミットされない
 - steerはファイルを書かない
 
-**コミット単位**: `writeProject` のmode化 / turn startの切り替え / variationの切り替え / テスト
+**コミット単位**: ゲートの切り出し / コミット経路への配置 / `bufferOnly` の撤去とturn startの切り替え / テスト
 
 ---
 
@@ -132,7 +143,7 @@ steer時はagentがファイルを編集中なので、人間側のDOMを書き�
 **やること**
 
 - `agentInstructions` から「Before editing, read .weave/current-buffer.json …」を削除し、真実の所在を `slides/*.html` に一本化する（[server/project.mjs:69](../server/project.mjs)）
-- `bufferPath` / `bufferJson` / `mode: "buffer"` を撤去
+- `bufferPath` / `bufferJson` を撤去する。P1で `bufferOnly` が落ちているので、`writeProject` の引数は `expectedRevision` だけになる
 - `excludeCurrentBuffer()` と `ensureProject` の関連migrationを撤去（[server/project.mjs:533](../server/project.mjs)）
 - `commitPaths` の `.weave/current-buffer.json` 特別扱いを撤去（[server/project.mjs:411](../server/project.mjs)）
 - `workspaces/northstar/.weave/current-buffer.json` を削除
@@ -220,6 +231,7 @@ steer時はagentがファイルを編集中なので、人間側のDOMを書き�
 2. **agentが読むファイルが、送信ボタンを押した瞬間のキャンバスと一致する**
 3. **「真実」の宣言が1つになる**（`slides/*.html` + `styles/deck.css`）
 4. agentが自分では観測できない情報（選択・注釈・破綻シグナル）だけが毎ターン渡る
+5. **ポリシー検査がコミット経路にのみ存在する**。壊れた状態は見えるが、コミットはされない
 
 1と2はテストで測る。3と4はレビューで見る。
 
