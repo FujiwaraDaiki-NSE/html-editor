@@ -172,7 +172,22 @@ test("a selected element can be referenced without knowing the pointing shortcut
   assert.ok(pointerReferenceHelper);
   assert.equal(buttonReferenceHelper, pointerReferenceHelper);
   assert.match(referenceButton, /onClick=\{referenceSelectedElement\}/);
+  assert.match(css, /\.canvas-reference-button \{[^}]*margin: 0 4px/);
   assert.match(css, /\.canvas-reference-button \{[^}]*pointer-events: auto/);
+});
+
+test("pointer tabs stay persistent only when a frame needs an outside target", async () => {
+  const [page, overlay] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/components/AnnotationOverlay.tsx", import.meta.url), "utf8"),
+  ]);
+  const frames = overlay.slice(overlay.indexOf("{candidates.map"), overlay.indexOf("{candidates.map", overlay.indexOf("{candidates.map") + 1));
+  const tabs = overlay.slice(overlay.indexOf("{candidates.map", overlay.indexOf("{candidates.map") + 1));
+  assert.match(page, /containsCandidate: node\.querySelector\("\[data-weave-id\]"\) !== null/);
+  assert.doesNotMatch(frames, /containsCandidate/);
+  assert.match(tabs, /!existing && !candidate\.containsCandidate && hoveredId !== candidate\.id/);
+  assert.match(tabs, /tabIndex=\{-1\}/);
+  assert.match(tabs, /aria-hidden="true"/);
 });
 
 test("annotation mode draws regions without selecting or pointing at elements", async () => {
