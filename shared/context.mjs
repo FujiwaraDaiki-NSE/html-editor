@@ -67,6 +67,7 @@ export function editorEnvelope(input) {
 
 export const contextPromptRules = `The envelope carries only what the agent cannot observe; read slide HTML, CSS, templates, and history from project files.
 slide is the slide id, whose content is in slides/<slide>.html.
+Those files hold the editor canvas as of the start of this turn, so read them rather than asking for the markup.
 selected.id and annotation weaveId are values of data-weave-id attributes.
 If a snapshot and an id disagree, prefer the id.
 overflowing lists data-weave-ids whose rendered box leaves the slide frame or exceeds its own content box; it is a rendering result the agent cannot measure on its own.`;

@@ -235,8 +235,8 @@ D1でチャット送信時にもファイルを書くことになるが、`write
 
 1と2はテストで測る。3と4はレビューで見る。
 
-## 未決事項
+## 未決事項（実装時に決定）
 
-1. **`recentHistory` の残置** — 直近コミット5件の要約は数百バイトで、agentは `git log` を叩けるが `baseInstructions` は「Do not run git」と言っている。読み取りだけ許すか、envelopeに残すか。いまはenvelopeに残す前提で書いているが、P3で判断する
-2. **破綻シグナルの閾値** — オーバーフローを1pxから拾うか、意味のある溢れだけ拾うか。P4で実物を見て決める
-3. **`selectedText` の扱い** — 範囲選択した文字列を毎ターン2KBまで載せているが、使われている実感が無い。P3で残すか落とすか判断する
+1. **`recentHistory` の残置** → **落とした**。§2 の表が git 履歴を「データ層＝agentが取りに行く」に置いている以上、envelope に残す理由が無い。かわりに `agentInstructions` の「Do not run git」を読み取りだけ許す表現に変えた（`log` / `show` / `diff` は可、リポジトリを変える操作は禁止）
+2. **破綻シグナルの閾値** → **1 design px**。`getBoundingClientRect()` は浮動小数、`scrollHeight`/`clientHeight` は整数丸めなので、それ未満は測定ノイズで意味のある溢れではない。実物（northstar）では警告0
+3. **`selectedText` の扱い** → **落とした**。2KBの範囲選択文字列のかわりに、D3の表どおり `selected.text`（選択要素の本文抜粋・200文字）を載せる。「何を指したか」はこれで足りる
