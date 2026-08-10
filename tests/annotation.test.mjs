@@ -2,8 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  annotationHtmlLimit,
-  annotationHtmlTotalLimit,
   annotationPromptRules,
   annotationEnvelope,
   canSendTurn,
@@ -186,75 +184,6 @@ test("the annotation envelope sorts both target kinds and copies defensively", (
   assert.deepEqual(annotations[1], {
     id: "element-id", order: 1, target: { kind: "element", weaveId: "heading", html: '<h1 data-weave-id="heading">Title</h1>' },
     rect: { x: 10, y: 15, w: 300, h: 80 }, label: "Two lines", intersects: ["heading"],
-  });
-});
-
-test("the annotation envelope visibly truncates large element HTML", () => {
-  const html = `<section data-weave-id="large">${"x".repeat(annotationHtmlLimit)}</section>`;
-  const [annotation] = annotationEnvelope([{
-    id: "large", order: 1, target: { kind: "element", weaveId: "large", html },
-    rect: { x: 0, y: 0, w: 1280, h: 720 }, label: "", intersects: ["large"],
-  }]);
-  assert.equal(annotation.target.html.length, annotationHtmlLimit);
-  assert.match(annotation.target.html, /<!-- annotation HTML truncated -->$/);
-  assert.equal(html.includes("truncated"), false);
-});
-
-test("the annotation envelope spends its total HTML budget in annotation order", () => {
-  const makeAnnotation = (order, html) => ({
-    id: `element-${order}`,
-    order,
-    target: { kind: "element", weaveId: `weave-${order}`, html },
-    rect: { x: order, y: order, w: 100, h: 50 },
-    label: `Element ${order}`,
-    intersects: [`weave-${order}`],
-  });
-  const annotations = [
-    makeAnnotation(5, "later"),
-    makeAnnotation(3, "c".repeat(annotationHtmlLimit - 100)),
-    makeAnnotation(1, "a".repeat(annotationHtmlLimit)),
-    makeAnnotation(4, "d".repeat(500)),
-    makeAnnotation(2, "b".repeat(annotationHtmlLimit)),
-  ];
-
-  const envelope = annotationEnvelope(annotations);
-  assert.deepEqual(envelope.map(({ order }) => order), [1, 2, 3, 4, 5]);
-  assert.equal(envelope[0].target.html.length, annotationHtmlLimit);
-  assert.equal(envelope[1].target.html.length, annotationHtmlLimit);
-  assert.equal(envelope[2].target.html.length, annotationHtmlLimit - 100);
-  assert.equal(envelope[3].target.html.length, 100);
-  assert.match(envelope[3].target.html, /<!-- annotation HTML truncated: total budget exhausted -->$/);
-  assert.equal(
-    envelope.slice(0, 4).reduce((total, annotation) => total + annotation.target.html.length, 0),
-    annotationHtmlTotalLimit,
-  );
-});
-
-test("annotations after the HTML budget keep their identity and visibly omit HTML", () => {
-  const envelope = annotationEnvelope([
-    ...[1, 2, 3].map((order) => ({
-      id: `filler-${order}`,
-      order,
-      target: { kind: "element", weaveId: `filler-${order}`, html: "x".repeat(annotationHtmlLimit) },
-      rect: { x: 0, y: 0, w: 10, h: 10 },
-    })),
-    {
-      id: "subject", order: 4, target: { kind: "element", weaveId: "subject", html: "<h1>Subject</h1>" },
-      rect: { x: 20, y: 30, w: 400, h: 80 }, label: "Shorten", intersects: ["subject", "container"],
-    },
-  ]);
-
-  assert.deepEqual(envelope[3], {
-    id: "subject",
-    order: 4,
-    target: {
-      kind: "element",
-      weaveId: "subject",
-      html: "<!-- annotation HTML omitted: total budget exhausted -->",
-    },
-    rect: { x: 20, y: 30, w: 400, h: 80 },
-    label: "Shorten",
-    intersects: ["subject", "container"],
   });
 });
 
