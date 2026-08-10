@@ -10,6 +10,7 @@ import { applyTemplateToSlideHtml, contentSlotSelector, titleFromSlideHtml, titl
 import { advancedControlKeys, allControlKeys, applyBlockPosition, applySize, applyUtilityClass, blockPositionOptions, containerControlKeys, decorationControlKeys, defaultSlideClasses, imageControlKeys, listControlKeys, migrateSlideHtmlToTailwind, ratioOptions, readBlockPosition, readSize, readUtilityClass, sizeIntents, slideControlGroups, textControlKeys } from "../shared/tailwind-slide.mjs";
 import { annotationEnvelope, canSendTurn, nextOrder, rectFromClientBox, rectFromPoints, referenceToken, refreshAnnotations, resizeRect, resolveReferences, toSlidePoint, translateRect } from "../shared/annotation.mjs";
 import { AnnotationAttachment } from "./components/AnnotationAttachment";
+import { AnnotationLegend } from "./components/AnnotationLegend";
 import { AnnotationOverlay } from "./components/AnnotationOverlay";
 import type { Annotation, AnnotationGestureKind, AnnotationRect, ResizeHandle } from "./components/AnnotationOverlay";
 import { ItemCard } from "./codex/components/ItemCard";
@@ -163,7 +164,7 @@ type AnnotationGesture = {
   | { kind: "move"; annotationId: string; slideId: string; origin: AnnotationRect }
   | { kind: "resize"; annotationId: string; slideId: string; origin: AnnotationRect; handle: ResizeHandle }
 );
-type AnnotationBox = { id: string; rect: AnnotationRect; html: string };
+type AnnotationBox = { id: string; rect: AnnotationRect; html: string; elementKind: string; textExcerpt: string };
 type SentAnnotationAttachment = {
   id: string;
   threadId: string;
@@ -175,7 +176,7 @@ type SentAnnotationAttachment = {
 
 const cloneAnnotation = (annotation: Annotation): Annotation => ({
   ...annotation,
-  target: annotation.target.kind === "element" ? { kind: "element", weaveId: annotation.target.weaveId, html: annotation.target.html } : { kind: "region" },
+  target: annotation.target.kind === "element" ? { ...annotation.target } : { kind: "region" },
   rect: { ...annotation.rect },
   intersects: [...annotation.intersects],
 });
@@ -201,6 +202,12 @@ const serializeEditorNode = (node: HTMLElement): string => {
     item.removeAttribute("data-asset-path");
   });
   return clone.outerHTML;
+};
+
+const kindOfNode = (node: HTMLElement): string => blockKinds.find((cls) => node.classList.contains(cls)) ?? node.tagName.toLowerCase();
+const textExcerptOfNode = (node: HTMLElement): string => {
+  const text = (node.textContent ?? "").replace(/\s+/g, " ").trim();
+  return text.length > 72 ? `${text.slice(0, 71)}…` : text;
 };
 
 const refreshSlideAnnotations = (annotations: Annotation[], slideId: string, boxes: AnnotationBox[]) => {
@@ -356,7 +363,7 @@ export default function Home() {
   const selectedNode = () => (selectedId ? canvasRef.current?.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(selectedId)}"]`) ?? null : null);
 
   const readSelection = (node: HTMLElement): SelState => {
-    const kind = blockKinds.find((cls) => node.classList.contains(cls)) ?? node.tagName.toLowerCase();
+    const kind = kindOfNode(node);
     const read: Record<string, string> = {};
     for (const key of allControlKeys) {
       read[key] = readUtilityClass([...node.classList], key);
@@ -668,7 +675,13 @@ export default function Home() {
     const scroll = { left: viewport.scrollLeft, top: viewport.scrollTop };
     return Array.from(viewport.querySelectorAll<HTMLElement>("[data-weave-id]")).flatMap((node) => {
       const id = node.getAttribute("data-weave-id");
-      return id ? [{ id, rect: rectFromClientBox(node.getBoundingClientRect(), viewportBox, slideScale, scroll), html: serializeEditorNode(node) }] : [];
+      return id ? [{
+        id,
+        rect: rectFromClientBox(node.getBoundingClientRect(), viewportBox, slideScale, scroll),
+        html: serializeEditorNode(node),
+        elementKind: kindOfNode(node),
+        textExcerpt: textExcerptOfNode(node),
+      }] : [];
     });
   };
 
@@ -823,7 +836,21 @@ export default function Home() {
         if (elementBox) {
           const id = createMessageId();
           const order = nextOrder(annotations.filter((annotation) => annotation.slideId === gesture.slideId));
-          const created: Annotation = { id, order, slideId: gesture.slideId, target: { kind: "element", weaveId: gesture.elementId, html: elementBox.html }, rect: elementBox.rect, label: "", intersects: [] };
+          const created: Annotation = {
+            id,
+            order,
+            slideId: gesture.slideId,
+            target: {
+              kind: "element",
+              weaveId: gesture.elementId,
+              html: elementBox.html,
+              elementKind: elementBox.elementKind,
+              textExcerpt: elementBox.textExcerpt,
+            },
+            rect: elementBox.rect,
+            label: "",
+            intersects: [],
+          };
           setAnnotations((current) => refreshSlideAnnotations([...current, created], gesture.slideId, boxes));
           setSelectedAnnotationId(id);
           setFocusAnnotationId(id);
@@ -1918,6 +1945,7 @@ export default function Home() {
                   title={referencedRegions.length > 0 ? "Referenced regions must be included" : "Toggle region annotations for the next turn"}
                   onClick={() => setIncludeRegionAnnotations((current) => !current)}
                 >{activeRegionAnnotations.length} region{activeRegionAnnotations.length === 1 ? "" : "s"} · {regionsWillSend ? "Send" : "Held"}</button>}
+                {activeAnnotations.length > 0 && <AnnotationLegend annotations={activeAnnotations} />}
               </div>
               {!codexState.activeThreadId && <p className="empty-thread">Start or select a conversation.</p>}
               {activeTurns.length > visibleTurns.length && <p className="trimmed-log">Showing the latest {visibleTurns.length} turns.</p>}
@@ -1927,7 +1955,7 @@ export default function Home() {
                   {activeThreadAttachments.filter((attachment) => attachment.turnId === turn.id).map((attachment) => <AnnotationAttachment
                     key={attachment.id}
                     slideLabel={attachment.slideLabel}
-                    count={attachment.annotations.length}
+                    annotations={attachment.annotations}
                     canRestore={slides.some((slide) => slide.id === attachment.slideId)}
                     canOverlay={slides.some((slide) => slide.id === attachment.slideId)}
                     overlayActive={activeOverlayAttachmentId === attachment.id && slides.some((slide) => slide.id === attachment.slideId)}
@@ -1940,7 +1968,7 @@ export default function Home() {
               {unmatchedAttachments.map((attachment) => <AnnotationAttachment
                 key={attachment.id}
                 slideLabel={attachment.slideLabel}
-                count={attachment.annotations.length}
+                annotations={attachment.annotations}
                 canRestore={slides.some((slide) => slide.id === attachment.slideId)}
                 canOverlay={slides.some((slide) => slide.id === attachment.slideId)}
                 overlayActive={activeOverlayAttachmentId === attachment.id && slides.some((slide) => slide.id === attachment.slideId)}

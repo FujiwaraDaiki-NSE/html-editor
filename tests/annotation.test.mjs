@@ -102,29 +102,29 @@ test("intersecting ids preserve input order", () => {
 
 test("refreshing annotations updates element geometry and every intersection list", () => {
   const boxes = [
-    { id: "heading", rect: { x: 40, y: 30, w: 180, h: 60 }, html: '<h1 data-weave-id="heading">Current title</h1>' },
-    { id: "content", rect: { x: 0, y: 0, w: 500, h: 300 }, html: '<section data-weave-id="content"></section>' },
-    { id: "fallback-overlap", rect: { x: 700, y: 400, w: 80, h: 80 }, html: '<div data-weave-id="fallback-overlap"></div>' },
+    { id: "heading", rect: { x: 40, y: 30, w: 180, h: 60 }, html: '<h1 data-weave-id="heading">Current title</h1>', elementKind: "heading", textExcerpt: "Current title" },
+    { id: "content", rect: { x: 0, y: 0, w: 500, h: 300 }, html: '<section data-weave-id="content"></section>', elementKind: "section", textExcerpt: "" },
+    { id: "fallback-overlap", rect: { x: 700, y: 400, w: 80, h: 80 }, html: '<div data-weave-id="fallback-overlap"></div>', elementKind: "div", textExcerpt: "" },
   ];
   const annotations = [
-    { id: "element", target: { kind: "element", weaveId: "heading", html: '<h1 data-weave-id="heading">Old title</h1>' }, rect: { x: 1, y: 2, w: 3, h: 4 }, intersects: [] },
+    { id: "element", target: { kind: "element", weaveId: "heading", html: '<h1 data-weave-id="heading">Old title</h1>', elementKind: "h1", textExcerpt: "Old title" }, rect: { x: 1, y: 2, w: 3, h: 4 }, intersects: [] },
     { id: "region", target: { kind: "region" }, rect: { x: 450, y: 250, w: 100, h: 100 }, intersects: ["stale"] },
-    { id: "missing", target: { kind: "element", weaveId: "removed", html: '<p data-weave-id="removed">Last capture</p>' }, rect: { x: 720, y: 420, w: 20, h: 20 }, intersects: [] },
+    { id: "missing", target: { kind: "element", weaveId: "removed", html: '<p data-weave-id="removed">Last capture</p>', elementKind: "paragraph", textExcerpt: "Last capture" }, rect: { x: 720, y: 420, w: 20, h: 20 }, intersects: [] },
   ];
   const refreshed = refreshAnnotations(annotations, boxes);
   assert.deepEqual(refreshed, [
-    { id: "element", target: { kind: "element", weaveId: "heading", html: boxes[0].html }, rect: boxes[0].rect, intersects: ["heading", "content"] },
+    { id: "element", target: { kind: "element", weaveId: "heading", html: boxes[0].html, elementKind: boxes[0].elementKind, textExcerpt: boxes[0].textExcerpt }, rect: boxes[0].rect, intersects: ["heading", "content"] },
     { id: "region", target: { kind: "region" }, rect: annotations[1].rect, intersects: ["content"] },
-    { id: "missing", target: { kind: "element", weaveId: "removed", html: annotations[2].target.html }, rect: annotations[2].rect, intersects: ["fallback-overlap"] },
+    { id: "missing", target: { ...annotations[2].target }, rect: annotations[2].rect, intersects: ["fallback-overlap"] },
   ]);
   assert.notStrictEqual(refreshed[0].rect, boxes[0].rect);
   boxes[0].rect.x = 999;
   assert.equal(refreshed[0].rect.x, 40);
 });
 
-test("refreshing keeps the last element HTML and rectangle after its box disappears", () => {
+test("refreshing keeps the last element snapshot after its box disappears", () => {
   const annotation = {
-    id: "removed", target: { kind: "element", weaveId: "removed", html: '<figure data-weave-id="removed">Last capture</figure>' },
+    id: "removed", target: { kind: "element", weaveId: "removed", html: '<figure data-weave-id="removed">Last capture</figure>', elementKind: "image", textExcerpt: "Last capture" },
     rect: { x: 90, y: 120, w: 320, h: 180 }, intersects: ["stale"],
   };
   assert.deepEqual(refreshAnnotations([annotation], []), [{
@@ -160,7 +160,7 @@ test("the annotation envelope sorts both target kinds and copies defensively", (
       rect: { x: 20, y: 30, w: 400, h: 200 },
     },
     {
-      id: "element-id", order: 1, target: { kind: "element", weaveId: "heading", html: '<h1 data-weave-id="heading">Title</h1>' },
+      id: "element-id", order: 1, target: { kind: "element", weaveId: "heading", html: '<h1 data-weave-id="heading">Title</h1>', elementKind: "heading", textExcerpt: "Title" },
       rect: { x: 10, y: 15, w: 300, h: 80 }, label: "Two lines", intersects: ["heading"],
     },
   ];
@@ -182,7 +182,7 @@ test("the annotation envelope sorts both target kinds and copies defensively", (
   envelope[0].rect.x = 999;
   envelope[0].intersects.push("changed");
   assert.deepEqual(annotations[1], {
-    id: "element-id", order: 1, target: { kind: "element", weaveId: "heading", html: '<h1 data-weave-id="heading">Title</h1>' },
+    id: "element-id", order: 1, target: { kind: "element", weaveId: "heading", html: '<h1 data-weave-id="heading">Title</h1>', elementKind: "heading", textExcerpt: "Title" },
     rect: { x: 10, y: 15, w: 300, h: 80 }, label: "Two lines", intersects: ["heading"],
   });
 });

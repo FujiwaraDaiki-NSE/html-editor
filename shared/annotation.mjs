@@ -82,7 +82,12 @@ export function refreshAnnotations(annotations, boxes) {
     const sourceRect = elementBox?.rect ?? annotation.rect;
     const rect = { x: sourceRect.x, y: sourceRect.y, w: sourceRect.w, h: sourceRect.h };
     const target = annotation.target.kind === "element"
-      ? { ...annotation.target, ...(typeof elementBox?.html === "string" ? { html: elementBox.html } : {}) }
+      ? {
+          ...annotation.target,
+          ...(typeof elementBox?.html === "string" ? { html: elementBox.html } : {}),
+          ...(typeof elementBox?.elementKind === "string" ? { elementKind: elementBox.elementKind } : {}),
+          ...(typeof elementBox?.textExcerpt === "string" ? { textExcerpt: elementBox.textExcerpt } : {}),
+        }
       : annotation.target;
     return { ...annotation, target, rect, intersects: intersectingIds(rect, boxes) };
   });
