@@ -61,7 +61,8 @@ export function AnnotationOverlay({
   useEffect(() => {
     if (!interactive || !focusAnnotationId) return;
     const annotation = annotations.find((item) => item.id === focusAnnotationId);
-    if (annotation?.target.kind !== "region") {
+    if (!annotation) return;
+    if (annotation.target.kind !== "region") {
       onFocusHandled();
       return;
     }
