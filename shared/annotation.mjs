@@ -115,6 +115,25 @@ export const annotationEnvelope = (annotations) => annotations
 
 export const referenceToken = (annotation) => `@${annotation.order}`;
 
+export function insertReferenceAt(text, caret, order, { afterAtSign = false } = {}) {
+  const value = String(text ?? "");
+  const index = clamp(Number.isFinite(caret) ? caret : value.length, 0, value.length);
+  const token = afterAtSign ? String(order) : `@${order}`;
+  const before = value.slice(0, index);
+  const after = value.slice(index);
+  const prefix = !afterAtSign && before && !/\s$/.test(before) ? " " : "";
+  const suffix = !afterAtSign && after && !/^\s/.test(after) ? " " : "";
+  const insertion = `${prefix}${token}${suffix}`;
+  return { text: `${before}${insertion}${after}`, caret: index + insertion.length };
+}
+
+export function pointerTabText(elementKind, textExcerpt, maxExcerptLength = 28) {
+  const kind = String(elementKind ?? "element").trim() || "element";
+  const excerpt = String(textExcerpt ?? "").replace(/\s+/g, " ").trim();
+  const bounded = excerpt.length > maxExcerptLength ? `${excerpt.slice(0, Math.max(0, maxExcerptLength - 1))}…` : excerpt;
+  return bounded ? `${kind} · ${bounded}` : kind;
+}
+
 export function referencedOrders(text) {
   const orders = new Set();
   for (const match of text.matchAll(/@(\d+)/g)) {

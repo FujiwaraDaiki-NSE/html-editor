@@ -7,7 +7,9 @@ import {
   canSendTurn,
   clampRect,
   intersectingIds,
+  insertReferenceAt,
   nextOrder,
+  pointerTabText,
   rectFromClientBox,
   rectFromPoints,
   rectsIntersect,
@@ -196,4 +198,25 @@ test("reference tokens resolve known orders and ignore email-like text", () => {
     { order: 1, id: "one" },
     { order: 12, id: "twelve" },
   ]);
+});
+
+test("references insert after a typed at sign at the caret", () => {
+  assert.deepEqual(insertReferenceAt("Make @ larger", 6, 2, { afterAtSign: true }), { text: "Make @2 larger", caret: 7 });
+  assert.deepEqual(insertReferenceAt("@", 1, 1, { afterAtSign: true }), { text: "@1", caret: 2 });
+});
+
+test("typed references insert in the middle and at the end without moving surrounding text", () => {
+  assert.deepEqual(insertReferenceAt("Compare @ with this", 9, 12, { afterAtSign: true }), { text: "Compare @12 with this", caret: 11 });
+  assert.deepEqual(insertReferenceAt("Use @", 5, 3, { afterAtSign: true }), { text: "Use @3", caret: 6 });
+});
+
+test("button-style references work in empty drafts and add only necessary spacing", () => {
+  assert.deepEqual(insertReferenceAt("", 0, 1, { afterAtSign: false }), { text: "@1", caret: 2 });
+  assert.deepEqual(insertReferenceAt("Make this smaller", 9, 4, { afterAtSign: false }), { text: "Make this @4 smaller", caret: 12 });
+});
+
+test("pointer tabs normalize whitespace and truncate only the excerpt", () => {
+  assert.equal(pointerTabText("heading", "  Quarterly\n priorities  "), "heading · Quarterly priorities");
+  assert.equal(pointerTabText("paragraph", "abcdefghijklmnopqrstuvwxyz", 10), "paragraph · abcdefghi…");
+  assert.equal(pointerTabText("image", ""), "image");
 });

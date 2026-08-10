@@ -161,6 +161,35 @@ test("block dragging previews reordering and separates move from text editing", 
   assert.match(css, /:has\(> \.weave-dragging:only-child\)/);
 });
 
+test("a selected element can be referenced without knowing the pointing shortcut", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  const pointerReferenceHelper = page.match(/const pickPointerElement[\s\S]{0,200}?\n\s+(\w+)\([^;\n]*\);/)?.[1];
+  const buttonReferenceHelper = page.match(/const referenceSelectedElement[\s\S]{0,200}?\n\s+(\w+)\([^;\n]*\);/)?.[1];
+  const referenceButton = page.match(/agentReady &&[\s\S]{0,200}<button[^>]*className="canvas-reference-button"[^>]*>@[^<]*Reference<\/button>/)?.[0] ?? "";
+  assert.ok(pointerReferenceHelper);
+  assert.equal(buttonReferenceHelper, pointerReferenceHelper);
+  assert.match(referenceButton, /onClick=\{referenceSelectedElement\}/);
+  assert.match(css, /\.canvas-reference-button \{[^}]*pointer-events: auto/);
+});
+
+test("annotation mode draws regions without selecting or pointing at elements", async () => {
+  const [page, readme] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../README.md", import.meta.url), "utf8"),
+  ]);
+  const gestureType = page.slice(page.indexOf("type AnnotationGesture"), page.indexOf("type AnnotationBox"));
+  const annotationPointerDown = page.slice(page.indexOf("if (annotationMode) {", page.indexOf("const onCanvasPointerDown")), page.indexOf("const target =", page.indexOf("const onCanvasPointerDown")));
+  const annotationPointerEnd = page.slice(page.indexOf("const onCanvasPointerEnd"), page.indexOf("const beginEdit"));
+  assert.doesNotMatch(gestureType, /elementId/);
+  assert.doesNotMatch(annotationPointerDown, /readSelection|setSelectedId/);
+  assert.doesNotMatch(annotationPointerEnd, /pointElement|target: \{ kind: "element" \}/);
+  for (const wording of ["Annotation mode · drag to draw a region", "Annotation mode draws regions only", "Point to an element from the message composer"]) assert.match(page, new RegExp(wording));
+  assert.match(readme, /`@`[^\n]+要素[^\n]+矩形だけ/);
+});
+
 test("the object tree is an accessible collapsible section with stable body styling", async () => {
   const [page, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),

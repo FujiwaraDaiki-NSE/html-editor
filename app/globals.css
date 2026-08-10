@@ -349,6 +349,9 @@ body {
 .canvas-interaction-status.editing { border-style: dashed; color: var(--accent); }
 .canvas-interaction-status.annotating { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, var(--panel)); color: var(--accent); font-weight: 700; }
 .canvas-interaction-status.recalling { border-color: #58d7f5; background: color-mix(in srgb, #58d7f5 14%, var(--panel)); color: #58d7f5; font-weight: 700; }
+.canvas-interaction-status.picking { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, var(--panel)); color: var(--accent); font-weight: 700; }
+.canvas-reference-button { padding: 0; border: 0; background: transparent; color: var(--accent); font: inherit; font-weight: 700; cursor: pointer; pointer-events: auto; }
+.canvas-reference-button:hover { text-decoration: underline; }
 
 /* The slide is authored at its design size and scaled to fit; the viewport is the window
    onto it. Everything inside comes from the project stylesheet (styles/deck.css) — the
@@ -356,6 +359,7 @@ body {
 .slide-viewport { position: relative; width: 100%; aspect-ratio: 16 / 9; overflow: hidden; box-shadow: var(--shadow); }
 .slide-viewport[data-zoom-mode="manual"] { overflow: auto; background: #090b0e; }
 .slide-viewport[data-annotation-mode] { cursor: crosshair; touch-action: none; }
+.slide-viewport[data-pointer-picking="true"] { box-shadow: var(--shadow), inset 0 0 0 2px var(--accent); }
 .slide-viewport > .weave-slide { position: absolute; left: 0; top: 0; transform: scale(var(--slide-scale)); transform-origin: top left; }
 /* The annotation layer sits beside the viewport, not inside it: the viewport's children are
    replaced wholesale by innerHTML on every slide injection. It is sized and placed to coincide
@@ -366,6 +370,13 @@ body {
 .annotation-overlay-scroll { position: absolute; left: 0; top: 0; }
 .annotation-overlay-layer { position: absolute; left: 0; top: 0; width: 1280px; height: 720px; transform: scale(var(--slide-scale)); transform-origin: top left; }
 .annotation-overlay-layer.interactive, .annotation-overlay-layer.readonly { z-index: 1; }
+.pointer-picking-layer { z-index: 2; pointer-events: auto; cursor: crosshair; }
+.pointer-pick-frame, .pointer-pick-tab { position: absolute; pointer-events: auto; }
+.pointer-pick-frame { margin: 0; padding: 0; border: calc(1px / var(--slide-scale)) dotted color-mix(in srgb, var(--accent) 72%, transparent); border-radius: 0; background: transparent; box-shadow: none; cursor: crosshair; }
+.pointer-pick-frame.hovered { border-width: calc(2px / var(--slide-scale)); border-style: solid; border-color: var(--accent); }
+.pointer-pick-tab { top: max(var(--pointer-tab-y), calc(22px / var(--slide-scale))); max-width: calc(220px / var(--slide-scale)); height: calc(22px / var(--slide-scale)); padding: 0 calc(6px / var(--slide-scale)); translate: 0 -100%; overflow: hidden; border: calc(1px / var(--slide-scale)) solid color-mix(in srgb, var(--accent) 60%, var(--panel)); border-radius: calc(3px / var(--slide-scale)) calc(3px / var(--slide-scale)) 0 0; background: color-mix(in srgb, var(--panel) 94%, transparent); color: var(--text); font: 700 calc(9px / var(--slide-scale))/1 Arial, sans-serif; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.pointer-pick-tab:hover { border-color: var(--accent); color: var(--accent); }
+.pointer-pick-tab.existing { background: color-mix(in srgb, var(--accent) 82%, var(--panel)); color: #211a0f; }
 .annotation-box { position: absolute; border: calc(2px / var(--slide-scale)) solid var(--accent); box-shadow: 0 0 0 calc(1px / var(--slide-scale)) rgb(20 14 5 / .65); pointer-events: none; }
 .annotation-box.annotation-element { border-style: dashed; }
 .annotation-overlay-layer.readonly .annotation-box { opacity: .72; border-width: calc(1.5px / var(--slide-scale)); box-shadow: none; }
