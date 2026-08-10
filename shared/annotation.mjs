@@ -13,6 +13,21 @@ export const toClientPoint = (point, viewport, scale, scroll) => ({
 const round = (value) => Math.round(value * 10) / 10;
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const minimumRectSize = 8;
+export const annotationHtmlLimit = 12_000;
+export const annotationHtmlTotalLimit = 36_000;
+const annotationHtmlTruncationMarker = "<!-- annotation HTML truncated -->";
+const annotationHtmlBudgetTruncationMarker = "<!-- annotation HTML truncated: total budget exhausted -->";
+const annotationHtmlOmissionMarker = "<!-- annotation HTML omitted: total budget exhausted -->";
+
+const boundedAnnotationHtml = (html, remaining) => {
+  const value = String(html ?? "");
+  const allowance = Math.min(annotationHtmlLimit, Math.max(0, remaining));
+  if (value.length <= allowance) return { value, used: value.length };
+  if (allowance === 0) return { value: annotationHtmlOmissionMarker, used: 0 };
+  const marker = remaining < annotationHtmlLimit ? annotationHtmlBudgetTruncationMarker : annotationHtmlTruncationMarker;
+  if (allowance <= marker.length) return { value: annotationHtmlOmissionMarker, used: allowance };
+  return { value: `${value.slice(0, allowance - marker.length)}${marker}`, used: allowance };
+};
 
 export function clampRect(rect) {
   const left = clamp(Math.min(rect.x, rect.x + rect.w), 0, designWidth);
@@ -81,7 +96,10 @@ export function refreshAnnotations(annotations, boxes) {
     const elementBox = annotation.target.kind === "element" ? boxesById.get(annotation.target.weaveId) : null;
     const sourceRect = elementBox?.rect ?? annotation.rect;
     const rect = { x: sourceRect.x, y: sourceRect.y, w: sourceRect.w, h: sourceRect.h };
-    return { ...annotation, rect, intersects: intersectingIds(rect, boxes) };
+    const target = annotation.target.kind === "element"
+      ? { ...annotation.target, ...(typeof elementBox?.html === "string" ? { html: elementBox.html } : {}) }
+      : annotation.target;
+    return { ...annotation, target, rect, intersects: intersectingIds(rect, boxes) };
   });
 }
 
@@ -89,20 +107,30 @@ export const canSendTurn = (text, annotations) => String(text ?? "").trim().leng
 
 export const annotationPromptRules = `Treat editor annotation rectangles as an approximation of proportion and reading order, not as coordinate specifications.
 Build the result with Row, Column, or Grid flow structure using the project's existing utility classes. Absolute positioning is prohibited for interpreting annotations.
-Regularize spacing and alignment yourself when annotation rectangles are misaligned or overlap; tidying them into a coherent composition is part of the editing task.`;
+Regularize spacing and alignment yourself when annotation rectangles are misaligned or overlap; tidying them into a coherent composition is part of the editing task.
+A @N reference in the request text refers to the annotation whose order is N.`;
 
-export const annotationEnvelope = (annotations) => annotations
-  .map((annotation) => ({
-    id: annotation.id,
-    order: annotation.order,
-    target: annotation.target.kind === "element"
-      ? { kind: "element", weaveId: annotation.target.weaveId }
-      : { kind: "region" },
-    rect: { x: annotation.rect.x, y: annotation.rect.y, w: annotation.rect.w, h: annotation.rect.h },
-    label: annotation.label ?? "",
-    intersects: [...(annotation.intersects ?? [])],
-  }))
-  .sort((a, b) => a.order - b.order);
+export const annotationEnvelope = (annotations) => {
+  let remainingHtml = annotationHtmlTotalLimit;
+  return [...annotations]
+    .sort((a, b) => a.order - b.order)
+    .map((annotation) => {
+      let target = { kind: "region" };
+      if (annotation.target.kind === "element") {
+        const html = boundedAnnotationHtml(annotation.target.html, remainingHtml);
+        remainingHtml -= html.used;
+        target = { kind: "element", weaveId: annotation.target.weaveId, html: html.value };
+      }
+      return {
+        id: annotation.id,
+        order: annotation.order,
+        target,
+        rect: { x: annotation.rect.x, y: annotation.rect.y, w: annotation.rect.w, h: annotation.rect.h },
+        label: annotation.label ?? "",
+        intersects: [...(annotation.intersects ?? [])],
+      };
+    });
+};
 
 export const referenceToken = (annotation) => `@${annotation.order}`;
 

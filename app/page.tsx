@@ -163,7 +163,7 @@ type AnnotationGesture = {
   | { kind: "move"; annotationId: string; slideId: string; origin: AnnotationRect }
   | { kind: "resize"; annotationId: string; slideId: string; origin: AnnotationRect; handle: ResizeHandle }
 );
-type AnnotationBox = { id: string; rect: AnnotationRect };
+type AnnotationBox = { id: string; rect: AnnotationRect; html: string };
 type SentAnnotationAttachment = {
   id: string;
   threadId: string;
@@ -175,10 +175,33 @@ type SentAnnotationAttachment = {
 
 const cloneAnnotation = (annotation: Annotation): Annotation => ({
   ...annotation,
-  target: annotation.target.kind === "element" ? { kind: "element", weaveId: annotation.target.weaveId } : { kind: "region" },
+  target: annotation.target.kind === "element" ? { kind: "element", weaveId: annotation.target.weaveId, html: annotation.target.html } : { kind: "region" },
   rect: { ...annotation.rect },
   intersects: [...annotation.intersects],
 });
+
+const cloneMatches = (root: HTMLElement, selector: string): HTMLElement[] => [
+  ...(root.matches(selector) ? [root] : []),
+  ...Array.from(root.querySelectorAll<HTMLElement>(selector)),
+];
+
+const serializeEditorNode = (node: HTMLElement): string => {
+  const clone = node.cloneNode(true) as HTMLElement;
+  cloneMatches(clone, "[contenteditable], [data-editing], [draggable]").forEach((item) => {
+    item.removeAttribute("contenteditable");
+    item.removeAttribute("data-editing");
+    item.removeAttribute("draggable");
+  });
+  cloneMatches(clone, ".weave-selected, .weave-dragging, .weave-drop-before, .weave-drop-after, .weave-drop-horizontal").forEach((item) => {
+    item.classList.remove("weave-selected", "weave-dragging", "weave-drop-before", "weave-drop-after", "weave-drop-horizontal");
+  });
+  cloneMatches(clone, "img[data-asset-path]").forEach((item) => {
+    const path = item.getAttribute("data-asset-path") ?? item.getAttribute("src") ?? "";
+    item.setAttribute("src", path);
+    item.removeAttribute("data-asset-path");
+  });
+  return clone.outerHTML;
+};
 
 const refreshSlideAnnotations = (annotations: Annotation[], slideId: string, boxes: AnnotationBox[]) => {
   const refreshed = new Map<string, Annotation>(refreshAnnotations(annotations.filter((annotation) => annotation.slideId === slideId), boxes).map((annotation: Annotation): [string, Annotation] => [annotation.id, annotation]));
@@ -354,13 +377,7 @@ export default function Home() {
   const serializeCanvas = (): string | null => {
     const root = slideRoot();
     if (!root) return null;
-    const clone = root.cloneNode(true) as HTMLElement;
-    clone.querySelectorAll("[contenteditable]").forEach((node) => node.removeAttribute("contenteditable"));
-    clone.querySelectorAll("[data-editing]").forEach((node) => node.removeAttribute("data-editing"));
-    clone.querySelectorAll(".weave-selected, .weave-dragging, .weave-drop-before, .weave-drop-after, .weave-drop-horizontal").forEach((node) => node.classList.remove("weave-selected", "weave-dragging", "weave-drop-before", "weave-drop-after", "weave-drop-horizontal"));
-    clone.querySelectorAll("[draggable]").forEach((node) => node.removeAttribute("draggable"));
-    clone.querySelectorAll<HTMLImageElement>('img[data-asset-path]').forEach((node) => { node.src = node.dataset.assetPath ?? node.getAttribute("src") ?? ""; node.removeAttribute("data-asset-path"); });
-    return clone.outerHTML;
+    return serializeEditorNode(root);
   };
 
   const captureActive = (list: SlideDoc[] = slidesRef.current): SlideDoc[] => {
@@ -651,7 +668,7 @@ export default function Home() {
     const scroll = { left: viewport.scrollLeft, top: viewport.scrollTop };
     return Array.from(viewport.querySelectorAll<HTMLElement>("[data-weave-id]")).flatMap((node) => {
       const id = node.getAttribute("data-weave-id");
-      return id ? [{ id, rect: rectFromClientBox(node.getBoundingClientRect(), viewportBox, slideScale, scroll) }] : [];
+      return id ? [{ id, rect: rectFromClientBox(node.getBoundingClientRect(), viewportBox, slideScale, scroll), html: serializeEditorNode(node) }] : [];
     });
   };
 
@@ -806,7 +823,7 @@ export default function Home() {
         if (elementBox) {
           const id = createMessageId();
           const order = nextOrder(annotations.filter((annotation) => annotation.slideId === gesture.slideId));
-          const created: Annotation = { id, order, slideId: gesture.slideId, target: { kind: "element", weaveId: gesture.elementId }, rect: elementBox.rect, label: "", intersects: [] };
+          const created: Annotation = { id, order, slideId: gesture.slideId, target: { kind: "element", weaveId: gesture.elementId, html: elementBox.html }, rect: elementBox.rect, label: "", intersects: [] };
           setAnnotations((current) => refreshSlideAnnotations([...current, created], gesture.slideId, boxes));
           setSelectedAnnotationId(id);
           setFocusAnnotationId(id);

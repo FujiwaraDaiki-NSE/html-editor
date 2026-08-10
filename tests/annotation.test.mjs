@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  annotationHtmlLimit,
+  annotationHtmlTotalLimit,
   annotationPromptRules,
   annotationEnvelope,
   canSendTurn,
@@ -102,24 +104,37 @@ test("intersecting ids preserve input order", () => {
 
 test("refreshing annotations updates element geometry and every intersection list", () => {
   const boxes = [
-    { id: "heading", rect: { x: 40, y: 30, w: 180, h: 60 } },
-    { id: "content", rect: { x: 0, y: 0, w: 500, h: 300 } },
-    { id: "fallback-overlap", rect: { x: 700, y: 400, w: 80, h: 80 } },
+    { id: "heading", rect: { x: 40, y: 30, w: 180, h: 60 }, html: '<h1 data-weave-id="heading">Current title</h1>' },
+    { id: "content", rect: { x: 0, y: 0, w: 500, h: 300 }, html: '<section data-weave-id="content"></section>' },
+    { id: "fallback-overlap", rect: { x: 700, y: 400, w: 80, h: 80 }, html: '<div data-weave-id="fallback-overlap"></div>' },
   ];
   const annotations = [
-    { id: "element", target: { kind: "element", weaveId: "heading" }, rect: { x: 1, y: 2, w: 3, h: 4 }, intersects: [] },
+    { id: "element", target: { kind: "element", weaveId: "heading", html: '<h1 data-weave-id="heading">Old title</h1>' }, rect: { x: 1, y: 2, w: 3, h: 4 }, intersects: [] },
     { id: "region", target: { kind: "region" }, rect: { x: 450, y: 250, w: 100, h: 100 }, intersects: ["stale"] },
-    { id: "missing", target: { kind: "element", weaveId: "removed" }, rect: { x: 720, y: 420, w: 20, h: 20 }, intersects: [] },
+    { id: "missing", target: { kind: "element", weaveId: "removed", html: '<p data-weave-id="removed">Last capture</p>' }, rect: { x: 720, y: 420, w: 20, h: 20 }, intersects: [] },
   ];
   const refreshed = refreshAnnotations(annotations, boxes);
   assert.deepEqual(refreshed, [
-    { id: "element", target: { kind: "element", weaveId: "heading" }, rect: boxes[0].rect, intersects: ["heading", "content"] },
+    { id: "element", target: { kind: "element", weaveId: "heading", html: boxes[0].html }, rect: boxes[0].rect, intersects: ["heading", "content"] },
     { id: "region", target: { kind: "region" }, rect: annotations[1].rect, intersects: ["content"] },
-    { id: "missing", target: { kind: "element", weaveId: "removed" }, rect: annotations[2].rect, intersects: ["fallback-overlap"] },
+    { id: "missing", target: { kind: "element", weaveId: "removed", html: annotations[2].target.html }, rect: annotations[2].rect, intersects: ["fallback-overlap"] },
   ]);
   assert.notStrictEqual(refreshed[0].rect, boxes[0].rect);
   boxes[0].rect.x = 999;
   assert.equal(refreshed[0].rect.x, 40);
+});
+
+test("refreshing keeps the last element HTML and rectangle after its box disappears", () => {
+  const annotation = {
+    id: "removed", target: { kind: "element", weaveId: "removed", html: '<figure data-weave-id="removed">Last capture</figure>' },
+    rect: { x: 90, y: 120, w: 320, h: 180 }, intersects: ["stale"],
+  };
+  assert.deepEqual(refreshAnnotations([annotation], []), [{
+    ...annotation,
+    target: { ...annotation.target },
+    rect: { ...annotation.rect },
+    intersects: [],
+  }]);
 });
 
 test("a turn can be sent with prompt text or annotations", () => {
@@ -137,6 +152,7 @@ test("annotation prompt rules require flow interpretation rather than literal co
   assert.match(annotationPromptRules, /tidying.+part of the editing task/i);
   assert.match(annotationPromptRules, /Absolute positioning is prohibited/i);
   assert.doesNotMatch(annotationPromptRules, /(?:use|prefer|reproduce with) absolute positioning/i);
+  assert.match(annotationPromptRules, /@N reference.+annotation whose order is N/i);
 });
 
 test("the annotation envelope sorts both target kinds and copies defensively", () => {
@@ -146,14 +162,14 @@ test("the annotation envelope sorts both target kinds and copies defensively", (
       rect: { x: 20, y: 30, w: 400, h: 200 },
     },
     {
-      id: "element-id", order: 1, target: { kind: "element", weaveId: "heading" },
+      id: "element-id", order: 1, target: { kind: "element", weaveId: "heading", html: '<h1 data-weave-id="heading">Title</h1>' },
       rect: { x: 10, y: 15, w: 300, h: 80 }, label: "Two lines", intersects: ["heading"],
     },
   ];
   const envelope = annotationEnvelope(annotations);
   assert.deepEqual(envelope, [
     {
-      id: "element-id", order: 1, target: { kind: "element", weaveId: "heading" },
+      id: "element-id", order: 1, target: { kind: "element", weaveId: "heading", html: '<h1 data-weave-id="heading">Title</h1>' },
       rect: { x: 10, y: 15, w: 300, h: 80 }, label: "Two lines", intersects: ["heading"],
     },
     {
@@ -161,13 +177,84 @@ test("the annotation envelope sorts both target kinds and copies defensively", (
       rect: { x: 20, y: 30, w: 400, h: 200 }, label: "", intersects: [],
     },
   ]);
+  assert.equal("html" in envelope[1].target, false);
 
   envelope[0].target.weaveId = "changed";
+  envelope[0].target.html = "changed";
   envelope[0].rect.x = 999;
   envelope[0].intersects.push("changed");
   assert.deepEqual(annotations[1], {
-    id: "element-id", order: 1, target: { kind: "element", weaveId: "heading" },
+    id: "element-id", order: 1, target: { kind: "element", weaveId: "heading", html: '<h1 data-weave-id="heading">Title</h1>' },
     rect: { x: 10, y: 15, w: 300, h: 80 }, label: "Two lines", intersects: ["heading"],
+  });
+});
+
+test("the annotation envelope visibly truncates large element HTML", () => {
+  const html = `<section data-weave-id="large">${"x".repeat(annotationHtmlLimit)}</section>`;
+  const [annotation] = annotationEnvelope([{
+    id: "large", order: 1, target: { kind: "element", weaveId: "large", html },
+    rect: { x: 0, y: 0, w: 1280, h: 720 }, label: "", intersects: ["large"],
+  }]);
+  assert.equal(annotation.target.html.length, annotationHtmlLimit);
+  assert.match(annotation.target.html, /<!-- annotation HTML truncated -->$/);
+  assert.equal(html.includes("truncated"), false);
+});
+
+test("the annotation envelope spends its total HTML budget in annotation order", () => {
+  const makeAnnotation = (order, html) => ({
+    id: `element-${order}`,
+    order,
+    target: { kind: "element", weaveId: `weave-${order}`, html },
+    rect: { x: order, y: order, w: 100, h: 50 },
+    label: `Element ${order}`,
+    intersects: [`weave-${order}`],
+  });
+  const annotations = [
+    makeAnnotation(5, "later"),
+    makeAnnotation(3, "c".repeat(annotationHtmlLimit - 100)),
+    makeAnnotation(1, "a".repeat(annotationHtmlLimit)),
+    makeAnnotation(4, "d".repeat(500)),
+    makeAnnotation(2, "b".repeat(annotationHtmlLimit)),
+  ];
+
+  const envelope = annotationEnvelope(annotations);
+  assert.deepEqual(envelope.map(({ order }) => order), [1, 2, 3, 4, 5]);
+  assert.equal(envelope[0].target.html.length, annotationHtmlLimit);
+  assert.equal(envelope[1].target.html.length, annotationHtmlLimit);
+  assert.equal(envelope[2].target.html.length, annotationHtmlLimit - 100);
+  assert.equal(envelope[3].target.html.length, 100);
+  assert.match(envelope[3].target.html, /<!-- annotation HTML truncated: total budget exhausted -->$/);
+  assert.equal(
+    envelope.slice(0, 4).reduce((total, annotation) => total + annotation.target.html.length, 0),
+    annotationHtmlTotalLimit,
+  );
+});
+
+test("annotations after the HTML budget keep their identity and visibly omit HTML", () => {
+  const envelope = annotationEnvelope([
+    ...[1, 2, 3].map((order) => ({
+      id: `filler-${order}`,
+      order,
+      target: { kind: "element", weaveId: `filler-${order}`, html: "x".repeat(annotationHtmlLimit) },
+      rect: { x: 0, y: 0, w: 10, h: 10 },
+    })),
+    {
+      id: "subject", order: 4, target: { kind: "element", weaveId: "subject", html: "<h1>Subject</h1>" },
+      rect: { x: 20, y: 30, w: 400, h: 80 }, label: "Shorten", intersects: ["subject", "container"],
+    },
+  ]);
+
+  assert.deepEqual(envelope[3], {
+    id: "subject",
+    order: 4,
+    target: {
+      kind: "element",
+      weaveId: "subject",
+      html: "<!-- annotation HTML omitted: total budget exhausted -->",
+    },
+    rect: { x: 20, y: 30, w: 400, h: 80 },
+    label: "Shorten",
+    intersects: ["subject", "container"],
   });
 });
 

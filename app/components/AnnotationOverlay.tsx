@@ -8,7 +8,7 @@ export type Annotation = {
   id: string;
   order: number;
   slideId: string;
-  target: { kind: "region" } | { kind: "element"; weaveId: string };
+  target: { kind: "region" } | { kind: "element"; weaveId: string; html: string };
   rect: AnnotationRect;
   label: string;
   intersects: string[];
