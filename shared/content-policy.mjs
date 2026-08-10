@@ -2,9 +2,9 @@
 
 import { auditTailwindSlideHtml } from "./tailwind-slide.mjs";
 
-const finding = (code, message, source, index, length) => ({
+const finding = (code, message, source, index, length, severity = "error") => ({
   code,
-  severity: "error",
+  severity,
   message,
   source,
   index,
@@ -117,14 +117,55 @@ export function auditContentPolicy({ css = "", html = "" } = {}) {
     ...auditCssSafety(css).diagnostics,
     ...auditHtmlSafety(html).diagnostics,
     ...auditTailwindSlideHtml(html),
+    ...auditWeaveIdCoverage(html),
   ];
   return makePolicyResult(diagnostics);
 }
 
+export function auditWeaveIdCoverage(input) {
+  const html = typeof input === "string" ? input : "";
+  const diagnostics = [];
+  const selectableTags = new Set(["h1", "h2", "h3", "h4", "h5", "h6", "p", "ul", "ol", "table", "svg", "img", "figure", "blockquote"]);
+  const voidTags = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
+  const stack = [];
+
+  for (const match of html.matchAll(/<[^>]*>/g)) {
+    const tagText = match[0];
+    const closing = /^<\s*\/\s*([a-z][\w:-]*)/i.exec(tagText);
+    if (closing) {
+      for (let index = stack.length - 1; index >= 0; index -= 1) {
+        if (stack[index].tag === closing[1].toLowerCase()) {
+          stack.length = index;
+          break;
+        }
+      }
+      continue;
+    }
+    const opening = /^<\s*([a-z][\w:-]*)\b/i.exec(tagText);
+    if (!opening) continue;
+    const tag = opening[1].toLowerCase();
+    const hasId = /\bdata-weave-id\s*=/i.test(tagText);
+    if (selectableTags.has(tag) && !hasId && !stack.some((entry) => entry.hasId)) {
+      diagnostics.push(finding(
+        "html.missing-weave-id",
+        `Selectable <${tag}> elements must have a data-weave-id or an id-bearing ancestor.`,
+        "html",
+        match.index,
+        tagText.length,
+        "warning",
+      ));
+    }
+    if (!voidTags.has(tag) && !/\/\s*>$/.test(tagText)) stack.push({ tag, hasId });
+  }
+  return diagnostics;
+}
+
 function makePolicyResult(diagnostics) {
+  const errors = diagnostics.filter((diagnostic) => diagnostic.severity === "error").length;
+  const warnings = diagnostics.filter((diagnostic) => diagnostic.severity === "warning").length;
   return {
-    ok: diagnostics.length === 0,
+    ok: errors === 0,
     diagnostics,
-    summary: { errors: diagnostics.length, warnings: 0 },
+    summary: { errors, warnings },
   };
 }

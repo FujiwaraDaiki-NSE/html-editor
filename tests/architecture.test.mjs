@@ -62,6 +62,18 @@ test("policy gates protect commits while turn writes stay available", async () =
   assert.doesNotMatch(writeBody, /auditContentPolicy/);
 });
 
+test("variation turns share prompt validation and editor annotation context", async () => {
+  const [localApi, page] = await Promise.all([
+    readFile(new URL("../server/local-api.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+  ]);
+  const startEditorTurn = localApi.slice(localApi.indexOf("async function startEditorTurn"), localApi.indexOf("codex.client.on"));
+  assert.match(startEditorTurn, /const prompt = requireTurnPrompt\(payload\)/);
+  const variation = page.slice(page.indexOf("const generateVariation"), page.indexOf("const acceptVariation"));
+  assert.match(variation, /collectTurnAnnotations\(prompt/);
+  assert.match(variation, /contextEnvelope\(variationAnnotations/);
+});
+
 test("UI uses Thread APIs, reducer, item cards, steering, interrupt, approvals, and catalogs", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   for (const surface of [
