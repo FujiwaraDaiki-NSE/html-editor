@@ -1655,15 +1655,15 @@ export default function Home() {
     if (!value) return "保存日時不明";
     const days = Math.max(0, Math.floor((galleryNow - new Date(value).getTime()) / 86_400_000));
     const minutes = Math.max(0, Math.floor((galleryNow - new Date(value).getTime()) / 60_000));
-    if (minutes < 1) return "たった今";
-    if (minutes < 60) return `${minutes}分前`;
-    if (days === 0) return `${Math.floor(minutes / 60)}時間前`;
+    if (minutes < 1) return "たった今保存";
+    if (minutes < 60) return `${minutes}分前に保存`;
+    if (days === 0) return `${Math.floor(minutes / 60)}時間前に保存`;
     if (days === 1) return "昨日";
-    if (days < 7) return `${days}日前`;
+    if (days < 7) return `${days}日前に保存`;
     return new Date(value).toLocaleDateString("ja-JP", { year: "numeric", month: "numeric", day: "numeric" });
   };
 
-  const thumbHtml = (html: string, css: string, title: string) => html ? <iframe className="project-live" sandbox="" title={title} loading="lazy" srcDoc={`<!doctype html><html><head><style>${css}</style><style>html,body{margin:0;overflow:hidden;background:#0d1017}</style></head><body>${html}</body></html>`} /> : null;
+  const thumbHtml = (html: string, css: string, title: string) => html ? <iframe className="project-live" sandbox="" title={title} loading="lazy" srcDoc={`<!doctype html><html><head><style>${css}</style><style>html,body{width:${designWidth}px;height:${designHeight}px;margin:0;overflow:hidden;background:#0d1017}body > .weave-slide{width:${designWidth}px;height:${designHeight}px}</style></head><body>${html}</body></html>`} /> : null;
 
   const saveProject = async () => {
     try {
@@ -2633,7 +2633,7 @@ export default function Home() {
                         {item.current && <span className="card-pill">開いています</span>}
                         {item.blocked && <span className="card-pill warn">提案が未決着</span>}
                       </span>
-                      <span className="card-meta"><strong>{item.title}</strong><small>{item.current && !saved ? "未保存の変更あり" : `${item.slideCount}枚 · ${relativeProjectTime(item.updatedAt)}に保存`}</small></span>
+                      <span className="card-meta"><strong>{item.title}</strong><small>{item.current && !saved ? "未保存の変更あり" : `${item.slideCount}枚 · ${relativeProjectTime(item.updatedAt)}`}</small></span>
                     </button>
                     <button className="kebab" aria-label={`${item.title}のメニュー`} aria-haspopup="menu" aria-expanded={galleryMenu === item.slug} onPointerDown={(event) => event.stopPropagation()} onClick={() => { setGalleryTip(null); setGalleryMenu((current) => current === item.slug ? null : item.slug); }}>⋯</button>
                     {galleryMenu === item.slug && <div className="card-menu" role="menu" onPointerDown={(event) => event.stopPropagation()}>

@@ -27,6 +27,8 @@ import {
   readProject,
   readDeckCss,
   readTemplates,
+  assertAssetFilename,
+  projectAssetPath,
   writeProject,
 } from "./project.mjs";
 import { CodexService } from "./codex/service.mjs";
@@ -59,6 +61,19 @@ function corsHeaders(request) {
 function sendJson(request, response, status, value) {
   response.writeHead(status, { ...corsHeaders(request), "content-type": "application/json; charset=utf-8" });
   response.end(`${JSON.stringify(value)}\n`);
+}
+
+async function sendAsset(request, response, filename, filePath) {
+  try {
+    assertAssetFilename(filename);
+    const bytes = await readFile(filePath);
+    const extension = filename.split(".").pop();
+    const types = { png: "image/png", jpg: "image/jpeg", webp: "image/webp", svg: "image/svg+xml", gif: "image/gif" };
+    response.writeHead(200, { ...corsHeaders(request), "content-type": types[extension], "cache-control": "public, max-age=31536000, immutable" });
+    response.end(bytes);
+  } catch {
+    sendJson(request, response, 404, { error: "Asset not found." });
+  }
 }
 
 async function readJson(request, limit = 1_500_000) {
@@ -217,12 +232,14 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET" && url.pathname.startsWith("/api/assets/")) {
       const filename = url.pathname.slice("/api/assets/".length);
-      if (!/^[0-9a-f]{64}\.(?:png|jpg|webp|svg|gif)$/.test(filename)) return sendJson(request, response, 404, { error: "Asset not found." });
-      const extension = filename.split(".").pop();
-      const types = { png: "image/png", jpg: "image/jpeg", webp: "image/webp", svg: "image/svg+xml", gif: "image/gif" };
-      const bytes = await readFile(join(projectRoot(), "assets", filename));
-      response.writeHead(200, { ...corsHeaders(request), "content-type": types[extension], "cache-control": "public, max-age=31536000, immutable" });
-      return response.end(bytes);
+      return sendAsset(request, response, filename, join(projectRoot(), "assets", filename));
+    }
+    const projectAssetMatch = request.method === "GET" && url.pathname.match(/^\/api\/projects\/([^/]+)\/assets\/([^/]+)$/);
+    if (projectAssetMatch) {
+      const [, slug, filename] = projectAssetMatch;
+      let assetPath;
+      try { assertAssetFilename(filename); assetPath = projectAssetPath(slug, filename); } catch { return sendJson(request, response, 404, { error: "Asset not found." }); }
+      return sendAsset(request, response, filename, assetPath);
     }
     if (request.method === "GET" && url.pathname === "/api/codex/events") {
       const sequence = Number(url.searchParams.get("after") ?? 0);
