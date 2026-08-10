@@ -1934,19 +1934,6 @@ export default function Home() {
               </>
             )}
             <div ref={messagesRef} className="messages" role="log" aria-live="polite" aria-relevant="additions text" aria-label="Conversation with Agent" onScroll={(event) => { const element = event.currentTarget; shouldAutoScrollRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48; }}>
-              <div className="context-chip" role="group" aria-label="Editor context">
-                <span className="context-summary" role="status"><span className="context-icon" aria-hidden="true">◎</span> Slide {activeSlide} in context · {agentActivity}</span>
-                {activeElementAnnotations.length > 0 && <span className="context-annotation-count">{activeElementAnnotations.length} element{activeElementAnnotations.length === 1 ? "" : "s"}</span>}
-                {activeRegionAnnotations.length > 0 && <button
-                  type="button"
-                  className={regionsWillSend ? "active" : "held"}
-                  aria-pressed={regionsWillSend}
-                  disabled={referencedRegions.length > 0}
-                  title={referencedRegions.length > 0 ? "Referenced regions must be included" : "Toggle region annotations for the next turn"}
-                  onClick={() => setIncludeRegionAnnotations((current) => !current)}
-                >{activeRegionAnnotations.length} region{activeRegionAnnotations.length === 1 ? "" : "s"} · {regionsWillSend ? "Send" : "Held"}</button>}
-                {activeAnnotations.length > 0 && <AnnotationLegend annotations={activeAnnotations} />}
-              </div>
               {!codexState.activeThreadId && <p className="empty-thread">Start or select a conversation.</p>}
               {activeTurns.length > visibleTurns.length && <p className="trimmed-log">Showing the latest {visibleTurns.length} turns.</p>}
               {visibleTurns.map((turn) => (
@@ -1981,8 +1968,21 @@ export default function Home() {
               <div ref={messagesEndRef} className="messages-end" />
             </div>
             <div className="chat-box">
+              <div className="context-chip" role="group" aria-label="Editor context">
+                <span className="context-summary" role="status"><span className="context-icon" aria-hidden="true">◎</span> Slide {activeSlide} in context · {agentActivity}</span>
+                {activeElementAnnotations.length > 0 && <span className="context-annotation-count">{activeElementAnnotations.length} element{activeElementAnnotations.length === 1 ? "" : "s"}</span>}
+                {activeRegionAnnotations.length > 0 && <button
+                  type="button"
+                  className={regionsWillSend ? "active" : "held"}
+                  aria-pressed={regionsWillSend}
+                  disabled={referencedRegions.length > 0}
+                  title={referencedRegions.length > 0 ? "Referenced regions must be included" : "Toggle region annotations for the next turn"}
+                  onClick={() => setIncludeRegionAnnotations((current) => !current)}
+                >{activeRegionAnnotations.length} region{activeRegionAnnotations.length === 1 ? "" : "s"} · {regionsWillSend ? "Send" : "Held"}</button>}
+                {activeAnnotations.length > 0 && <AnnotationLegend annotations={activeAnnotations} />}
+              </div>
               <textarea value={promptDraft} onChange={(event) => setPromptDraft(event.target.value)} onCompositionStart={() => { compositionRef.current = true; }} onCompositionEnd={() => { compositionRef.current = false; }} onKeyDown={(event) => { const nativeEvent = event.nativeEvent as KeyboardEvent; const isComposing = compositionRef.current || nativeEvent.isComposing || nativeEvent.keyCode === 229; if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !isComposing) { event.preventDefault(); void sendMessage(); } }} placeholder={agentReady ? "Ask Agent to edit this slide…" : "Waiting for local Codex…"} aria-label="Message Agent" maxLength={20000} disabled={!agentReady} />
-              <div>
+              <div className="chat-actions">
                 <span>⌘ / Ctrl ↵</span>
                 {agentRunning && <button className="stop-button" onClick={() => void interruptAgent()} aria-label="Stop Agent" title="Stop Agent">■</button>}
                 <button className="send-button" onClick={() => void sendMessage()} disabled={!agentReady || !canSendTurn(promptDraft, sendableAnnotations) || turnSubmitting} aria-label="Send message">↑</button>

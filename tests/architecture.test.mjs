@@ -76,6 +76,16 @@ test("activity rail destinations render their details in the left sidebar", asyn
   assert.doesNotMatch(page, /showHistory|history-popover|showCodexSettings|showHelp/);
 });
 
+test("the editor context stays with the composer instead of scrolling with the message log", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const messagesStart = page.indexOf('<div ref={messagesRef} className="messages"');
+  const chatStart = page.indexOf('<div className="chat-box">', messagesStart);
+  assert.notEqual(messagesStart, -1);
+  assert.notEqual(chatStart, -1);
+  assert.doesNotMatch(page.slice(messagesStart, chatStart), /className="context-chip"/);
+  assert.match(page.slice(chatStart), /<div className="chat-box">\s*<div className="context-chip"/);
+});
+
 test("transient lists share one dismissible popover contract", async () => {
   const [page, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
