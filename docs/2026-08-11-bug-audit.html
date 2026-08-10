@@ -1,0 +1,635 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Weave バグ・実装監査レポート — 2026-08-11</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #18212f;
+        --muted: #5d6978;
+        --line: #d9e0e8;
+        --paper: #fff;
+        --wash: #f5f7fa;
+        --critical: #9f1239;
+        --high: #b45309;
+        --medium: #0369a1;
+        --ok: #047857;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--wash);
+        color: var(--ink);
+        font:
+          16px/1.65 system-ui,
+          -apple-system,
+          "Hiragino Sans",
+          "Yu Gothic UI",
+          sans-serif;
+      }
+      main {
+        width: min(1120px, calc(100% - 32px));
+        margin: 32px auto;
+        background: var(--paper);
+        padding: clamp(24px, 5vw, 64px);
+        box-shadow: 0 14px 40px #24344a18;
+        border-radius: 18px;
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: clamp(2rem, 5vw, 3.5rem);
+        line-height: 1.12;
+      }
+      h2 {
+        margin: 48px 0 18px;
+        padding-bottom: 8px;
+        border-bottom: 2px solid var(--line);
+      }
+      h3 {
+        margin: 0 0 8px;
+        font-size: 1.08rem;
+      }
+      p {
+        margin: 8px 0 14px;
+      }
+      code {
+        padding: 0.1em 0.35em;
+        border-radius: 5px;
+        background: #edf1f5;
+        font:
+          0.9em ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
+        overflow-wrap: anywhere;
+      }
+      .lead {
+        color: var(--muted);
+        font-size: 1.12rem;
+        max-width: 75ch;
+      }
+      .summary {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 12px;
+        margin: 28px 0;
+      }
+      .metric {
+        padding: 18px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: #fbfcfd;
+      }
+      .metric strong {
+        display: block;
+        font-size: 1.7rem;
+        line-height: 1.1;
+      }
+      .metric span {
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+      .callout {
+        padding: 16px 18px;
+        border-left: 5px solid var(--high);
+        background: #fff8ed;
+        border-radius: 8px;
+      }
+      .finding {
+        margin: 16px 0;
+        padding: 20px;
+        border: 1px solid var(--line);
+        border-left: 6px solid var(--medium);
+        border-radius: 10px;
+      }
+      .finding.critical {
+        border-left-color: var(--critical);
+      }
+      .finding.high {
+        border-left-color: var(--high);
+      }
+      .badge {
+        display: inline-block;
+        margin-right: 8px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        color: #fff;
+        background: var(--medium);
+        font-size: 0.75rem;
+        font-weight: 800;
+        letter-spacing: 0.04em;
+        vertical-align: 2px;
+      }
+      .critical .badge {
+        background: var(--critical);
+      }
+      .high .badge {
+        background: var(--high);
+      }
+      .evidence {
+        color: var(--muted);
+        font-size: 0.92rem;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 14px 0;
+        font-size: 0.94rem;
+      }
+      th,
+      td {
+        padding: 10px 12px;
+        text-align: left;
+        vertical-align: top;
+        border-bottom: 1px solid var(--line);
+      }
+      th {
+        background: #f2f5f8;
+      }
+      .pass {
+        color: var(--ok);
+        font-weight: 700;
+      }
+      .fail {
+        color: var(--critical);
+        font-weight: 700;
+      }
+      ul,
+      ol {
+        padding-left: 1.35rem;
+      }
+      footer {
+        margin-top: 48px;
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <p>WEAVE / ENGINEERING AUDIT</p>
+        <h1>バグ・実装監査レポート</h1>
+        <p class="lead">
+          10人のサブエージェントが担当領域を分け、コード、設定、テストを並列監査した。候補はメインエージェントがコードと最小再現で再確認し、確度と影響を揃えて整理した。
+        </p>
+      </header>
+
+      <section class="summary" aria-label="監査結果の概要">
+        <div class="metric">
+          <strong>10</strong><span>並列レビュー担当</span>
+        </div>
+        <div class="metric">
+          <strong>139 / 139</strong><span>テスト成功</span>
+        </div>
+        <div class="metric"><strong>2</strong><span>最優先の問題群</span></div>
+        <div class="metric"><strong>10</strong><span>優先修正候補</span></div>
+      </section>
+
+      <div class="callout">
+        <strong>結論:</strong>
+        テストとビルドは成功しているが、安全でないHTML/CSSの実行経路と、保存・非同期処理による編集消失が残っている。まずこの2系統を止め、その後Codex再接続、履歴復元、書き出しを修正するのが妥当。
+      </div>
+
+      <h2>最優先で修正すべき問題</h2>
+
+      <article class="finding critical">
+        <h3>
+          <span class="badge">CRITICAL</span
+          >安全監査を通過したHTML/CSSがエディタ上で実行・適用される
+        </h3>
+        <p>
+          <code>srcdoc</code>、<code>style</code>、<code
+            >iframe/object/embed</code
+          >
+          を禁止していない。例えば、entity化した
+          <code>&lt;iframe srcdoc="&amp;lt;script&amp;gt;…"&gt;</code>
+          は監査を通過し、ブラウザ側でデコードされる。スライドHTMLは
+          <code>dangerouslySetInnerHTML</code>、CSSはエディタ文書内の
+          <code>&lt;style&gt;</code>
+          として挿入されるため、スクリプト実行やエディタUI全体へのCSS汚染につながる。
+        </p>
+        <p class="evidence">
+          根拠:
+          shared/content-policy.mjs:64–113、app/page.tsx:2331、2689。最小再現で
+          auditHtmlSafety が ok:true を返すことを確認。
+        </p>
+        <p>
+          <strong>修正:</strong> 正規表現の追加だけでなくHTML/CSS
+          parserを使った許可リスト化、危険要素の禁止、CSS
+          selectorのスライド境界への制限を行う。保存・表示の両方で同じ強制処理を使う。
+        </p>
+      </article>
+
+      <article class="finding critical">
+        <h3>
+          <span class="badge">CRITICAL</span
+          >保存中・状態再取得中の編集が応答で消える
+        </h3>
+        <p>
+          Save開始時点の内容を送った後、応答待ちの間にユーザーが編集すると、古いサーバー応答を
+          <code>applyServerState()</code>
+          が無条件適用して後続編集を上書きする。同様に
+          <code>weave/project</code> イベント後の
+          <code>/state</code> 取得中も未保存編集が失われる。
+        </p>
+        <p class="evidence">根拠: app/page.tsx:579–582、1668–1674。</p>
+        <p>
+          <strong>修正:</strong> ローカル編集世代とserver
+          revisionを保存開始・状態取得開始時に記録し、応答時に世代が変わっていれば適用しない。競合表示と再保存導線を追加する。
+        </p>
+      </article>
+
+      <h2>高優先度の問題</h2>
+
+      <article class="finding high">
+        <h3>
+          <span class="badge">HIGH</span
+          >サーバー側の並行保存でプロジェクト内容が混在・消失しうる
+        </h3>
+        <p>
+          <code>expectedRevision</code> はGit
+          HEADだけを比較する。未コミット区間では並行リクエストが同じrevisionを通り、slidesとmanifestのrename/rollbackが互いに干渉できる。
+        </p>
+        <p class="evidence">根拠: server/project.mjs:307–369。</p>
+        <p>
+          <strong>修正:</strong> プロジェクト単位mutexで write/commit/switch
+          を直列化し、並行保存テストを追加する。
+        </p>
+      </article>
+
+      <article class="finding high">
+        <h3>
+          <span class="badge">HIGH</span
+          >画像アップロード完了時に別の要素・スライドを書き換える
+        </h3>
+        <p>
+          アップロード完了後に現在の
+          <code>selectedNode()</code>
+          を取り直すため、待機中に選択を変えると元画像ではなく新しい選択対象を置換する。画像追加も完了時点のスライドへ入る。
+        </p>
+        <p class="evidence">根拠: app/page.tsx:1295–1305。</p>
+        <p>
+          <strong>修正:</strong> 開始時のslide ID、element
+          ID、配置先を固定し、一致しない場合は適用を中止する。
+        </p>
+      </article>
+
+      <article class="finding high">
+        <h3>
+          <span class="badge">HIGH</span
+          >Codex切断後も実行中Turnが残り、新しいTurnを拒否する
+        </h3>
+        <p>
+          app-server切断時に
+          <code>activeTurns</code>
+          と割り込み状態を失効させない。自動再起動後も存在しないTurnを実行中とみなし、同じThreadの開始・再試行を妨げる。
+        </p>
+        <p class="evidence">根拠: server/codex/service.mjs:66–70、166–171。</p>
+        <p>
+          <strong>修正:</strong>
+          切断時にTurnを明示的に失敗状態へ遷移させるか、再接続時にapp-serverと再同期する。
+        </p>
+      </article>
+
+      <article class="finding high">
+        <h3>
+          <span class="badge">HIGH</span
+          >イベント再接続に欠落検知とatomicなreplay/live切替がない
+        </h3>
+        <p>
+          履歴上限2000件を超えたギャップを通知しない。また、replay取得後からlive
+          listener登録までの間に発行されたイベントが失われる。長いTurnで完了通知やdeltaが欠落するとUIを復元できない。
+        </p>
+        <p class="evidence">根拠: server/codex/event-stream.mjs:19–28。</p>
+        <p>
+          <strong>修正:</strong>
+          listenerを先に登録してsequenceで重複排除し、oldest
+          sequenceとgap応答を追加する。
+        </p>
+      </article>
+
+      <article class="finding high">
+        <h3>
+          <span class="badge">HIGH</span
+          >履歴復元で過去にないassets/templatesが残る
+        </h3>
+        <p>
+          対象commitにディレクトリが存在するときだけrestoreするため、古いcommitへ戻しても後から追加されたassets/templatesが削除されず、復元commitへ再混入する。
+        </p>
+        <p class="evidence">根拠: server/project.mjs:451–460。</p>
+        <p>
+          <strong>修正:</strong> managed
+          tree全体を対象commitと一致させ、追加・削除の双方を扱うテストを追加する。
+        </p>
+      </article>
+
+      <article class="finding high">
+        <h3>
+          <span class="badge">HIGH</span>固定1280×720のスライドが
+          <code>w-full h-full</code> で上書きされる
+        </h3>
+        <p>
+          rootには固定サイズと100% utilityが同時に入り、より詳細度の高い
+          <code>.weave-slide.w-full/.h-full</code>
+          が勝つ。固定サイズ前提のscaleと実寸が食い違い、standalone/exportで比率や座標が崩れる。
+        </p>
+        <p class="evidence">
+          根拠:
+          shared/tailwind-slide.mjs:235、239、242、shared/slide-design.mjs:90–105、119–128。
+        </p>
+        <p>
+          <strong>修正:</strong> rootから
+          <code>w-full h-full</code>
+          を外し、固定デザインサイズと表示scaleの責務を分離する。computed
+          sizeをE2Eで検証する。
+        </p>
+      </article>
+
+      <article class="finding high">
+        <h3>
+          <span class="badge">HIGH</span>「offline」HTML
+          exportに画像資産が含まれない
+        </h3>
+        <p>
+          HTMLだけをBlobとしてダウンロードする一方、画像srcは
+          <code>assets/&lt;hash&gt;.&lt;ext&gt;</code>
+          の相対パスのまま。別の場所で開くと画像が表示されない。
+        </p>
+        <p class="evidence">
+          根拠: app/page.tsx:1685–1697、server/project.mjs:102周辺。
+        </p>
+        <p>
+          <strong>修正:</strong> data
+          URLとして埋め込むか、HTMLとassetsをZIPで出力する。
+        </p>
+      </article>
+
+      <article class="finding high">
+        <h3>
+          <span class="badge">HIGH</span
+          >HTTPメソッド制約がなくGETでも状態変更できる
+        </h3>
+        <p>
+          入口でGET/POST/PATCHをまとめて許可し、多くのルートはpathしか判定しない。例えばGETの
+          <code>/api/history/main</code> や
+          <code>/api/codex/account/logout</code> が処理を実行する。
+        </p>
+        <p class="evidence">
+          根拠: server/local-api.mjs:263–264、323–326、397–399。
+        </p>
+        <p>
+          <strong>修正:</strong> routeごとにmethodを宣言し、不一致は405にする。
+        </p>
+      </article>
+
+      <article class="finding high">
+        <h3>
+          <span class="badge">HIGH</span
+          >別Threadの同時Turnが同じプロジェクトを競合編集できる
+        </h3>
+        <p>
+          <code>/api/codex/turn/start</code>
+          はThread単位の状態しか見ず、プロジェクト単位の実行中ロックがない。別Threadから同じslidesを同時編集できる。
+        </p>
+        <p class="evidence">根拠: server/local-api.mjs:362–367。</p>
+        <p>
+          <strong>修正:</strong> すべてのTurn開始経路で共有するproject-level
+          lockを設け、競合時は409を返す。
+        </p>
+      </article>
+
+      <h2>中優先度・実装品質の指摘</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>問題</th>
+            <th>影響・根拠</th>
+            <th>推奨対応</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>不正numeric entityで監査が例外</td>
+            <td>
+              <code>String.fromCodePoint</code> の範囲検証がなく、<code
+                >&amp;#99999999;</code
+              >
+              でRangeError。content-policy.mjs:21–23。
+            </td>
+            <td>0〜0x10ffffを検証し診断へ変換。</td>
+          </tr>
+          <tr>
+            <td>CSSコメントで監査回避</td>
+            <td>
+              <code>@im/**/port</code> と
+              <code>url(/**/https://…)</code>
+              がokになる。content-policy.mjs:30–60。
+            </td>
+            <td>CSS parserを導入、またはコメント除去後に正規化監査。</td>
+          </tr>
+          <tr>
+            <td>スライド削除Undoで注釈が戻らない</td>
+            <td>
+              Snapshotにannotationsがなく、削除時だけ消去する。page.tsx:1490–1502。
+            </td>
+            <td>注釈もUndo snapshotへ含める。</td>
+          </tr>
+          <tr>
+            <td>metricsのDirectionでgrid/flex競合</td>
+            <td>
+              既知のTASK。metricsもDirection対象で両display
+              classが併存。page.tsx:2084、2533–2544。
+            </td>
+            <td>metricsを対象外にするかgrid classを除去して変換。</td>
+          </tr>
+          <tr>
+            <td>Variation開始失敗時の後片付け不足</td>
+            <td>
+              branch作成・書込み後にThread/Turn開始が失敗すると途中状態が残る。local-api.mjs:149–172。
+            </td>
+            <td>try/catchで元branch復帰とdiscardを保証。</td>
+          </tr>
+          <tr>
+            <td>同一project名の同時作成競合</td>
+            <td>
+              slug存在確認とmkdirが非atomic。project.mjs:661–665、697–715。
+            </td>
+            <td>atomic mkdirでslugを予約。</td>
+          </tr>
+          <tr>
+            <td>注釈表示が編集後に古い</td>
+            <td>
+              送信時には更新されるが、それまで座標・excerpt・Legendがstale。page.tsx:824–831周辺。
+            </td>
+            <td>DOM同期/resize後に再計算。</td>
+          </tr>
+          <tr>
+            <td>画像dropでブラウザ遷移</td>
+            <td>
+              block
+              drag以外のdragoverでpreventDefaultしない。page.tsx:1110–1115。
+            </td>
+            <td>file dragは常に既定動作を抑止。</td>
+          </tr>
+          <tr>
+            <td>不正JSONが500</td>
+            <td>
+              JSON.parseのSyntaxErrorが400分類されない。local-api.mjs:79–87、419–426。
+            </td>
+            <td>専用error codeで400、容量超過は413。</td>
+          </tr>
+          <tr>
+            <td>TypeScript検査が失敗</td>
+            <td>
+              page.tsxの型エラーとCloudflare型不足。<code
+                >npx tsc --noEmit</code
+              >
+              がexit 1。
+            </td>
+            <td>型を修正し、typecheck scriptをCIへ追加。</td>
+          </tr>
+          <tr>
+            <td>D1 binding名が不一致になりうる</td>
+            <td>
+              設定は任意名、実装は
+              <code>env.DB</code> 固定。vite.config.ts:18–24、db/index.ts:6–12。
+            </td>
+            <td>binding名をDBに固定・検証。</td>
+          </tr>
+          <tr>
+            <td>Cloudflare Images未設定</td>
+            <td>
+              <code>env.IMAGES</code>
+              必須扱いだが現行設定にbindingなし。optimizerは失敗後に元画像へfallback。
+            </td>
+            <td>optional判定またはbindingを必須設定化。</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>自動検証</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>コマンド</th>
+            <th>結果</th>
+            <th>補足</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>npm run lint</code></td>
+            <td class="pass">成功</td>
+            <td>ESLintエラーなし</td>
+          </tr>
+          <tr>
+            <td><code>npm test</code></td>
+            <td class="pass">成功</td>
+            <td>production build成功、139 tests passed</td>
+          </tr>
+          <tr>
+            <td><code>npx tsc --noEmit</code></td>
+            <td class="fail">失敗</td>
+            <td>page.tsx 4件、Cloudflare関連3件</td>
+          </tr>
+          <tr>
+            <td>content-policy最小再現</td>
+            <td class="fail">問題再現</td>
+            <td>srcdoc、CSS comment、範囲外entityを確認</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>10人の担当範囲</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>#</th>
+            <th>担当</th>
+            <th>主な確認対象</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1</td>
+            <td>UI state</td>
+            <td>状態管理、Undo/Redo、保存競合</td>
+          </tr>
+          <tr>
+            <td>2</td>
+            <td>Annotations</td>
+            <td>座標、参照、Legend、入力操作</td>
+          </tr>
+          <tr>
+            <td>3</td>
+            <td>Project persistence</td>
+            <td>filesystem、Git、transaction、履歴</td>
+          </tr>
+          <tr>
+            <td>4</td>
+            <td>Local API / security</td>
+            <td>HTTP境界、入力検証、method、resource</td>
+          </tr>
+          <tr>
+            <td>5</td>
+            <td>Codex protocol</td>
+            <td>JSON-RPC、stream、切断・再接続</td>
+          </tr>
+          <tr>
+            <td>6</td>
+            <td>HTML / policy</td>
+            <td>HTML/CSS監査、URL、entity、slug</td>
+          </tr>
+          <tr>
+            <td>7</td>
+            <td>Slide rendering</td>
+            <td>layout、template、offline export</td>
+          </tr>
+          <tr>
+            <td>8</td>
+            <td>Worker / DB / build</td>
+            <td>Cloudflare、D1、型、環境差</td>
+          </tr>
+          <tr>
+            <td>9</td>
+            <td>Test quality</td>
+            <td>テストの盲点、仕様との不一致</td>
+          </tr>
+          <tr>
+            <td>10</td>
+            <td>Holistic UX</td>
+            <td>keyboard、accessibility、drop、回復性</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h2>推奨する修正順</h2>
+      <ol>
+        <li>HTML/CSSの許可リスト化と表示境界の隔離。</li>
+        <li>編集世代管理、project mutex、project-level Turn lock。</li>
+        <li>Codex切断時のTurn収束とevent streamのgap/replay設計。</li>
+        <li>履歴復元をmanaged tree全体の同期へ変更。</li>
+        <li>固定スライド寸法と画像を含むoffline exportの修正。</li>
+        <li>
+          型エラー、Cloudflare
+          binding、既知metrics問題、アクセシビリティを順次解消。
+        </li>
+      </ol>
+
+      <footer>
+        <p>
+          監査日: 2026-08-11 / 対象branch: <code>dev/general</code> /
+          計画commit: <code>c8446aa</code>
+        </p>
+        <p>
+          本監査ではアプリケーションコードを変更していない。指摘の修正は別タスクとして、再現テストを先に追加してから小さなcommitに分けて実施する。
+        </p>
+      </footer>
+    </main>
+  </body>
+</html>
