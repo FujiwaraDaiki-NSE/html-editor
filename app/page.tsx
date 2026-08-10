@@ -13,6 +13,7 @@ import { AnnotationAttachment } from "./components/AnnotationAttachment";
 import { AnnotationLegend } from "./components/AnnotationLegend";
 import { AnnotationOverlay } from "./components/AnnotationOverlay";
 import type { Annotation, AnnotationGestureKind, AnnotationRect, PointerCandidate, ResizeHandle } from "./components/AnnotationOverlay";
+import { textExcerptOfNode } from "./components/editable-text-utils";
 import { ItemCard } from "./codex/components/ItemCard";
 import { ServerRequestCard } from "./codex/components/ServerRequestCard";
 import { codexReducer, initialCodexState } from "./codex/reducer";
@@ -205,11 +206,6 @@ const serializeEditorNode = (node: HTMLElement): string => {
 };
 
 const kindOfNode = (node: HTMLElement): string => blockKinds.find((cls) => node.classList.contains(cls)) ?? node.tagName.toLowerCase();
-const textExcerptOfNode = (node: HTMLElement): string => {
-  const text = (node.textContent ?? "").replace(/\s+/g, " ").trim();
-  return text.length > 72 ? `${text.slice(0, 71)}…` : text;
-};
-
 const refreshSlideAnnotations = (annotations: Annotation[], slideId: string, boxes: AnnotationBox[]) => {
   const refreshed = new Map<string, Annotation>(refreshAnnotations(annotations.filter((annotation) => annotation.slideId === slideId), boxes).map((annotation: Annotation): [string, Annotation] => [annotation.id, annotation]));
   return annotations.map((annotation) => refreshed.get(annotation.id) ?? annotation);
