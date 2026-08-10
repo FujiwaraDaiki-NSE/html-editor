@@ -12,7 +12,7 @@ import { annotationEnvelope, canSendTurn, insertReferenceAt, nextOrder, rectFrom
 import { AnnotationAttachment } from "./components/AnnotationAttachment";
 import { AnnotationLegend } from "./components/AnnotationLegend";
 import { AnnotationOverlay } from "./components/AnnotationOverlay";
-import type { Annotation, AnnotationGestureKind, AnnotationRect, ResizeHandle } from "./components/AnnotationOverlay";
+import type { Annotation, AnnotationGestureKind, AnnotationRect, PointerCandidate, ResizeHandle } from "./components/AnnotationOverlay";
 import { ItemCard } from "./codex/components/ItemCard";
 import { ServerRequestCard } from "./codex/components/ServerRequestCard";
 import { codexReducer, initialCodexState } from "./codex/reducer";
@@ -247,6 +247,7 @@ export default function Home() {
   const [saved, setSaved] = useState(true);
   const [promptDraft, setPromptDraft] = useState("");
   const [pointerPicking, setPointerPicking] = useState(false);
+  const [pointerCandidates, setPointerCandidates] = useState<PointerCandidate[]>([]);
   const [codexState, dispatchCodex] = useReducer(codexReducer, initialCodexState);
   const slideNav = useSyncExternalStore(slideNavStore.subscribe, slideNavStore.read, slideNavStore.serverRead);
   const [threadSearch, setThreadSearch] = useState("");
@@ -688,6 +689,27 @@ export default function Home() {
       }] : [];
     });
   };
+
+  const livePointerCandidates = useCallback((): PointerCandidate[] => {
+    const viewport = viewportRef.current;
+    if (!viewport) return [];
+    const viewportBox = viewport.getBoundingClientRect();
+    const scroll = { left: viewport.scrollLeft, top: viewport.scrollTop };
+    return Array.from(viewport.querySelectorAll<HTMLElement>("[data-weave-id]")).flatMap((node) => {
+      const id = node.getAttribute("data-weave-id");
+      return id ? [{
+        id,
+        rect: rectFromClientBox(node.getBoundingClientRect(), viewportBox, slideScale, scroll),
+        elementKind: kindOfNode(node),
+        textExcerpt: textExcerptOfNode(node),
+      }] : [];
+    });
+  }, [slideScale]);
+
+  useLayoutEffect(() => {
+    const frame = requestAnimationFrame(() => setPointerCandidates(pointerPicking ? livePointerCandidates() : []));
+    return () => cancelAnimationFrame(frame);
+  }, [livePointerCandidates, pointerPicking]);
 
   const toggleAnnotationMode = () => {
     setPointerPicking(false);
@@ -2129,7 +2151,7 @@ export default function Home() {
                   <AnnotationOverlay
                     interactive={annotationMode}
                     pointerPicking={pointerPicking}
-                    pointerCandidates={pointerPicking ? liveAnnotationBoxes() : []}
+                    pointerCandidates={pointerCandidates}
                     annotations={activeAnnotations}
                     recalledAnnotations={recalledAnnotations}
                     selectedId={selectedAnnotationId}
