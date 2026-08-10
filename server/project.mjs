@@ -310,7 +310,7 @@ export async function readProject() {
 }
 
 /** Write the project: every slide file (formatted) plus the manifest, transactionally. */
-export async function writeProject(input, bufferOnly = false, expectedRevision = null) {
+export async function writeProject(input, expectedRevision = null) {
   const project = validateProject(input);
   const slides = await Promise.all(project.slides.map(async (slide) => ({
     ...slide,
@@ -322,26 +322,7 @@ export async function writeProject(input, bufferOnly = false, expectedRevision =
   const bufferJson = `${JSON.stringify({ title: project.title, slides }, null, 2)}\n`;
 
   await mkdir(join(projectRoot, ".weave"), { recursive: true });
-  if (bufferOnly) {
-    await atomicWriteFile(bufferPath, bufferJson);
-    return { title: project.title, slides };
-  }
-
   assertRevision(expectedRevision);
-  const css = await readDeckCss();
-  const canonicalCss = await formatDeckCss(defaultDeckCss);
-  if (await formatDeckCss(css) !== canonicalCss) {
-    const error = new Error("styles/deck.css is generated from the supported Tailwind utility registry and cannot be edited.");
-    error.code = "WEAVE_TAILWIND_STYLESHEET";
-    throw error;
-  }
-  const policy = auditContentPolicy({ css, html: slides.map((slide) => slide.html).join("\n") });
-  if (!policy.ok) {
-    const error = new Error(`Content policy gate failed: ${policy.summary.errors} error(s).`);
-    error.code = "WEAVE_CONTENT_POLICY";
-    error.diagnostics = policy.diagnostics;
-    throw error;
-  }
 
   const transactionId = randomUUID();
   const stagedSlidesRoot = join(projectRoot, `.slides-${transactionId}.staged`);
@@ -397,6 +378,25 @@ export async function writeProject(input, bufferOnly = false, expectedRevision =
     ]);
   }
   return { title: project.title, slides };
+}
+
+/* The commit gate checks disk because that is what commitIfChanged will persist; writes stay inspectable. */
+export async function assertCommittable() {
+  const css = await readDeckCss();
+  const canonicalCss = await formatDeckCss(defaultDeckCss);
+  if (await formatDeckCss(css) !== canonicalCss) {
+    const error = new Error("styles/deck.css is generated from the supported Tailwind utility registry and cannot be edited.");
+    error.code = "WEAVE_TAILWIND_STYLESHEET";
+    throw error;
+  }
+  const project = await readProject();
+  const policy = auditContentPolicy({ css, html: project.slides.map((slide) => slide.html).join("\n") });
+  if (!policy.ok) {
+    const error = new Error(`Content policy gate failed: ${policy.summary.errors} error(s).`);
+    error.code = "WEAVE_CONTENT_POLICY";
+    error.diagnostics = policy.diagnostics;
+    throw error;
+  }
 }
 
 export function commitIfChanged(message) {
