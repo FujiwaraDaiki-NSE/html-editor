@@ -153,6 +153,16 @@ test("commands are grouped by editing, project, and delivery intent", async () =
   assert.match(css, /\.canvas-tool-group \+ \.canvas-tool-group/);
 });
 
+test("project changes preserve browser-only edits until they are saved", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const switchProject = page.slice(page.indexOf("const switchProject = async"), page.indexOf("const galleryMutation"));
+  const createProject = page.slice(page.indexOf("const createProject = async"), page.indexOf("const relativeProjectTime"));
+  assert.match(switchProject, /if \(!saved && !savedLocally\)/);
+  assert.match(createProject, /if \(!saved && !savedLocally\)/);
+  assert.match(page, /galleryDialog\.kind === "create"/);
+  assert.match(page, /return unchanged;/);
+});
+
 test("the content-bearing local slide library is removed", async () => {
   const [page, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),

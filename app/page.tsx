@@ -51,7 +51,7 @@ type ServerState = {
 
 type HistoryEntry = { id: string; shortId: string; message: string; date: string };
 type ProjectSummary = { slug: string; title: string; slideCount: number; updatedAt: string | null; current: boolean; blocked: boolean; blockedCount: number; thumbnailHtml: string; css: string };
-type GalleryDialog = { kind: "rename"; slug: string; title: string } | { kind: "archive"; slug: string; title: string } | { kind: "dirty"; slug: string; title: string } | { kind: "turn"; slug: string; title: string };
+type GalleryDialog = { kind: "rename"; slug: string; title: string } | { kind: "archive"; slug: string; title: string } | { kind: "dirty"; slug: string; title: string } | { kind: "create"; title: string } | { kind: "turn"; slug: string; title: string };
 
 const apiBase = "http://127.0.0.1:4317/api";
 const defaultCanvasZoom = 1;
@@ -1649,9 +1649,10 @@ export default function Home() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [galleryOpen, galleryDialog, galleryMenu]);
 
-  const switchProject = async (target: ProjectSummary, interrupt = false) => {
+  const switchProject = async (target: ProjectSummary, interrupt = false, savedLocally = false) => {
     if (target.current) { closeGallery(); return; }
     if (target.blocked) { setGalleryTip(target.slug); return; }
+    if (!saved && !savedLocally) { setGalleryDialog({ kind: "dirty", slug: target.slug, title: target.title }); return; }
     setGalleryTip(null);
     setGallerySwitching(target.slug);
     try {
@@ -1685,9 +1686,10 @@ export default function Home() {
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   };
 
-  const createProject = async () => {
+  const createProject = async (savedLocally = false) => {
     const title = newProjectTitle.trim();
     if (!title) return;
+    if (!saved && !savedLocally) { setGalleryDialog({ kind: "create", title }); return; }
     setNewProjectCreating(true);
     try {
       const response = await fetch(`${apiBase}/projects`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title, template: newProjectTemplate }) });
@@ -1727,7 +1729,7 @@ export default function Home() {
       setSaveMessage("");
       setAnnouncement(unchanged ? "Deck saved to history" : "Saved version recorded; newer local edits remain unsaved");
       setApiError(null);
-      return true;
+      return unchanged;
     } catch (error) {
       setApiError(error instanceof Error ? error.message : String(error));
       return false;
@@ -2722,7 +2724,8 @@ export default function Home() {
             <div className="dialog" role="alertdialog" aria-modal="true">
               {galleryDialog.kind === "rename" && <><div className="dialog-body"><strong>名前を変更</strong><input className="name-field" autoFocus value={renameDraft} onChange={(event) => setRenameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void galleryMutation(galleryDialog.slug, "rename", renameDraft); }} /></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>キャンセル</button><button className="primary-button" onClick={() => void galleryMutation(galleryDialog.slug, "rename", renameDraft)}>保存</button></div></>}
               {galleryDialog.kind === "archive" && <><div className="dialog-body"><strong>「{galleryDialog.title}」をアーカイブしますか？</strong><p>プロジェクトは削除せず、一覧から移動します。</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>キャンセル</button><button className="primary-button" onClick={() => void galleryMutation(galleryDialog.slug, "archive")}>アーカイブ</button></div></>}
-              {galleryDialog.kind === "dirty" && <><div className="dialog-body"><strong>保存してから切り替えます</strong><p>「{deckTitle}」には未保存の変更があります。進行中の編集とUndo履歴はプロジェクトをまたいで引き継がれません。</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>キャンセル</button><button className="primary-button" onClick={async () => { const target = galleryProjects.find((item) => item.slug === galleryDialog.slug); setGalleryDialog(null); if (await saveProject() && target) void switchProject(target); }}>保存して「{galleryDialog.title}」を開く</button></div></>}
+              {galleryDialog.kind === "dirty" && <><div className="dialog-body"><strong>保存してから切り替えます</strong><p>「{deckTitle}」には未保存の変更があります。進行中の編集とUndo履歴はプロジェクトをまたいで引き継がれません。</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>キャンセル</button><button className="primary-button" onClick={async () => { const target = galleryProjects.find((item) => item.slug === galleryDialog.slug); setGalleryDialog(null); if (await saveProject() && target) void switchProject(target, false, true); }}>保存して「{galleryDialog.title}」を開く</button></div></>}
+              {galleryDialog.kind === "create" && <><div className="dialog-body"><strong>保存してから作成します</strong><p>「{deckTitle}」には未保存の変更があります。保存後に新しいプロジェクトを作成して開きます。</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>キャンセル</button><button className="primary-button" onClick={async () => { setGalleryDialog(null); if (await saveProject()) void createProject(true); }}>保存して作成</button></div></>}
               {galleryDialog.kind === "turn" && <><div className="dialog-body"><strong>生成を中断して切り替えますか？</strong><p>現在のCodexの生成を中断すると、完了していない変更は保存されません。</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>キャンセル</button><button className="primary-button" onClick={() => { const target = galleryProjects.find((item) => item.slug === galleryDialog.slug); setGalleryDialog(null); if (target) void switchProject(target, true); }}>中断して切り替え</button></div></>}
             </div>
           </>}
