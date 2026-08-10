@@ -8,6 +8,7 @@ import { defaultDeckCss, escapeHtml, slideFragmentFromBlocks } from "../shared/s
 import { formatDeckCss, formatSlideHtml } from "../shared/html-format.mjs";
 import { auditContentPolicy, auditHtmlSafety } from "../shared/content-policy.mjs";
 import { defaultSlideClasses, migrateSlideHtmlToTailwind } from "../shared/tailwind-slide.mjs";
+import { projectSlug } from "../shared/project-slug.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspacesRoot = process.env.WEAVE_WORKSPACES_ROOT ? resolve(process.env.WEAVE_WORKSPACES_ROOT) : join(repoRoot, "workspaces");
@@ -626,7 +627,7 @@ function assertSlug(slug) {
 }
 
 function generatedSlug(title) {
-  return String(title ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "deck";
+  return projectSlug(title);
 }
 
 async function projectExists(slug, root = workspacesRoot) {

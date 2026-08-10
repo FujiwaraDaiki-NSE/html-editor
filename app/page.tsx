@@ -5,6 +5,7 @@
 import { DragEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import { actionFromStreamEvent } from "./codex/actions";
 import { defaultDeckCss, designHeight, designWidth, escapeHtml, renderDeckDocument } from "../shared/slide-design.mjs";
+import { projectSlug } from "../shared/project-slug.mjs";
 import { auditContentPolicy } from "../shared/content-policy.mjs";
 import { applyTemplateToSlideHtml, contentSlotSelector, titleFromSlideHtml, titleSlotSelector } from "../shared/slide-slots.mjs";
 import { advancedControlKeys, allControlKeys, applyBlockPosition, applySize, applyUtilityClass, blockPositionOptions, containerControlKeys, decorationControlKeys, defaultSlideClasses, imageControlKeys, listControlKeys, migrateSlideHtmlToTailwind, ratioOptions, readBlockPosition, readSize, readUtilityClass, sizeIntents, slideControlGroups, textControlKeys } from "../shared/tailwind-slide.mjs";
@@ -28,7 +29,7 @@ type TemplateDoc = { id: string; name: string; html: string };
 
 type SlideNav = "filmstrip" | "rail";
 type ActivityView = "agent" | "history" | "shortcuts" | "settings";
-type OpenPopover = "project" | "delivery" | "threads" | "addBlock" | "layouts" | "newSlide" | "quality" | null;
+type OpenPopover = "delivery" | "threads" | "addBlock" | "layouts" | "newSlide" | "quality" | null;
 
 type ServerState = {
   deck: { title: string; slides: SlideDoc[] };
@@ -36,7 +37,7 @@ type ServerState = {
   templates: TemplateDoc[];
   history: HistoryEntry[];
   variations: Array<{ branch: string; label: string; commit: string; message: string; status: "ready" | "generating" }>;
-  project: { root: string; branch: string; commit: string; revision?: string; clean: boolean };
+  project: { root: string; slug?: string; branch: string; commit: string; revision?: string; clean: boolean };
   codex: {
     ready: boolean;
     connection: string;
@@ -49,6 +50,8 @@ type ServerState = {
 };
 
 type HistoryEntry = { id: string; shortId: string; message: string; date: string };
+type ProjectSummary = { slug: string; title: string; slideCount: number; updatedAt: string | null; current: boolean; blocked: boolean; blockedCount: number; thumbnailHtml: string; css: string };
+type GalleryDialog = { kind: "rename"; slug: string; title: string } | { kind: "archive"; slug: string; title: string } | { kind: "dirty"; slug: string; title: string } | { kind: "turn"; slug: string; title: string };
 
 const apiBase = "http://127.0.0.1:4317/api";
 const defaultCanvasZoom = 1;
@@ -273,6 +276,19 @@ export default function Home() {
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [project, setProject] = useState<ServerState["project"] | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
+  const [galleryOpen, setGalleryOpen] = useState(false);
+  const [galleryView, setGalleryView] = useState<"list" | "new">("list");
+  const [galleryProjects, setGalleryProjects] = useState<ProjectSummary[]>([]);
+  const [galleryLoading, setGalleryLoading] = useState(false);
+  const [galleryNow, setGalleryNow] = useState(0);
+  const [gallerySwitching, setGallerySwitching] = useState<string | null>(null);
+  const [galleryMenu, setGalleryMenu] = useState<string | null>(null);
+  const [galleryTip, setGalleryTip] = useState<string | null>(null);
+  const [galleryDialog, setGalleryDialog] = useState<GalleryDialog | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [newProjectTitle, setNewProjectTitle] = useState("");
+  const [newProjectTemplate, setNewProjectTemplate] = useState("orbit");
+  const [newProjectCreating, setNewProjectCreating] = useState(false);
   const [showPresenter, setShowPresenter] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [objectTreeOpen, setObjectTreeOpen] = useState(true);
@@ -324,6 +340,8 @@ export default function Home() {
   const blockDragRef = useRef<BlockDragSession | null>(null);
   const annotationGestureRef = useRef<AnnotationGesture | null>(null);
   const popoverTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const galleryRef = useRef<HTMLDivElement>(null);
+  const projectSwitcherRef = useRef<HTMLButtonElement>(null);
   // Preview stays outside slide state so save, sync, and undo cannot observe a candidate frame.
   const templatePreviewHtmlRef = useRef<string | null>(null);
   const templatePreviewSourceHtmlRef = useRef<string | null>(null);
@@ -1501,6 +1519,7 @@ export default function Home() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
+      if (galleryOpen) return;
       if (pointerPicking && event.key === "Escape") { event.preventDefault(); setPointerPicking(false); setAnnouncement("Element pointing canceled"); return; }
       if (target.matches("input, textarea, [contenteditable=true]")) return;
       if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "a") { event.preventDefault(); toggleAnnotationMode(); }
@@ -1516,6 +1535,136 @@ export default function Home() {
 
   /* --- Persistence, export, agent ------------------------------------------------------ */
 
+  const resetProjectEditor = () => {
+    activeRef.current = 1;
+    setActiveSlide(1);
+    setSelectedId(null);
+    selectedRef.current = null;
+    setSel(null);
+    setAnnotations([]);
+    setSelectedAnnotationId(null);
+    setAnnotationAttachments([]);
+    setActiveOverlayAttachmentId(null);
+    undoRef.current = [];
+    redoRef.current = [];
+    setHistoryState({ undo: 0, redo: 0 });
+    templatePreviewHtmlRef.current = null;
+    templatePreviewSourceHtmlRef.current = null;
+    setActiveVariation("main");
+    dispatchCodex({ type: "activateThread", threadId: null });
+    reinject();
+  };
+
+  const closeGallery = () => {
+    setGalleryOpen(false);
+    setGalleryView("list");
+    setGalleryMenu(null);
+    setGalleryTip(null);
+    setGalleryDialog(null);
+    requestAnimationFrame(() => projectSwitcherRef.current?.focus());
+  };
+
+  const loadGallery = async () => {
+    setGalleryLoading(true);
+    try {
+      const response = await fetch(`${apiBase}/projects`);
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "プロジェクト一覧を読み込めませんでした。");
+      setGalleryProjects(result.projects ?? []);
+      setApiError(null);
+    } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
+    finally { setGalleryLoading(false); }
+  };
+
+  const openGallery = () => {
+    setGalleryOpen(true);
+    setGalleryNow(Date.now());
+    setGalleryView("list");
+    setGalleryMenu(null);
+    setGalleryTip(null);
+    void loadGallery();
+    requestAnimationFrame(() => galleryRef.current?.focus());
+  };
+
+  useEffect(() => {
+    if (!galleryOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      if (galleryDialog) { setGalleryDialog(null); return; }
+      if (galleryMenu) { setGalleryMenu(null); return; }
+      closeGallery();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [galleryOpen, galleryDialog, galleryMenu]);
+
+  const switchProject = async (target: ProjectSummary, interrupt = false) => {
+    if (target.current) { closeGallery(); return; }
+    if (target.blocked) { setGalleryTip(target.slug); return; }
+    setGalleryTip(null);
+    setGallerySwitching(target.slug);
+    try {
+      const response = await fetch(`${apiBase}/projects/current`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ slug: target.slug, ...(interrupt ? { interrupt: true } : {}) }) });
+      const result = await response.json();
+      if (!response.ok) {
+        if (result.code === "WEAVE_PROJECT_DIRTY") setGalleryDialog({ kind: "dirty", slug: target.slug, title: target.title });
+        else if (result.code === "WEAVE_TURN_RUNNING") setGalleryDialog({ kind: "turn", slug: target.slug, title: target.title });
+        else if (result.code === "WEAVE_PROJECT_BLOCKED") setGalleryTip(target.slug);
+        else throw new Error(result.error ?? "プロジェクトを切り替えられませんでした。");
+        return;
+      }
+      applyServerState(result as ServerState);
+      resetProjectEditor();
+      closeGallery();
+      setApiError(null);
+    } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
+    finally { setGallerySwitching(null); }
+  };
+
+  const galleryMutation = async (slug: string, action: "rename" | "duplicate" | "archive", title = "") => {
+    try {
+      const method = action === "rename" ? "PATCH" : "POST";
+      const response = await fetch(`${apiBase}/projects/${slug}${action === "rename" ? "" : `/${action}`}`, { method, headers: { "content-type": "application/json" }, body: action === "rename" ? JSON.stringify({ title }) : "{}" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "プロジェクトを更新できませんでした。");
+      setGalleryProjects(result.projects ?? []);
+      setGalleryDialog(null);
+      setGalleryMenu(null);
+      setApiError(null);
+    } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
+  };
+
+  const createProject = async () => {
+    const title = newProjectTitle.trim();
+    if (!title) return;
+    setNewProjectCreating(true);
+    try {
+      const response = await fetch(`${apiBase}/projects`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title, template: newProjectTemplate }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "プロジェクトを作成できませんでした。");
+      applyServerState(result as ServerState);
+      resetProjectEditor();
+      closeGallery();
+      setNewProjectTitle("");
+    } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
+    finally { setNewProjectCreating(false); }
+  };
+
+  const relativeProjectTime = (value: string | null) => {
+    if (!value) return "保存日時不明";
+    const days = Math.max(0, Math.floor((galleryNow - new Date(value).getTime()) / 86_400_000));
+    const minutes = Math.max(0, Math.floor((galleryNow - new Date(value).getTime()) / 60_000));
+    if (minutes < 1) return "たった今";
+    if (minutes < 60) return `${minutes}分前`;
+    if (days === 0) return `${Math.floor(minutes / 60)}時間前`;
+    if (days === 1) return "昨日";
+    if (days < 7) return `${days}日前`;
+    return new Date(value).toLocaleDateString("ja-JP", { year: "numeric", month: "numeric", day: "numeric" });
+  };
+
+  const thumbHtml = (html: string, css: string, title: string) => html ? <iframe className="project-live" sandbox="" title={title} loading="lazy" srcDoc={`<!doctype html><html><head><style>${css}</style><style>html,body{margin:0;overflow:hidden;background:#0d1017}</style></head><body>${html}</body></html>`} /> : null;
+
   const saveProject = async () => {
     try {
       const response = await fetch(`${apiBase}/save`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ deck: deckPayload(), message: saveMessage || deckTitle, expectedRevision: serverRevision, idempotencyKey: createMessageId() }) });
@@ -1526,8 +1675,10 @@ export default function Home() {
       setSaveMessage("");
       setAnnouncement("Deck saved to history");
       setApiError(null);
+      return true;
     } catch (error) {
       setApiError(error instanceof Error ? error.message : String(error));
+      return false;
     }
   };
 
@@ -2000,7 +2151,7 @@ export default function Home() {
     <main className={`weave-app ${theme}`} style={{ "--accent": accent } as React.CSSProperties}>
       <header className="topbar">
         <div className="traffic-lights" aria-hidden="true"><span /><span /><span /></div>
-        <button className="project-switcher" aria-label="Open project menu" aria-expanded={openPopover === "project"} aria-haspopup="menu" onClick={(event) => togglePopover("project", event.currentTarget)}>
+        <button ref={projectSwitcherRef} className="project-switcher" aria-label="プロジェクト一覧を開く" aria-expanded={galleryOpen} aria-haspopup="dialog" onClick={openGallery}>
           <span className="project-mark">W</span>
           <span><strong>{deckTitle}</strong><small>{project?.root.split("/").pop() ?? "Local project"}</small></span>
           <span className="chevron">⌄</span>
@@ -2016,15 +2167,6 @@ export default function Home() {
         </div>
       </header>
 
-      {openPopover === "project" && (
-        <>
-          <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
-          <div className="topbar-popover project-menu" role="menu" aria-label="Project actions">
-            <header><strong>{deckTitle}</strong><small>{project?.branch ?? "Local project"} · {project?.commit ?? "unsaved"}</small></header>
-            <button role="menuitem" onClick={() => { dismissPopover(false); importRef.current?.click(); }}><span>Import project</span><small>Open a .weave.json bundle</small></button>
-          </div>
-        </>
-      )}
       {openPopover === "delivery" && (
         <>
           <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
@@ -2449,6 +2591,72 @@ export default function Home() {
           </fieldset>
         </aside> : <button className="open-inspector" onClick={() => setInspectorOpen(true)}>Inspector</button>}
       </div>
+
+      {galleryOpen && (
+        <div ref={galleryRef} className="gallery" role="dialog" aria-modal="true" aria-labelledby="gallery-title" tabIndex={-1} onPointerDown={() => setGalleryMenu(null)}>
+          <header className="gallery-head">
+            {galleryView === "new" ? <button className="back-link" onClick={() => setGalleryView("list")}>← プロジェクト</button> : <h3 id="gallery-title">プロジェクト <span className="count">{galleryLoading ? "読み込み中…" : `${galleryProjects.length}件`}</span></h3>}
+            {galleryView === "new" && <h3 id="gallery-title">新規プロジェクト</h3>}
+            {galleryView === "list" && <button className="ghost-button" onClick={() => importRef.current?.click()}>バンドルを読み込む</button>}
+            {apiError && <span className="gallery-error">{apiError}</span>}
+            <button className="close-x" aria-label="ギャラリーを閉じる" onClick={closeGallery}>×</button>
+          </header>
+          {galleryView === "new" ? (
+            <div className="new-flow">
+              <div className="template-row">
+                {(["orbit", "grid", "plain"] as const).map((id) => {
+                  const template = templates.find((item) => item.id === id) ?? { id, name: id[0].toUpperCase() + id.slice(1), html: blankSlideHtml(id) };
+                  return <div className={`project-card ${newProjectTemplate === id ? "selected" : ""}`} key={id}>
+                    <button className="project-thumb" onClick={() => setNewProjectTemplate(id)} aria-label={`${template.name}テンプレートを選択`}>{thumbHtml(template.html, deckCss, template.name)}</button>
+                    <div className="card-meta"><strong>{template.name}</strong><small>テンプレート</small></div>
+                  </div>;
+                })}
+              </div>
+              <div className="name-row">
+                <label htmlFor="new-project-title">名前</label>
+                <input id="new-project-title" className="name-field" value={newProjectTitle} onChange={(event) => setNewProjectTitle(event.target.value)} autoFocus />
+                <code>workspaces/{projectSlug(newProjectTitle)}</code>
+                <button className="ghost-button" onClick={() => setGalleryView("list")}>キャンセル</button>
+                <button className="primary-button" disabled={!newProjectTitle.trim() || newProjectCreating} onClick={() => void createProject()}>{newProjectCreating ? "作成中…" : "作成して開く"}</button>
+              </div>
+            </div>
+          ) : (
+            <div className="gallery-body" onPointerDown={(event) => { if (event.target === event.currentTarget) setGalleryMenu(null); }}>
+              {galleryLoading ? <p className="gallery-empty">読み込み中…</p> : <>
+                {galleryProjects.length === 0 && <div className="gallery-empty"><strong>プロジェクトがありません</strong><span>新規プロジェクトを作成して始めましょう。</span></div>}
+                <div className="gallery-grid">
+                  <button className="new-project-card" onClick={() => { setGalleryView("new"); setGalleryMenu(null); setGalleryTip(null); }}><b>＋</b><span>新規プロジェクト</span></button>
+                  {galleryProjects.map((item) => <div key={item.slug} className="project-card-wrap">
+                    <button className={`project-card ${item.current ? "current" : ""} ${item.blocked ? "blocked" : ""}`} onClick={() => void switchProject(item)} disabled={!!gallerySwitching} aria-label={`${item.title}を開く`}>
+                      <span className="project-thumb">
+                        {gallerySwitching === item.slug ? <span className="thumb-loading">読み込み中…</span> : thumbHtml(item.thumbnailHtml, item.css, item.title)}
+                        {item.current && <span className="card-pill">開いています</span>}
+                        {item.blocked && <span className="card-pill warn">提案が未決着</span>}
+                      </span>
+                      <span className="card-meta"><strong>{item.title}</strong><small>{item.current && !saved ? "未保存の変更あり" : `${item.slideCount}枚 · ${relativeProjectTime(item.updatedAt)}に保存`}</small></span>
+                    </button>
+                    <button className="kebab" aria-label={`${item.title}のメニュー`} aria-haspopup="menu" aria-expanded={galleryMenu === item.slug} onPointerDown={(event) => event.stopPropagation()} onClick={() => { setGalleryTip(null); setGalleryMenu((current) => current === item.slug ? null : item.slug); }}>⋯</button>
+                    {galleryMenu === item.slug && <div className="card-menu" role="menu" onPointerDown={(event) => event.stopPropagation()}>
+                      <button role="menuitem" onClick={() => { setRenameDraft(item.title); setGalleryDialog({ kind: "rename", slug: item.slug, title: item.title }); setGalleryMenu(null); }}><span>名前を変更</span><small>表示名だけを変更します</small></button>
+                      <button role="menuitem" onClick={() => void galleryMutation(item.slug, "duplicate")}><span>複製</span><small>新しいプロジェクトとして保存</small></button>
+                      {!item.current && <button className="danger" role="menuitem" onClick={() => { setGalleryDialog({ kind: "archive", slug: item.slug, title: item.title }); setGalleryMenu(null); }}><span>アーカイブ</span><small>一覧から移動します</small></button>}
+                    </div>}
+                    {galleryTip === item.slug && <div className="card-tip"><strong>いまは開けません</strong><p>生成した提案が{item.blockedCount}件残っています。採用・history送り・破棄のいずれかで閉じてから切り替えてください。</p></div>}
+                  </div>)}
+                </div>
+              </>}
+            </div>
+          )}
+          {galleryDialog && <><div className="scrim" onClick={() => setGalleryDialog(null)} />
+            <div className="dialog" role="alertdialog" aria-modal="true">
+              {galleryDialog.kind === "rename" && <><div className="dialog-body"><strong>名前を変更</strong><input className="name-field" autoFocus value={renameDraft} onChange={(event) => setRenameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void galleryMutation(galleryDialog.slug, "rename", renameDraft); }} /></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>キャンセル</button><button className="primary-button" onClick={() => void galleryMutation(galleryDialog.slug, "rename", renameDraft)}>保存</button></div></>}
+              {galleryDialog.kind === "archive" && <><div className="dialog-body"><strong>「{galleryDialog.title}」をアーカイブしますか？</strong><p>プロジェクトは削除せず、一覧から移動します。</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>キャンセル</button><button className="primary-button" onClick={() => void galleryMutation(galleryDialog.slug, "archive")}>アーカイブ</button></div></>}
+              {galleryDialog.kind === "dirty" && <><div className="dialog-body"><strong>保存してから切り替えます</strong><p>「{deckTitle}」には未保存の変更があります。進行中の編集とUndo履歴はプロジェクトをまたいで引き継がれません。</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>キャンセル</button><button className="primary-button" onClick={async () => { const target = galleryProjects.find((item) => item.slug === galleryDialog.slug); setGalleryDialog(null); if (await saveProject() && target) void switchProject(target); }}>保存して「{galleryDialog.title}」を開く</button></div></>}
+              {galleryDialog.kind === "turn" && <><div className="dialog-body"><strong>生成を中断して切り替えますか？</strong><p>現在のCodexの生成を中断すると、完了していない変更は保存されません。</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>キャンセル</button><button className="primary-button" onClick={() => { const target = galleryProjects.find((item) => item.slug === galleryDialog.slug); setGalleryDialog(null); if (target) void switchProject(target, true); }}>中断して切り替え</button></div></>}
+            </div>
+          </>}
+        </div>
+      )}
 
       <footer className="statusbar">
         <div>
