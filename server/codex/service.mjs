@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CodexAppServerClient } from "./client.mjs";
@@ -27,13 +28,14 @@ export function validateOAuthUrl(value) {
   return url.toString();
 }
 
-export class CodexService {
+export class CodexService extends EventEmitter {
   constructor({ projectRoot, instructions, client, eventStream } = {}) {
+    super();
     this.projectRoot = projectRoot;
     this.instructions = instructions;
     this.client = client ?? new CodexAppServerClient({ cwd: projectRoot });
     this.events = eventStream ?? new CodexEventStream();
-    this.router = new ServerRequestRouter(this.client);
+    this.router = null;
     this.ready = false;
     this.initializing = null;
     this.version = null;
@@ -50,6 +52,12 @@ export class CodexService {
     this.sentMessages = new Map();
     this.weaveThreadIds = new Set();
 
+    this.attachClient(this.client);
+  }
+
+  attachClient(client) {
+    this.client = client;
+    this.router = new ServerRequestRouter(this.client);
     this.client.on("notification", (message) => this.handleNotification(message));
     this.client.on("connection", (connection) => {
       this.ready = false;
@@ -167,6 +175,7 @@ export class CodexService {
     if (method === "mcpServer/oauthLogin/completed") void this.refreshCatalog();
     if (method === "mcpServer/startupStatus/updated") void this.refreshCatalog();
     this.events.publish("codex/notification", message);
+    this.emit("notification", message);
   }
 
   assertReady() {
@@ -402,5 +411,22 @@ export class CodexService {
   async stop() {
     this.router.dispose();
     await this.client.stop();
+  }
+
+  async setProjectRoot(root) {
+    if (root === this.projectRoot) return;
+    await Promise.all([...this.activeTurns.keys()].map((threadId) => this.interruptTurn(threadId).catch(() => {})));
+    this.activeTurns.clear();
+    this.interruptingThreads.clear();
+    this.sentMessages.clear();
+    await this.stop();
+    this.projectRoot = root;
+    this.ready = false;
+    this.weaveThreadIds.clear();
+    this.catalog = { models: [], skills: [], hooks: [], mcpServers: [], account: null, modelProvider: null };
+    this.client = new CodexAppServerClient({ cwd: root });
+    this.attachClient(this.client);
+    this.events.publish("codex/connection", { status: "connecting", error: null });
+    await this.start();
   }
 }

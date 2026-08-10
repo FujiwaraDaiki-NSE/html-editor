@@ -1,24 +1,27 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { access, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { defaultDeckCss, slideFragmentFromBlocks } from "../shared/slide-design.mjs";
+import { defaultDeckCss, escapeHtml, slideFragmentFromBlocks } from "../shared/slide-design.mjs";
 import { formatDeckCss, formatSlideHtml } from "../shared/html-format.mjs";
 import { auditContentPolicy, auditHtmlSafety } from "../shared/content-policy.mjs";
 import { defaultSlideClasses, migrateSlideHtmlToTailwind } from "../shared/tailwind-slide.mjs";
+import { projectSlug } from "../shared/project-slug.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-export const projectRoot = process.env.WEAVE_PROJECT_ROOT
-  ? resolve(process.env.WEAVE_PROJECT_ROOT)
-  : join(repoRoot, "workspaces", "northstar");
-const manifestPath = join(projectRoot, ".weave", "deck.json");
-const slidesRoot = join(projectRoot, "slides");
-const stylesRoot = join(projectRoot, "styles");
-const assetsRoot = join(projectRoot, "assets");
-export const templatesRoot = join(projectRoot, "templates");
-const deckCssPath = join(stylesRoot, "deck.css");
+const workspacesRoot = process.env.WEAVE_WORKSPACES_ROOT ? resolve(process.env.WEAVE_WORKSPACES_ROOT) : join(repoRoot, "workspaces");
+const archiveRoot = join(workspacesRoot, ".archive");
+const currentPath = process.env.WEAVE_WORKSPACES_ROOT ? join(dirname(workspacesRoot), ".weave", "current.json") : join(repoRoot, ".weave", "current.json");
+let currentProjectRoot = process.env.WEAVE_PROJECT_ROOT ? resolve(process.env.WEAVE_PROJECT_ROOT) : join(workspacesRoot, "northstar");
+export const projectRoot = () => currentProjectRoot;
+const manifestPath = () => join(currentProjectRoot, ".weave", "deck.json");
+const slidesRoot = () => join(currentProjectRoot, "slides");
+const stylesRoot = () => join(currentProjectRoot, "styles");
+const assetsRoot = () => join(currentProjectRoot, "assets");
+export const templatesRoot = () => join(currentProjectRoot, "templates");
+const deckCssPath = () => join(stylesRoot(), "deck.css");
 
 const templateThemes = [
   { id: "orbit", name: "Orbit / Dark", background: "bg-slate-950", text: "text-slate-50" },
@@ -93,8 +96,8 @@ export async function importImageAsset({ data, mimeType }) {
   }
   const hash = createHash("sha256").update(bytes).digest("hex");
   const filename = `${hash}.${extension}`;
-  await mkdir(assetsRoot, { recursive: true });
-  await writeFile(join(assetsRoot, filename), bytes);
+  await mkdir(assetsRoot(), { recursive: true });
+  await writeFile(join(assetsRoot(), filename), bytes);
   return { path: `assets/${filename}`, mimeType, size: bytes.length };
 }
 
@@ -169,7 +172,7 @@ const seedProject = () => projectFromBlockSlides(seedTitle, "#f6b84b", seedSlide
 
 function runGit(args, options = {}) {
   return execFileSync("git", args, {
-    cwd: projectRoot,
+    cwd: currentProjectRoot,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     ...options,
@@ -200,7 +203,7 @@ export function assertRevision(expectedRevision) {
    regenerated — read it as-is, falling back to the shipped default only when absent. */
 export async function readDeckCss() {
   try {
-    return await readFile(deckCssPath, "utf8");
+    return await readFile(deckCssPath(), "utf8");
   } catch {
     return defaultDeckCss;
   }
@@ -209,11 +212,11 @@ export async function readDeckCss() {
 const templateAttribute = (opening, name) => opening.match(new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>]+))`, "i"))?.slice(1).find((value) => value !== undefined)?.trim() ?? "";
 
 export async function readTemplates() {
-  const entries = await readdir(templatesRoot, { withFileTypes: true }).catch(() => []);
+  const entries = await readdir(templatesRoot(), { withFileTypes: true }).catch(() => []);
   const templates = [];
   for (const entry of entries.filter((item) => item.isFile() && item.name.endsWith(".html")).sort((a, b) => a.name.localeCompare(b.name))) {
     try {
-      const html = await readFile(join(templatesRoot, entry.name), "utf8");
+      const html = await readFile(join(templatesRoot(), entry.name), "utf8");
       const policy = auditContentPolicy({ html });
       if (!policy.ok) continue;
       const opening = html.match(/<main\b[^>]*>/i)?.[0] ?? "";
@@ -229,14 +232,14 @@ export async function readTemplates() {
 }
 
 export async function ensureTemplates() {
-  await mkdir(templatesRoot, { recursive: true });
+  await mkdir(templatesRoot(), { recursive: true });
   const canonical = await Promise.all(builtInTemplates.map(async (template) => ({
     ...template,
     html: await formatSlideHtml(template.html),
   })));
   const touched = [];
   for (const template of canonical) {
-    const path = join(templatesRoot, template.filename);
+    const path = join(templatesRoot(), template.filename);
     if (await readFile(path, "utf8").catch(() => "") === template.html) continue;
     await writeFile(path, template.html);
     touched.push(`templates/${template.filename}`);
@@ -272,7 +275,7 @@ export function validateProject(input) {
 
 async function readSlideHtml(id) {
   try {
-    return await readFile(join(slidesRoot, `${id}.html`), "utf8");
+    return await readFile(join(slidesRoot(), `${id}.html`), "utf8");
   } catch {
     return "";
   }
@@ -280,7 +283,7 @@ async function readSlideHtml(id) {
 
 async function readManifest() {
   try {
-    return JSON.parse(await readFile(manifestPath, "utf8"));
+    return JSON.parse(await readFile(manifestPath(), "utf8"));
   } catch {
     return null;
   }
@@ -309,14 +312,14 @@ export async function writeProject(input, expectedRevision = null) {
   const manifest = { title: project.title, slides: slides.map(({ id, title, notes }) => ({ id, title, notes })) };
   const manifestJson = `${JSON.stringify(manifest, null, 2)}\n`;
 
-  await mkdir(join(projectRoot, ".weave"), { recursive: true });
+  await mkdir(join(currentProjectRoot, ".weave"), { recursive: true });
   assertRevision(expectedRevision);
 
   const transactionId = randomUUID();
-  const stagedSlidesRoot = join(projectRoot, `.slides-${transactionId}.staged`);
-  const previousSlidesRoot = join(projectRoot, `.slides-${transactionId}.previous`);
-  const stagedManifestPath = join(projectRoot, ".weave", `.deck-${transactionId}.staged`);
-  const previousManifestPath = join(projectRoot, ".weave", `.deck-${transactionId}.previous`);
+  const stagedSlidesRoot = join(currentProjectRoot, `.slides-${transactionId}.staged`);
+  const previousSlidesRoot = join(currentProjectRoot, `.slides-${transactionId}.previous`);
+  const stagedManifestPath = join(currentProjectRoot, ".weave", `.deck-${transactionId}.staged`);
+  const previousManifestPath = join(currentProjectRoot, ".weave", `.deck-${transactionId}.previous`);
   let movedPreviousSlides = false;
   let installedSlides = false;
   let movedPreviousManifest = false;
@@ -331,30 +334,30 @@ export async function writeProject(input, expectedRevision = null) {
     // Re-check just before publishing so a concurrent commit is not silently overwritten.
     assertRevision(expectedRevision);
     try {
-      await rename(slidesRoot, previousSlidesRoot);
+      await rename(slidesRoot(), previousSlidesRoot);
       movedPreviousSlides = true;
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
     }
-    await rename(stagedSlidesRoot, slidesRoot);
+    await rename(stagedSlidesRoot, slidesRoot());
     installedSlides = true;
     try {
-      await rename(manifestPath, previousManifestPath);
+      await rename(manifestPath(), previousManifestPath);
       movedPreviousManifest = true;
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
     }
-    await rename(stagedManifestPath, manifestPath);
+    await rename(stagedManifestPath, manifestPath());
     installedManifest = true;
     await Promise.all([
       rm(previousSlidesRoot, { recursive: true, force: true }),
       rm(previousManifestPath, { force: true }),
     ]);
   } catch (error) {
-    if (installedManifest) await rm(manifestPath, { force: true });
-    if (movedPreviousManifest) await rename(previousManifestPath, manifestPath).catch(() => {});
-    if (installedSlides) await rm(slidesRoot, { recursive: true, force: true });
-    if (movedPreviousSlides) await rename(previousSlidesRoot, slidesRoot).catch(() => {});
+    if (installedManifest) await rm(manifestPath(), { force: true });
+    if (movedPreviousManifest) await rename(previousManifestPath, manifestPath()).catch(() => {});
+    if (installedSlides) await rm(slidesRoot(), { recursive: true, force: true });
+    if (movedPreviousSlides) await rename(previousSlidesRoot, slidesRoot()).catch(() => {});
     throw error;
   } finally {
     await Promise.all([
@@ -387,7 +390,7 @@ export async function assertCommittable() {
 }
 
 export function commitIfChanged(message) {
-  runGit(["add", ".weave/deck.json", "slides", "styles", "AGENTS.md", ...(existsSync(assetsRoot) ? ["assets"] : []), ...(existsSync(templatesRoot) ? ["templates"] : [])]);
+  runGit(["add", ".weave/deck.json", "slides", "styles", "AGENTS.md", ...(existsSync(assetsRoot()) ? ["assets"] : []), ...(existsSync(templatesRoot()) ? ["templates"] : [])]);
   if (!runGit(["diff", "--cached", "--name-only"])) return null;
   runGit(["-c", "user.name=Weave", "-c", "user.email=weave@localhost", "commit", "-m", message.slice(0, 180)]);
   return runGit(["rev-parse", "HEAD"]);
@@ -423,7 +426,8 @@ export function projectState() {
     history: getHistory(),
     variations: getVariations(),
     project: {
-      root: projectRoot,
+      root: currentProjectRoot,
+      slug: currentProjectRoot.startsWith(`${workspacesRoot}/`) ? currentProjectRoot.slice(workspacesRoot.length + 1) : null,
       branch: runGit(["branch", "--show-current"]) || "detached",
       commit: runGit(["rev-parse", "--short", "HEAD"]),
       revision: getRevision(),
@@ -502,8 +506,8 @@ export function discardVariation(branch) {
 }
 
 async function removeLegacyChatData() {
-  await rm(join(projectRoot, ".weave", "chat.json"), { force: true });
-  const excludePath = join(projectRoot, ".git", "info", "exclude");
+  await rm(join(currentProjectRoot, ".weave", "chat.json"), { force: true });
+  const excludePath = join(currentProjectRoot, ".git", "info", "exclude");
   try {
     const current = await readFile(excludePath, "utf8");
     const next = current.split("\n").filter((line) => line.trim() !== ".weave/chat.json").join("\n");
@@ -514,20 +518,20 @@ async function removeLegacyChatData() {
 }
 
 async function recoverInterruptedTransactions() {
-  const rootEntries = await readdir(projectRoot).catch(() => []);
+  const rootEntries = await readdir(currentProjectRoot).catch(() => []);
   const previousSlides = rootEntries.filter((name) => /^\.slides-[\w-]+\.previous$/.test(name));
   const stagedSlides = rootEntries.filter((name) => /^\.slides-[\w-]+\.staged$/.test(name));
-  const slidesExist = await access(slidesRoot).then(() => true).catch(() => false);
-  if (!slidesExist && previousSlides[0]) await rename(join(projectRoot, previousSlides[0]), slidesRoot);
+  const slidesExist = await access(slidesRoot()).then(() => true).catch(() => false);
+  if (!slidesExist && previousSlides[0]) await rename(join(currentProjectRoot, previousSlides[0]), slidesRoot());
   await Promise.all([...previousSlides.slice(slidesExist ? 0 : 1), ...stagedSlides].map((name) =>
-    rm(join(projectRoot, name), { recursive: true, force: true })));
+    rm(join(currentProjectRoot, name), { recursive: true, force: true })));
 
-  const weaveRoot = join(projectRoot, ".weave");
+  const weaveRoot = join(currentProjectRoot, ".weave");
   const weaveEntries = await readdir(weaveRoot).catch(() => []);
   const previousDecks = weaveEntries.filter((name) => /^\.deck-[\w-]+\.previous$/.test(name));
   const stagedDecks = weaveEntries.filter((name) => /^\.deck-[\w-]+\.staged$/.test(name));
-  const manifestExists = await access(manifestPath).then(() => true).catch(() => false);
-  if (!manifestExists && previousDecks[0]) await rename(join(weaveRoot, previousDecks[0]), manifestPath);
+  const manifestExists = await access(manifestPath()).then(() => true).catch(() => false);
+  if (!manifestExists && previousDecks[0]) await rename(join(weaveRoot, previousDecks[0]), manifestPath());
   await Promise.all([...previousDecks.slice(manifestExists ? 0 : 1), ...stagedDecks].map((name) =>
     rm(join(weaveRoot, name), { force: true })));
 }
@@ -551,31 +555,45 @@ async function migrateLegacyDeck() {
   return true;
 }
 
+async function ensureProjectScaffolding() {
+  const migrationPaths = [];
+  await mkdir(stylesRoot(), { recursive: true });
+  const canonicalCss = await formatDeckCss(defaultDeckCss);
+  const existingCss = await readFile(deckCssPath(), "utf8").catch(() => "");
+  if (existingCss !== canonicalCss) {
+    await writeFile(deckCssPath(), canonicalCss);
+    migrationPaths.push("styles/deck.css");
+  }
+  migrationPaths.push(...await ensureTemplates());
+  const instructions = `${agentInstructions}\n`;
+  if (await readFile(join(currentProjectRoot, "AGENTS.md"), "utf8").catch(() => null) !== instructions) {
+    await writeFile(join(currentProjectRoot, "AGENTS.md"), instructions);
+    migrationPaths.push("AGENTS.md");
+  }
+  return migrationPaths;
+}
+
+async function withProjectRoot(root, fn) {
+  const previous = currentProjectRoot;
+  currentProjectRoot = root;
+  try { return await fn(); } finally { currentProjectRoot = previous; }
+}
+
 export async function ensureProject() {
-  await mkdir(projectRoot, { recursive: true });
+  await mkdir(currentProjectRoot, { recursive: true });
   let createdRepository = false;
   try {
-    await access(join(projectRoot, ".git"));
+    await access(join(currentProjectRoot, ".git"));
   } catch {
     runGit(["init", "-b", "main"]);
     createdRepository = true;
   }
   await recoverInterruptedTransactions();
   await removeLegacyChatData();
-  const migrationPaths = [];
-
-  await mkdir(stylesRoot, { recursive: true });
-  const canonicalCss = await formatDeckCss(defaultDeckCss);
-  const existingCss = await readFile(deckCssPath, "utf8").catch(() => "");
-  if (existingCss !== canonicalCss) {
-    await writeFile(deckCssPath, canonicalCss);
-    migrationPaths.push("styles/deck.css");
-  }
-  migrationPaths.push(...await ensureTemplates());
-
+  const migrationPaths = await ensureProjectScaffolding();
   let seededOrMigrated = false;
   try {
-    await access(manifestPath);
+    await access(manifestPath());
     if (await migrateLegacyDeck()) {
       seededOrMigrated = true;
       migrationPaths.push(".weave/deck.json", "slides");
@@ -597,12 +615,164 @@ export async function ensureProject() {
     migrationPaths.push("slides");
   }
 
-  const instructions = `${agentInstructions}\n`;
-  if (await readFile(join(projectRoot, "AGENTS.md"), "utf8").catch(() => null) !== instructions) {
-    await writeFile(join(projectRoot, "AGENTS.md"), instructions);
-    migrationPaths.push("AGENTS.md");
-  }
   if (createdRepository) commitIfChanged("Create Northstar deck");
   else if (seededOrMigrated) commitIfChanged("Migrate Weave project to HTML source of truth");
   else commitPathsIfChanged("Migrate Weave project metadata", migrationPaths);
+}
+
+const slugPattern = /^[a-z0-9-]+$/;
+function assertSlug(slug) {
+  if (!slugPattern.test(String(slug ?? ""))) throw new Error("Invalid project id.");
+  return slug;
+}
+
+function generatedSlug(title) {
+  return projectSlug(title);
+}
+
+async function projectExists(slug, root = workspacesRoot) {
+  return await access(join(root, slug, ".weave", "deck.json")).then(() => true).catch(() => false);
+}
+
+async function uniqueSlug(title) {
+  const base = generatedSlug(title);
+  let slug = base;
+  let index = 2;
+  while (await access(join(workspacesRoot, slug)).then(() => true).catch(() => false) || await access(join(archiveRoot, slug)).then(() => true).catch(() => false)) slug = `${base}-${index++}`;
+  return slug;
+}
+
+function gitAt(root, args) {
+  return runGit(args, { cwd: root });
+}
+
+function slugOf(root) {
+  return root.startsWith(`${workspacesRoot}/`) ? root.slice(workspacesRoot.length + 1) : null;
+}
+
+async function persistCurrentProject() {
+  if (process.env.WEAVE_PROJECT_ROOT) return;
+  await mkdir(dirname(currentPath), { recursive: true });
+  await writeFile(currentPath, `${JSON.stringify({ slug: slugOf(currentProjectRoot) }, null, 2)}\n`);
+}
+
+export async function assertSwitchable(targetSlug = null) {
+  if (runGit(["status", "--porcelain"])) throw Object.assign(new Error("The current project has uncommitted changes."), { code: "WEAVE_PROJECT_DIRTY" });
+  if (getVariations().length) throw Object.assign(new Error("Current project has open proposal branches."), { code: "WEAVE_PROJECT_BLOCKED" });
+  if (targetSlug) {
+    const target = join(workspacesRoot, assertSlug(targetSlug));
+    if (await projectExists(targetSlug)) {
+      let targetVariations = [];
+      try { targetVariations = gitAt(target, ["for-each-ref", "--format=%(refname:short)", "refs/heads/weave/variation"]).split("\n").filter(Boolean); } catch {}
+      if (targetVariations.length) throw Object.assign(new Error(`Target project has ${targetVariations.length} open proposal branches.`), { code: "WEAVE_PROJECT_BLOCKED" });
+    }
+  }
+  if (runGit(["branch", "--show-current"]) === "") checkoutMain();
+}
+
+export async function createProject({ title, template = "orbit" }) {
+  const name = String(title ?? "").trim();
+  if (!name) throw new Error("Title is required.");
+  const slug = await uniqueSlug(name);
+  const root = join(workspacesRoot, slug);
+  const selected = builtInTemplates.find((item) => item.id === template) ?? builtInTemplates[0];
+  const cover = {
+    id: "cover",
+    title: name,
+    notes: "",
+    html: selected.html.replace(/(<h1\b[^>]*>)[\s\S]*?(<\/h1>)/i, `$1${escapeHtml(name)}$2`),
+  };
+  await mkdir(root, { recursive: true });
+  gitAt(root, ["init", "-b", "main"]);
+  await withProjectRoot(root, async () => {
+    await writeProject({ title: name, slides: [cover] });
+    await ensureProjectScaffolding();
+    commitIfChanged("Create project");
+  });
+  return slug;
+}
+
+export async function initializeCurrentProject() {
+  if (process.env.WEAVE_PROJECT_ROOT) return;
+  let recorded = null;
+  try { recorded = JSON.parse(await readFile(currentPath, "utf8")).slug; } catch {}
+  if (recorded && slugPattern.test(recorded) && await projectExists(recorded)) currentProjectRoot = join(workspacesRoot, recorded);
+  else {
+    const projects = await listProjects();
+    if (projects[0]) currentProjectRoot = join(workspacesRoot, projects[0].slug);
+  }
+}
+
+export async function listProjects() {
+  const entries = await readdir(workspacesRoot, { withFileTypes: true }).catch(() => []);
+  const projects = await Promise.all(entries.filter((entry) => entry.isDirectory() && !entry.name.startsWith(".")).map(async (entry) => {
+    const root = join(workspacesRoot, entry.name);
+    try {
+      const manifest = JSON.parse(await readFile(join(root, ".weave", "deck.json"), "utf8"));
+      const slides = Array.isArray(manifest.slides) ? manifest.slides : [];
+      const first = slides[0]?.id;
+      let variations = [];
+      let updatedAt = null;
+      try {
+        variations = gitAt(root, ["for-each-ref", "--format=%(refname:short)", "refs/heads/weave/variation"]).split("\n").filter(Boolean);
+        updatedAt = gitAt(root, ["log", "-1", "--pretty=%cI"]) || null;
+      } catch {}
+      return { slug: entry.name, title: String(manifest.title ?? ""), slideCount: slides.length, updatedAt, current: root === currentProjectRoot, blocked: variations.length > 0, blockedCount: variations.length, thumbnailHtml: first ? await readFile(join(root, "slides", `${first}.html`), "utf8").catch(() => "") : "", css: await readFile(join(root, "styles", "deck.css"), "utf8").catch(() => defaultDeckCss) };
+    } catch { return null; }
+  }));
+  return projects.filter(Boolean).sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? ""));
+}
+
+export async function renameProject(slug, title) {
+  assertSlug(slug);
+  const root = join(workspacesRoot, slug);
+  if (!await projectExists(slug)) throw new Error("Project not found.");
+  const path = join(root, ".weave", "deck.json");
+  const manifest = JSON.parse(await readFile(path, "utf8"));
+  manifest.title = String(title ?? "").trim();
+  if (!manifest.title) throw new Error("Title is required.");
+  await writeFile(path, `${JSON.stringify(manifest, null, 2)}\n`);
+  gitAt(root, ["add", "--", ".weave/deck.json"]);
+  if (!gitAt(root, ["diff", "--cached", "--name-only", "--", ".weave/deck.json"])) return null;
+  gitAt(root, ["-c", "user.name=Weave", "-c", "user.email=weave@localhost", "commit", "--only", "-m", "Rename project", "--", ".weave/deck.json"]);
+  return gitAt(root, ["rev-parse", "HEAD"]);
+}
+
+export async function duplicateProject(slug) {
+  assertSlug(slug);
+  const source = join(workspacesRoot, slug);
+  if (!await projectExists(slug)) throw new Error("Project not found.");
+  const sourceManifest = JSON.parse(await readFile(join(source, ".weave", "deck.json"), "utf8"));
+  const next = await uniqueSlug(`${sourceManifest.title} のコピー`);
+  const target = join(workspacesRoot, next);
+  await cp(source, target, { recursive: true, filter: (path) => !path.split("/").includes(".git") && !/\.slides-[^/]+\.(staged|previous)$/.test(path) });
+  const manifestPathCopy = join(target, ".weave", "deck.json");
+  sourceManifest.title = `${sourceManifest.title} のコピー`;
+  await writeFile(manifestPathCopy, `${JSON.stringify(sourceManifest, null, 2)}\n`);
+  gitAt(target, ["init", "-b", "main"]);
+  gitAt(target, ["add", "."]);
+  gitAt(target, ["-c", "user.name=Weave", "-c", "user.email=weave@localhost", "commit", "-m", "Create project"]);
+  return next;
+}
+
+export async function archiveProject(slug) {
+  assertSlug(slug);
+  if (join(workspacesRoot, slug) === currentProjectRoot) throw new Error("The current project cannot be archived.");
+  const source = join(workspacesRoot, slug);
+  if (!await projectExists(slug)) throw new Error("Project not found.");
+  await mkdir(archiveRoot, { recursive: true });
+  let target = join(archiveRoot, slug);
+  let index = 2;
+  while (await access(target).then(() => true).catch(() => false)) target = join(archiveRoot, `${slug}-${index++}`);
+  await rename(source, target);
+}
+
+export async function switchProject(slug) {
+  assertSlug(slug);
+  const target = join(workspacesRoot, slug);
+  if (!await projectExists(slug)) throw new Error("Project not found.");
+  await assertSwitchable(slug);
+  currentProjectRoot = target;
+  await persistCurrentProject();
+  return target;
 }

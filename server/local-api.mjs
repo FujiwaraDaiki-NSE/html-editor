@@ -13,8 +13,16 @@ import {
   createVariationBranch,
   discardVariation,
   ensureProject,
+  initializeCurrentProject,
   importImageAsset,
   projectRoot,
+  listProjects,
+  createProject,
+  renameProject,
+  duplicateProject,
+  archiveProject,
+  assertSwitchable,
+  switchProject,
   projectState,
   readProject,
   readDeckCss,
@@ -26,7 +34,8 @@ import { annotationPromptRules, canSendTurn } from "../shared/annotation.mjs";
 import { contextPromptRules, editorEnvelope } from "../shared/context.mjs";
 
 const apiPort = Number(process.env.WEAVE_API_PORT ?? 4317);
-const codex = new CodexService({ projectRoot, instructions: agentInstructions });
+await initializeCurrentProject();
+const codex = new CodexService({ projectRoot: projectRoot(), instructions: agentInstructions });
 const pendingTurns = new Map();
 const completedSaves = new Map();
 const migrationNotice = "Legacy .weave/chat.json history was removed. Conversations now use Codex app-server Threads only.";
@@ -39,7 +48,7 @@ function hasAllowedOrigin(request) {
 function corsHeaders(request) {
   const origin = request.headers.origin;
   const headers = {
-    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-methods": "GET, POST, PATCH, OPTIONS",
     "access-control-allow-headers": "content-type",
     vary: "Origin",
   };
@@ -85,6 +94,14 @@ async function statePayload() {
     },
     migrationNotice,
   };
+}
+
+async function retargetCodex() {
+  try {
+    await codex.setProjectRoot(projectRoot());
+  } catch (error) {
+    codex.events.publish("codex/connection", { status: "error", error: error.message });
+  }
 }
 
 function requireText(value, name, limit = 20_000) {
@@ -141,7 +158,7 @@ Do not commit; Weave will commit after this turn.${serializeEditorContext(payloa
   return { thread, turn: result.turn, branch };
 }
 
-codex.client.on("notification", (message) => {
+codex.on("notification", (message) => {
   if (message.method !== "turn/completed") return;
   const threadId = message.params?.threadId;
   const pending = pendingTurns.get(threadId);
@@ -195,12 +212,15 @@ const server = createServer(async (request, response) => {
     if (request.method === "GET" && url.pathname === "/api/state") {
       return sendJson(request, response, 200, await statePayload());
     }
+    if (request.method === "GET" && url.pathname === "/api/projects") {
+      return sendJson(request, response, 200, { projects: await listProjects() });
+    }
     if (request.method === "GET" && url.pathname.startsWith("/api/assets/")) {
       const filename = url.pathname.slice("/api/assets/".length);
       if (!/^[0-9a-f]{64}\.(?:png|jpg|webp|svg|gif)$/.test(filename)) return sendJson(request, response, 404, { error: "Asset not found." });
       const extension = filename.split(".").pop();
       const types = { png: "image/png", jpg: "image/jpeg", webp: "image/webp", svg: "image/svg+xml", gif: "image/gif" };
-      const bytes = await readFile(join(projectRoot, "assets", filename));
+      const bytes = await readFile(join(projectRoot(), "assets", filename));
       response.writeHead(200, { ...corsHeaders(request), "content-type": types[extension], "cache-control": "public, max-age=31536000, immutable" });
       return response.end(bytes);
     }
@@ -223,8 +243,40 @@ const server = createServer(async (request, response) => {
       }));
     }
 
-    if (request.method !== "POST") return sendJson(request, response, 404, { error: "Not found." });
+    if (request.method !== "GET" && request.method !== "POST" && request.method !== "PATCH") return sendJson(request, response, 404, { error: "Not found." });
     const payload = await readJson(request, url.pathname === "/api/assets" ? 14_000_000 : 1_500_000);
+
+    if (request.method === "POST" && url.pathname === "/api/projects") {
+      await assertSwitchable();
+      const slug = await createProject({ title: requireText(payload.title, "Title"), template: payload.template });
+      await switchProject(slug);
+      await ensureProject();
+      await retargetCodex();
+      codex.events.publish("weave/project", { status: "switched", ...projectState() });
+      return sendJson(request, response, 201, { ...(await statePayload()), slug });
+    }
+    if (request.method === "POST" && url.pathname === "/api/projects/current") {
+      if (activeProjectTurn() && payload.interrupt !== true) throw Object.assign(new Error("An Agent turn is running."), { code: "WEAVE_TURN_RUNNING" });
+      if (payload.interrupt === true) await Promise.all([...codex.activeTurns.keys()].map((threadId) => codex.interruptTurn(threadId)));
+      await switchProject(requireText(payload.slug, "Project id"));
+      await ensureProject();
+      await retargetCodex();
+      codex.events.publish("weave/project", { status: "switched", ...projectState() });
+      return sendJson(request, response, 200, await statePayload());
+    }
+    const projectMatch = url.pathname.match(/^\/api\/projects\/([^/]+)(?:\/(duplicate|archive))?$/);
+    if (projectMatch && request.method === "PATCH") {
+      await renameProject(projectMatch[1], requireText(payload.title, "Title"));
+      return sendJson(request, response, 200, { projects: await listProjects() });
+    }
+    if (projectMatch && request.method === "POST" && projectMatch[2] === "duplicate") {
+      const slug = await duplicateProject(projectMatch[1]);
+      return sendJson(request, response, 201, { slug, projects: await listProjects() });
+    }
+    if (projectMatch && request.method === "POST" && projectMatch[2] === "archive") {
+      await archiveProject(projectMatch[1]);
+      return sendJson(request, response, 200, { projects: await listProjects() });
+    }
 
     if (url.pathname === "/api/assets") {
       return sendJson(request, response, 201, await importImageAsset(payload));
@@ -351,8 +403,9 @@ const server = createServer(async (request, response) => {
     const message = error instanceof Error ? error.message : String(error);
     const status = error?.code === "WEAVE_REVISION_CONFLICT" ? 409
       : ["WEAVE_QUALITY_FAILED", "WEAVE_CONTENT_POLICY"].includes(error?.code) ? 422
+      : ["WEAVE_PROJECT_DIRTY", "WEAVE_PROJECT_BLOCKED", "WEAVE_TURN_RUNNING"].includes(error?.code) ? 409
       : /required|invalid|unknown|not offered/i.test(message) ? 400
-      : /owned|running|save/i.test(message) ? 409 : 500;
+      : /owned|running|save|proposal branch|cannot be archived/i.test(message) ? 409 : 500;
     return sendJson(request, response, status, { error: message, code: error?.code, diagnostics: error?.diagnostics });
   }
 });
