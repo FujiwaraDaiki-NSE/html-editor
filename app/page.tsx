@@ -823,16 +823,26 @@ export default function Home() {
     });
   };
 
-  const pickPointerElement = (elementId: string) => {
+  const referenceElement = (elementId: string, caret: number, afterAtSign: boolean) => {
     const slideId = slidesRef.current[activeRef.current - 1]?.id;
-    if (!pointerPicking || !slideId) return;
+    if (!slideId) return;
     const pointed = pointElement(slideId, elementId);
     if (!pointed) return;
-    insertPromptReference(pointed.annotation, pointerCaretRef.current, true);
-    setPointerPicking(false);
+    insertPromptReference(pointed.annotation, caret, afterAtSign);
     setAnnouncement(pointed.created
       ? `Element annotation ${pointed.annotation.order} created and referenced`
       : `Element annotation ${pointed.annotation.order} reused`);
+  };
+
+  const pickPointerElement = (elementId: string) => {
+    if (!pointerPicking) return;
+    referenceElement(elementId, pointerCaretRef.current, true);
+    setPointerPicking(false);
+  };
+
+  const referenceSelectedElement = () => {
+    if (!agentReady || annotationMode || pointerPicking || !selectedId) return;
+    referenceElement(selectedId, promptDraft.length, false);
   };
 
   const restoreAnnotationAttachment = (attachment: SentAnnotationAttachment) => {
@@ -2122,7 +2132,10 @@ export default function Home() {
                     ? `Annotation mode · click an element or drag a region${recalledAnnotations.length > 0 ? ` · Comparing ${activeOverlayLabel}` : ""}`
                     : recalledAnnotations.length > 0
                       ? `Comparing sent annotations · ${activeOverlayLabel}`
-                      : draggedId ? "Moving block · release to place" : editingId ? "Editing text · Esc to finish" : selectedId ? "Move mode · drag to reorder · double-click to edit" : "Click a block to select it"}
+                      : draggedId ? "Moving block · release to place" : editingId ? "Editing text · Esc to finish" : selectedId ? <>
+                        Move mode · drag to reorder · double-click to edit
+                        {agentReady && <><span aria-hidden="true"> · </span><button type="button" className="canvas-reference-button" onClick={referenceSelectedElement}>@ Reference</button></>}
+                      </> : "Click a block to select it"}
                 </div>
                 <div
                   className="slide-viewport"

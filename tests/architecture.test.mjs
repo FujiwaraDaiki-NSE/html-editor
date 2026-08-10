@@ -161,6 +161,17 @@ test("block dragging previews reordering and separates move from text editing", 
   assert.match(css, /:has\(> \.weave-dragging:only-child\)/);
 });
 
+test("a selected element can be referenced without knowing the pointing shortcut", async () => {
+  const [page, css] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+  assert.match(page, /const referenceElement = \(elementId: string, caret: number, afterAtSign: boolean\)/);
+  assert.match(page, /referenceElement\(selectedId, promptDraft\.length, false\)/);
+  assert.match(page, /agentReady && <><span aria-hidden="true"> · <\/span><button[^>]*>@ Reference<\/button>/);
+  assert.match(css, /\.canvas-reference-button \{[^}]*pointer-events: auto/);
+});
+
 test("the object tree is an accessible collapsible section with stable body styling", async () => {
   const [page, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),

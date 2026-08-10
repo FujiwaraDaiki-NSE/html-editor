@@ -350,6 +350,8 @@ body {
 .canvas-interaction-status.annotating { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, var(--panel)); color: var(--accent); font-weight: 700; }
 .canvas-interaction-status.recalling { border-color: #58d7f5; background: color-mix(in srgb, #58d7f5 14%, var(--panel)); color: #58d7f5; font-weight: 700; }
 .canvas-interaction-status.picking { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, var(--panel)); color: var(--accent); font-weight: 700; }
+.canvas-reference-button { padding: 0; border: 0; background: transparent; color: var(--accent); font: inherit; font-weight: 700; cursor: pointer; pointer-events: auto; }
+.canvas-reference-button:hover { text-decoration: underline; }
 
 /* The slide is authored at its design size and scaled to fit; the viewport is the window
    onto it. Everything inside comes from the project stylesheet (styles/deck.css) — the
