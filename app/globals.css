@@ -392,7 +392,7 @@ body {
    gesture. It stays an outline rather than a filled panel: the slide has to read through it.
    Unlike everything else in this layer it is chrome, so it is sized in screen px and centred on
    the viewport rather than on the 1280x720 design box. */
-.annotation-empty-state { position: absolute; z-index: 2; left: 50%; top: 50%; width: min(420px, 78%); padding: 22px 26px; translate: -50% -50%; display: grid; gap: 5px; justify-items: center; border: 2px dashed color-mix(in srgb, var(--accent) 52%, transparent); border-radius: 10px; background: color-mix(in srgb, var(--panel) 26%, transparent); color: var(--accent); text-align: center; pointer-events: none; }
+.annotation-empty-state { position: absolute; z-index: 2; left: 50%; top: 50%; width: min(380px, 74%); padding: 18px 22px; translate: -50% -50%; display: grid; gap: 4px; justify-items: center; border: 2px dashed color-mix(in srgb, var(--accent) 55%, transparent); border-radius: 10px; background: color-mix(in srgb, var(--panel) 90%, transparent); box-shadow: 0 8px 26px rgb(0 0 0 / .3); color: var(--accent); text-align: center; pointer-events: none; }
 .annotation-empty-state strong { font: 700 17px/1.35 Arial, sans-serif; }
 .annotation-empty-state span { font: 400 13px/1.4 Arial, sans-serif; opacity: .82; }
 .annotation-empty-state small { margin-top: 6px; font: 400 10px/1.4 Arial, sans-serif; opacity: .58; }
