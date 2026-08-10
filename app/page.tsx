@@ -2160,7 +2160,7 @@ export default function Home() {
                     scrollRef={annotationScrollRef}
                     onFocusHandled={() => setFocusAnnotationId(null)}
                     onPointerPick={pickPointerElement}
-                    onPointerCancel={() => { setPointerPicking(false); setAnnouncement("Element pointing canceled"); }}
+                    onPointerPickCancel={() => { setPointerPicking(false); setAnnouncement("Element pointing canceled"); }}
                     onSelect={setSelectedAnnotationId}
                     onLabelChange={(id, label) => setAnnotations((current) => current.map((annotation) => annotation.id === id ? { ...annotation, label } : annotation))}
                     onDelete={deleteAnnotation}

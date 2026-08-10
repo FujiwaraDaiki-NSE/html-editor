@@ -30,7 +30,7 @@ type Props = {
   scrollRef: React.RefObject<HTMLDivElement | null>;
   onFocusHandled: () => void;
   onPointerPick: (weaveId: string) => void;
-  onPointerCancel: () => void;
+  onPointerPickCancel: () => void;
   onSelect: (id: string) => void;
   onLabelChange: (id: string, label: string) => void;
   onDelete: (id: string) => void;
@@ -113,7 +113,7 @@ export function AnnotationOverlay({
   scrollRef,
   onFocusHandled,
   onPointerPick,
-  onPointerCancel,
+  onPointerPickCancel,
   onSelect,
   onLabelChange,
   onDelete,
@@ -229,7 +229,7 @@ export function AnnotationOverlay({
         ))}
         {interactive && draftRect && <div className="annotation-box annotation-draft" style={rectStyle(draftRect)} />}
       </div>
-      {pointerPicking && <PointerPickingLayer candidates={pointerCandidates} annotations={annotations} onPick={onPointerPick} onCancel={onPointerCancel} />}
+      {pointerPicking && <PointerPickingLayer candidates={pointerCandidates} annotations={annotations} onPick={onPointerPick} onCancel={onPointerPickCancel} />}
     </div>
   );
 }
