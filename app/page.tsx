@@ -787,7 +787,6 @@ export default function Home() {
     const existing = annotations.find((annotation) => annotation.slideId === slideId && annotation.target.kind === "element" && annotation.target.weaveId === elementId);
     if (existing) {
       setSelectedAnnotationId(existing.id);
-      setAnnouncement(`Element annotation ${existing.order} selected`);
       return { annotation: existing, created: false };
     }
     const boxes = liveAnnotationBoxes();
@@ -812,7 +811,6 @@ export default function Home() {
     };
     setAnnotations((current) => refreshSlideAnnotations([...current, created], slideId, boxes));
     setSelectedAnnotationId(id);
-    setAnnouncement(`Element annotation ${order} created`);
     return { annotation: created, created: true };
   };
 
@@ -832,7 +830,9 @@ export default function Home() {
     if (!pointed) return;
     insertPromptReference(pointed.annotation, pointerCaretRef.current, true);
     setPointerPicking(false);
-    setAnnouncement(`Element annotation ${pointed.annotation.order} referenced`);
+    setAnnouncement(pointed.created
+      ? `Element annotation ${pointed.annotation.order} created and referenced`
+      : `Element annotation ${pointed.annotation.order} reused`);
   };
 
   const restoreAnnotationAttachment = (attachment: SentAnnotationAttachment) => {
