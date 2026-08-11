@@ -356,7 +356,7 @@ export class CodexService extends EventEmitter {
       sandboxPolicy: {
         type: "workspaceWrite",
         writableRoots: [this.projectRoot],
-        networkAccess: false,
+        networkAccess: true,
         excludeTmpdirEnvVar: false,
         excludeSlashTmp: false,
       },

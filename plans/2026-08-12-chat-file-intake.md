@@ -87,6 +87,8 @@ Weave側にパーサを一切持たない。対応形式を増やすたびに実
 
 ## 既知の穴
 
-Agentのsandboxは `workspaceWrite` かつ `networkAccess: false` のため、ホストにあるツールしか使えない。
 pptx / docx / xlsx はzipなので `unzip` でXMLを読めるが、**PDFのテキスト抽出はホスト依存**（pdftotextやpypdfが無いと読めない）。
 本計画ではWeave側で肩代わりせず、AGENTS.mdに読み方のヒントを書くところまでとする。
+
+なお 2026-08-12 に sandbox の `networkAccess` を `true` へ変更したため、Agentはターン中に必要なツールを取得できる。
+Weave側で抽出を持たない判断はこれで維持しやすくなった。
