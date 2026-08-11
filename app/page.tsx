@@ -5,6 +5,7 @@
 import { DragEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import { actionFromStreamEvent } from "./codex/actions";
 import { defaultDeckCss, designHeight, designWidth, escapeHtml, renderDeckDocument } from "../shared/slide-design.mjs";
+import { assetPathsInHtml, isAssetPath, replaceAssetReferences, rewriteAssetUrls } from "../shared/asset-path.mjs";
 import { projectSlug } from "../shared/project-slug.mjs";
 import { auditContentPolicy } from "../shared/content-policy.mjs";
 import { applyTemplateToSlideHtml, contentSlotSelector, titleFromSlideHtml, titleSlotSelector } from "../shared/slide-slots.mjs";
@@ -240,6 +241,13 @@ const serializeEditorNode = (node: HTMLElement): string => {
     item.setAttribute("src", path);
     item.removeAttribute("data-asset-path");
   });
+  cloneMatches(clone, "image[data-asset-path]").forEach((item) => {
+    const path = item.getAttribute("data-asset-path") ?? "";
+    if (item.dataset.assetAttribute === "xlink:href") item.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", path);
+    else item.setAttribute("href", path);
+    delete item.dataset.assetPath;
+    delete item.dataset.assetAttribute;
+  });
   return clone.outerHTML;
 };
 
@@ -262,6 +270,8 @@ const sanitizePreviewHtml = (input: string): string => {
   });
   return document.body.innerHTML;
 };
+
+const displayAssetHtml = (input: string): string => rewriteAssetUrls(sanitizePreviewHtml(input), apiBase);
 
 const kindOfNode = (node: HTMLElement): string => blockKinds.find((cls) => node.classList.contains(cls)) ?? node.tagName.toLowerCase();
 const refreshSlideAnnotations = (annotations: Annotation[], slideId: string, boxes: AnnotationBox[]) => {
@@ -707,7 +717,17 @@ export default function Home() {
     setEditingId(null);
     const previewHtml = templatePreviewHtmlRef.current;
     host.innerHTML = sanitizePreviewHtml(previewHtml ?? templatePreviewSourceHtmlRef.current ?? slidesRef.current[activeSlide - 1]?.html ?? "");
-    host.querySelectorAll<HTMLImageElement>('img[src^="assets/"]').forEach((node) => { const path = node.getAttribute("src") ?? ""; node.dataset.assetPath = path; node.src = `${apiBase}/${path}`; });
+    host.querySelectorAll<HTMLImageElement>('img[src^="assets/"]').forEach((node) => { const path = node.getAttribute("src") ?? ""; if (!isAssetPath(path)) return; node.dataset.assetPath = path; node.src = `${apiBase}/${path}`; });
+    host.querySelectorAll<SVGImageElement>("image").forEach((node) => {
+      const xlinkPath = node.getAttributeNS("http://www.w3.org/1999/xlink", "href");
+      const attribute = isAssetPath(xlinkPath) ? "xlink:href" : "href";
+      const path = (attribute === "xlink:href" ? xlinkPath : node.getAttribute("href")) ?? "";
+      if (!isAssetPath(path)) return;
+      node.dataset.assetPath = path;
+      node.dataset.assetAttribute = attribute;
+      if (attribute === "xlink:href") node.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", `${apiBase}/${path}`);
+      else node.setAttribute("href", `${apiBase}/${path}`);
+    });
     host.querySelectorAll<HTMLElement>("[data-weave-id]").forEach((node) => { node.draggable = !annotationMode && !agentRunning && !isTitleSlot(node); });
     const root = host.querySelector<HTMLElement>(".weave-slide");
     if (root) {
@@ -1808,7 +1828,7 @@ export default function Home() {
     if (!quality.ok) { popoverTriggerRef.current = null; setOpenPopover("quality"); setApiError("Resolve quality errors before exporting."); return; }
     try {
       let fragments = exportFragments();
-      const assetPaths = [...new Set(fragments.flatMap((fragment) => [...fragment.matchAll(/\bsrc=(?:"(assets\/[^"]+)"|'(assets\/[^']+)')/g)].map((match) => match[1] ?? match[2])))];
+      const assetPaths = [...new Set(fragments.flatMap((fragment) => assetPathsInHtml(fragment)))];
       const embeddedAssets = new Map(await Promise.all(assetPaths.map(async (path) => {
         const response = await fetch(`${apiBase}/${path}`);
         if (!response.ok) throw new Error(`Could not include ${path} in the offline export.`);
@@ -1821,7 +1841,7 @@ export default function Home() {
         });
         return [path, dataUrl] as const;
       })));
-      fragments = fragments.map((fragment) => fragment.replace(/\bsrc=(['"])(assets\/[^'"]+)\1/g, (attribute, quote, path) => `src=${quote}${embeddedAssets.get(path) ?? path}${quote}`));
+      fragments = fragments.map((fragment) => replaceAssetReferences(fragment, (path: string) => embeddedAssets.get(path) ?? path));
       const html = renderDeckDocument(fragments, deckCss, deckTitle);
       const blob = new Blob([html], { type: "text/html;charset=utf-8" });
       const url = URL.createObjectURL(blob);
@@ -2165,7 +2185,7 @@ export default function Home() {
   /* Switching to Code mode captures the live DOM into `slides` first, so the code view can
      read the fresh HTML straight from state without touching a ref during render. */
   const codeView = mode === "code" ? slides[activeSlide - 1]?.html ?? "" : "";
-  const templatePreview = (template: TemplateDoc) => <span className="template-preview" aria-hidden="true" dangerouslySetInnerHTML={{ __html: sanitizePreviewHtml(template.html) }} />;
+  const templatePreview = (template: TemplateDoc) => <span className="template-preview" aria-hidden="true" dangerouslySetInnerHTML={{ __html: displayAssetHtml(template.html) }} />;
   const currentTemplate = templates.find((template) => template.id === currentTemplateId);
 
   const slideNavigator = (
@@ -2794,7 +2814,7 @@ export default function Home() {
                 {(["orbit", "grid", "plain"] as const).map((id) => {
                   const template = templates.find((item) => item.id === id) ?? { id, name: id[0].toUpperCase() + id.slice(1), html: blankSlideHtml(id) };
                   return <div className={`project-card ${newProjectTemplate === id ? "selected" : ""}`} key={id}>
-                    <button className="project-thumb" onClick={() => setNewProjectTemplate(id)} aria-label={`${template.name}テンプレートを選択`}>{thumbHtml(template.html, deckCss, template.name)}</button>
+                    <button className="project-thumb" onClick={() => setNewProjectTemplate(id)} aria-label={`${template.name}テンプレートを選択`}>{thumbHtml(displayAssetHtml(template.html), deckCss, template.name)}</button>
                     <div className="card-meta"><strong>{template.name}</strong><small>テンプレート</small></div>
                   </div>;
                 })}
@@ -2874,7 +2894,7 @@ export default function Home() {
           if (event.key === "Escape") setShowPresenter(false);
         }}>
           <style>{deckCss}</style>
-          <div className="presenter-stage" style={{ "--slide-scale": presenterScale } as React.CSSProperties} dangerouslySetInnerHTML={{ __html: sanitizePreviewHtml(slides[presentSlide - 1]?.html ?? "") }} />
+          <div className="presenter-stage" style={{ "--slide-scale": presenterScale } as React.CSSProperties} dangerouslySetInnerHTML={{ __html: displayAssetHtml(slides[presentSlide - 1]?.html ?? "") }} />
           <footer>
             <button onClick={() => setPresentSlide((value) => Math.max(1, value - 1))}>← Previous</button>
             <span>{presentSlide} / {slides.length}</span>
