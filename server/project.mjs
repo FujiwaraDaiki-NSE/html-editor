@@ -21,6 +21,7 @@ const manifestPath = (root = currentProjectRoot) => join(root, ".weave", "deck.j
 const slidesRoot = (root = currentProjectRoot) => join(root, "slides");
 const stylesRoot = (root = currentProjectRoot) => join(root, "styles");
 const assetsRoot = (root = currentProjectRoot) => join(root, "assets");
+export const referencesRoot = (root = currentProjectRoot) => join(root, "references");
 export const templatesRoot = (root = currentProjectRoot) => join(root, "templates");
 const deckCssPath = (root = currentProjectRoot) => join(stylesRoot(root), "deck.css");
 const projectWriteQueues = new Map();
@@ -88,13 +89,33 @@ decorative diagrams are static inline SVG: use fill="currentColor" with text-* c
 hex colors, size the SVG with w-full and aspect-* classes, and put data-weave-id on the SVG root.
 Make focused changes that answer the user. Read-only git (log, show, diff) is fine when you need the
 history; never commit, checkout, or otherwise change the repository — Weave formats and commits the turn.
-If no file change is needed, respond with a concise explanation.`;
+If no file change is needed, respond with a concise explanation.
+
+Files under references/ are materials brought in by a human through chat. Open and read the paths
+provided in the envelope's attachments yourself. pptx, docx, and xlsx files are zip archives, so
+extract them to read their XML. If a format cannot be read with the available tools, tell the human.`;
 
 const assetTypes = new Map([
   ["image/png", "png"], ["image/jpeg", "jpg"], ["image/webp", "webp"],
   ["image/svg+xml", "svg"], ["image/gif", "gif"],
 ]);
 const maxAssetBytes = 10 * 1024 * 1024;
+const maxReferenceBytes = 25 * 1024 * 1024;
+
+function normalizeReferenceName(value) {
+  const original = String(value ?? "");
+  const extensionStart = original.lastIndexOf(".");
+  const base = extensionStart > 0 ? original.slice(0, extensionStart) : original;
+  const extension = extensionStart > 0 ? original.slice(extensionStart) : "";
+  const normalizePart = (part) => part
+    .replace(/[\\/]/g, "_")
+    .replace(/[\u0000-\u001f\u007f]/g, "_")
+    .replace(/["']/g, "_")
+    .replace(/\s/g, "_")
+    .replace(/\.\./g, "_");
+  const normalizedBase = normalizePart(base).replace(/\.+$/, "_");
+  return `${normalizedBase || "file"}${normalizePart(extension)}`;
+}
 
 export async function importImageAsset({ data, mimeType }) {
   const root = currentProjectRoot;
@@ -117,6 +138,29 @@ export async function importImageAsset({ data, mimeType }) {
   await mkdir(assetsRoot(root), { recursive: true });
   await writeFile(join(assetsRoot(root), filename), bytes);
   return { path: `assets/${filename}`, mimeType, size: bytes.length };
+}
+
+export async function importReference({ data, mimeType, name }) {
+  const bytes = Buffer.from(String(data ?? ""), "base64");
+  if (!bytes.length) throw new Error("Reference data is required.");
+  if (bytes.length > maxReferenceBytes) throw new Error("Reference must be 25 MB or smaller.");
+  const normalizedName = normalizeReferenceName(name);
+  const hash = createHash("sha256").update(bytes).digest("hex");
+  const filename = `${hash.slice(0, 12)}-${normalizedName}`;
+  const root = currentProjectRoot;
+  const directory = referencesRoot(root);
+  await mkdir(directory, { recursive: true });
+  const filePath = join(directory, filename);
+  if (!existsSync(filePath)) await writeFile(filePath, bytes);
+  const indexPath = join(directory, "index.json");
+  const index = JSON.parse(await readFile(indexPath, "utf8").catch(() => "{\"entries\":[]}"));
+  const entries = Array.isArray(index?.entries) ? index.entries : [];
+  const relativePath = `references/${filename}`;
+  if (!entries.some((entry) => entry?.path === relativePath)) {
+    entries.push({ path: relativePath, name: normalizedName, hash, size: bytes.length, mimeType, addedAt: new Date().toISOString() });
+    await writeFile(indexPath, `${JSON.stringify({ entries }, null, 2)}\n`);
+  }
+  return { path: relativePath, name: normalizedName, mimeType, size: bytes.length };
 }
 
 /* Seed content, authored as blocks and stamped into HTML fragments exactly once. After seeding
@@ -427,7 +471,7 @@ export async function assertCommittable(root = currentProjectRoot) {
 
 /* Clean checks cover only what Weave commits; status accepts missing pathspecs, while add does not. */
 /* Keep optional paths in status so a tracked-but-deleted assets or templates directory remains dirty. */
-const managedPaths = [".weave/deck.json", "slides", "styles", "AGENTS.md", "assets", "templates"];
+const managedPaths = [".weave/deck.json", "slides", "styles", "AGENTS.md", "assets", "templates", "references/index.json"];
 
 function managedStatus(root = currentProjectRoot) {
   return runGit(["status", "--porcelain", "--", ...managedPaths], { cwd: root });
@@ -435,8 +479,8 @@ function managedStatus(root = currentProjectRoot) {
 
 export function commitIfChanged(message, root = currentProjectRoot) {
   const pathsToAdd = managedPaths
-    .filter((path) => path !== "assets" && path !== "templates")
-    .concat(existsSync(assetsRoot(root)) ? ["assets"] : [], existsSync(templatesRoot(root)) ? ["templates"] : []);
+    .filter((path) => path !== "assets" && path !== "templates" && path !== "references/index.json")
+    .concat(existsSync(assetsRoot(root)) ? ["assets"] : [], existsSync(templatesRoot(root)) ? ["templates"] : [], existsSync(join(referencesRoot(root), "index.json")) ? ["references/index.json"] : []);
   runGit(["add", ...pathsToAdd], { cwd: root });
   if (!runGit(["diff", "--cached", "--name-only"], { cwd: root })) return null;
   runGit(["-c", "user.name=Weave", "-c", "user.email=weave@localhost", "commit", "-m", message.slice(0, 180)], { cwd: root });

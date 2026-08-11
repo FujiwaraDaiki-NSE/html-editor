@@ -26,6 +26,7 @@ import { selectThreadRunning, selectThreadTurns, selectTurnItems } from "./codex
    modelled as tokens any more (concept 2.10). */
 type SlideDoc = { id: string; title: string; notes: string; html: string };
 type TemplateDoc = { id: string; name: string; html: string };
+type ReferenceAttachment = { path: string; name: string; mimeType?: string; size: number };
 
 type SlideNav = "filmstrip" | "rail";
 type ActivityView = "agent" | "history" | "shortcuts" | "settings";
@@ -87,6 +88,7 @@ const sidebarWidthStore = {
 };
 
 const createMessageId = () => `weave-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+const formatBytes = (bytes: number) => bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 const retryDelay = (attempt: number) => Math.min(10_000, 400 * (2 ** Math.min(attempt, 5))) + Math.random() * 250;
 const displayThreadName = (name: string | null | undefined) => name?.replace(/^Weave · /, "") || null;
 const cssEscape = (value: string) => (typeof CSS !== "undefined" && CSS.escape ? CSS.escape(value) : value.replace(/[^\w-]/g, "\\$&"));
@@ -335,6 +337,7 @@ export default function Home() {
   const [includeRegionAnnotations, setIncludeRegionAnnotations] = useState(true);
   const [annotationAttachments, setAnnotationAttachments] = useState<SentAnnotationAttachment[]>([]);
   const [activeOverlayAttachmentId, setActiveOverlayAttachmentId] = useState<string | null>(null);
+  const [referenceAttachments, setReferenceAttachments] = useState<ReferenceAttachment[]>([]);
 
   const canvasRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -343,6 +346,7 @@ export default function Home() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const referenceInputRef = useRef<HTMLInputElement>(null);
   const replacingImageRef = useRef(false);
   const messagesRef = useRef<HTMLDivElement>(null);
   const promptRef = useRef<HTMLTextAreaElement>(null);
@@ -505,7 +509,7 @@ export default function Home() {
 
   const deckPayload = () => ({ title: deckTitle, slides: captureActive() });
 
-  const contextEnvelope = (annotationContext: Annotation[] = [], overflowing: string[] = []) => editorEnvelope({
+  const contextEnvelope = (annotationContext: Annotation[] = [], overflowing: string[] = [], attachments: ReferenceAttachment[] = []) => editorEnvelope({
     slide: activeSlideId,
     selected: selectedId ? {
       id: selectedId,
@@ -517,6 +521,7 @@ export default function Home() {
     } : undefined,
     annotations: annotationContext,
     overflowing,
+    attachments: attachments.map(({ path, name, size }) => ({ path, name, bytes: size })),
   });
 
   const quality = useMemo(() => {
@@ -1360,6 +1365,21 @@ export default function Home() {
     finally { replacingImageRef.current = false; if (imageInputRef.current) imageInputRef.current.value = ""; }
   };
 
+  const uploadReferences = useCallback(async (files: FileList | File[]) => {
+    for (const file of Array.from(files)) {
+      try {
+        if (file.size > 25 * 1024 * 1024) throw new Error("Reference must be 25 MB or smaller.");
+        const dataUrl = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file); });
+        const response = await fetch(`${apiBase}/references`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: file.name, mimeType: file.type, data: dataUrl.slice(dataUrl.indexOf(",") + 1) }) });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error ?? "Reference import failed.");
+        setReferenceAttachments((current) => current.some((attachment) => attachment.path === result.path) ? current : [...current, result]);
+        setApiError(null);
+      } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
+    }
+    if (referenceInputRef.current) referenceInputRef.current.value = "";
+  }, []);
+
   const deleteSelected = () => {
     const node = selectedNode();
     if (!node || destroysTitleSlot(node) || outline.length <= 1) return;
@@ -1925,10 +1945,10 @@ export default function Home() {
     const overflowing = overflowingIds(liveOverflowMeasurements());
     const boxes = viewportRef.current ? liveAnnotationBoxes() : null;
     const turnAnnotations = collectTurnAnnotations(value, boxes);
-    if (!canSendTurn(value, turnAnnotations) || turnInFlightRef.current) return;
+    if (!(canSendTurn(value, turnAnnotations) || referenceAttachments.length > 0) || turnInFlightRef.current) return;
     if (slide && boxes) setAnnotations((current) => refreshSlideAnnotations(current, slide.id, boxes));
     const requestDeck = deckPayload();
-    const requestEnvelope = contextEnvelope(turnAnnotations, overflowing);
+    const requestEnvelope = contextEnvelope(turnAnnotations, overflowing, referenceAttachments);
     turnInFlightRef.current = true;
     setTurnSubmitting(true);
     shouldAutoScrollRef.current = true;
@@ -1946,7 +1966,7 @@ export default function Home() {
       const steering = agentRunning;
       const runningTurnId = codexState.activeTurnId;
       const endpoint = steering ? "codex/turn/steer" : "codex/turn/start";
-      const response = await fetch(`${apiBase}/${endpoint}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId, prompt: value, clientUserMessageId: createMessageId(), selectedId, deck: requestDeck, model: selectedModel || undefined, effort: reasoningEffort, approvalPolicy, contextEnvelope: requestEnvelope }) });
+      const response = await fetch(`${apiBase}/${endpoint}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId, prompt: value, clientUserMessageId: createMessageId(), selectedId, deck: requestDeck, model: selectedModel || undefined, effort: reasoningEffort, approvalPolicy, contextEnvelope: requestEnvelope, attachments: referenceAttachments }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Agent turn failed.");
       if (turnAnnotations.length > 0 && slide) {
@@ -1965,6 +1985,7 @@ export default function Home() {
         setAnnouncement("Annotation attachment sent");
       }
       setPromptDraft("");
+      setReferenceAttachments([]);
       setIncludeRegionAnnotations(true);
     } catch (error) {
       setApiError(error instanceof Error ? error.message : String(error));
@@ -2339,7 +2360,11 @@ export default function Home() {
               ))}
               <div ref={messagesEndRef} className="messages-end" />
             </div>
-            <div className="chat-box">
+            <div className="chat-box"
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => { event.preventDefault(); void uploadReferences(event.dataTransfer.files); }}
+              onPaste={(event) => { const files = event.clipboardData.files; if (files.length > 0) { event.preventDefault(); void uploadReferences(files); } }}
+            >
               <div className="context-chip" role="group" aria-label="Editor context">
                 <span className="context-summary" role="status"><span className="context-icon" aria-hidden="true">◎</span> Slide {activeSlide} in context · {agentActivity}</span>
                 {activeElementAnnotations.length > 0 && <span className="context-annotation-count">{activeElementAnnotations.length} element{activeElementAnnotations.length === 1 ? "" : "s"}</span>}
@@ -2353,11 +2378,21 @@ export default function Home() {
                 >{activeRegionAnnotations.length} region{activeRegionAnnotations.length === 1 ? "" : "s"} · {regionsWillSend ? "Send" : "Held"}</button>}
                 {activeAnnotations.length > 0 && <AnnotationLegend annotations={activeAnnotations} />}
               </div>
+              {referenceAttachments.length > 0 && <div className="reference-attachments" role="list" aria-label="Attached files">
+                {referenceAttachments.map((attachment) => <div className="context-chip reference-attachment" role="listitem" key={attachment.path}>
+                  <span className="context-icon" aria-hidden="true">📎</span>
+                  <span className="reference-attachment-name" title={attachment.name}>{attachment.name}</span>
+                  <span>{formatBytes(attachment.size)}</span>
+                  <button type="button" aria-label={`Remove ${attachment.name}`} onClick={() => setReferenceAttachments((current) => current.filter((item) => item.path !== attachment.path))}>×</button>
+                </div>)}
+              </div>}
               <textarea ref={promptRef} value={promptDraft} onChange={onPromptChange} onCompositionStart={() => { compositionRef.current = true; }} onCompositionEnd={onPromptCompositionEnd} onKeyDown={onPromptKeyDown} placeholder={agentReady ? "Ask Agent to edit this slide…" : "Waiting for local Codex…"} aria-label="Message Agent" maxLength={20000} disabled={!agentReady} />
               <div className="chat-actions">
                 <span>⌘ / Ctrl ↵</span>
+                <input ref={referenceInputRef} className="sr-only" type="file" multiple onChange={(event) => { if (event.target.files) void uploadReferences(event.target.files); }} />
+                <button className="attach-button" type="button" onClick={() => referenceInputRef.current?.click()} disabled={!agentReady} aria-label="Attach files" title="Attach files">📎</button>
                 {agentRunning && <button className="stop-button" onClick={() => void interruptAgent()} aria-label="Stop Agent" title="Stop Agent">■</button>}
-                <button className="send-button" onClick={() => void sendMessage()} disabled={!agentReady || !canSendTurn(promptDraft, sendableAnnotations) || turnSubmitting} aria-label="Send message">↑</button>
+                <button className="send-button" onClick={() => void sendMessage()} disabled={!agentReady || !(canSendTurn(promptDraft, sendableAnnotations) || referenceAttachments.length > 0) || turnSubmitting} aria-label="Send message">↑</button>
               </div>
             </div>
           </section> : activityView === "history" ? historySidebar : activityView === "shortcuts" ? shortcutsSidebar : settingsSidebar}

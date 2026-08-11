@@ -15,6 +15,7 @@ import {
   ensureProject,
   initializeCurrentProject,
   importImageAsset,
+  importReference,
   projectRoot,
   listProjects,
   createProject,
@@ -134,8 +135,9 @@ function requireText(value, name, limit = 20_000) {
 function requireTurnPrompt(payload) {
   const text = String(payload.prompt ?? "");
   const annotations = Array.isArray(payload.contextEnvelope?.annotations) ? payload.contextEnvelope.annotations : [];
-  if (!canSendTurn(text, annotations)) throw new Error("Prompt text or at least one annotation is required.");
-  return text.trim() ? requireText(text, "Prompt") : "Use the attached editor annotations as the request for this turn.";
+  const attachments = Array.isArray(payload.attachments) ? payload.attachments : [];
+  if (!canSendTurn(text, annotations) && attachments.length === 0) throw new Error("Prompt text, an annotation, or an attachment is required.");
+  return text.trim() ? requireText(text, "Prompt") : annotations.length > 0 ? "Use the attached editor annotations as the request for this turn." : "Read the attached files and act on them.";
 }
 
 function activeProjectTurn() {
@@ -238,7 +240,7 @@ const server = createServer(async (request, response) => {
       [/^\/api\/projects\/current$/, "POST"],
       [/^\/api\/projects\/[^/]+$/, "PATCH"],
       [/^\/api\/projects\/[^/]+\/(?:duplicate|archive)$/, "POST"],
-      [/^\/api\/(?:assets|save|history\/checkout|history\/main|variations\/(?:checkout|generate|accept|archive))$/, "POST"],
+      [/^\/api\/(?:assets|references|save|history\/checkout|history\/main|variations\/(?:checkout|generate|accept|archive))$/, "POST"],
       [/^\/api\/codex\/(?:thread\/(?:start|read|resume|fork|action)|turn\/(?:start|steer|interrupt)|request\/(?:resolve|reject)|catalog\/refresh|skill\/config|account\/(?:login|logout)|mcp\/(?:oauth|resource\/read|tool\/call))$/, "POST"],
     ];
     const routeMethod = routeMethods.find(([pattern]) => pattern.test(url.pathname))?.[1];
@@ -287,7 +289,7 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method !== "GET" && request.method !== "POST" && request.method !== "PATCH") return sendJson(request, response, 404, { error: "Not found." });
-    const payload = await readJson(request, url.pathname === "/api/assets" ? 14_000_000 : 1_500_000);
+    const payload = await readJson(request, url.pathname === "/api/assets" ? 14_000_000 : url.pathname === "/api/references" ? 36_000_000 : 1_500_000);
 
     if (request.method === "POST" && url.pathname === "/api/projects") {
       await assertSwitchable();
@@ -323,6 +325,9 @@ const server = createServer(async (request, response) => {
 
     if (url.pathname === "/api/assets") {
       return sendJson(request, response, 201, await importImageAsset(payload));
+    }
+    if (url.pathname === "/api/references") {
+      return sendJson(request, response, 201, await importReference(payload));
     }
 
     if (url.pathname === "/api/save") {

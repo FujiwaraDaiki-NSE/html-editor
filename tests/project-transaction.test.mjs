@@ -148,6 +148,30 @@ test("image assets are content-addressed, deduplicated, and SVG-audited", async 
   }
 });
 
+test("reference imports preserve Unicode names, normalize paths, and track only the index", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weave-reference-"));
+  const previousRoot = process.env.WEAVE_PROJECT_ROOT;
+  process.env.WEAVE_PROJECT_ROOT = root;
+  try {
+    const project = await import(`../server/project.mjs?reference=${Date.now()}`);
+    await project.ensureProject();
+    const data = Buffer.from("reference").toString("base64");
+    const first = await project.importReference({ data, mimeType: "application/pdf", name: "資料\\原稿 版..pdf" });
+    const second = await project.importReference({ data, mimeType: "application/pdf", name: "資料\\原稿 版..pdf" });
+    assert.deepEqual(second, first);
+    assert.match(first.name, /^資料_原稿_版_\.pdf$/);
+    assert.equal(JSON.parse(await readFile(join(root, "references", "index.json"), "utf8")).entries.length, 1);
+    project.commitIfChanged("Track reference");
+    assert.deepEqual(git(root, ["ls-files", "references"]), "references/index.json");
+    assert.equal(git(root, ["ls-files", "references"]), "references/index.json");
+    assert.match(git(root, ["status", "--porcelain", "--untracked-files=all"]), /references\/[0-9a-f]{12}-/);
+  } finally {
+    if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
+    else process.env.WEAVE_PROJECT_ROOT = previousRoot;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("concurrent saves with one revision cannot overwrite each other", async () => {
   const root = await mkdtemp(join(tmpdir(), "weave-save-lock-"));
   const previousRoot = process.env.WEAVE_PROJECT_ROOT;

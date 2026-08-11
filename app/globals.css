@@ -226,6 +226,10 @@ body {
 .annotation-legend-text { min-width: 0; overflow: hidden; color: var(--muted); font-size: var(--chat-micro); text-overflow: ellipsis; white-space: nowrap; }
 .annotation-legend-text strong { color: var(--text); font-size: inherit; font-weight: 600; }
 .chat-box .annotation-legend { max-height: 53px; }
+.reference-attachments { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px; }
+.reference-attachment { margin-bottom: 0; }
+.reference-attachment-name { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.reference-attachment button { min-width: 20px; padding: 0 3px; border: 0; background: transparent; color: var(--muted); font-size: 15px; cursor: pointer; }
 .message { display: flex; gap: 6px; align-items: flex-start; margin: 0 0 9px; }
 .message-content { min-width: 0; flex: 1; }
 .message-content > p { margin: 0; padding: 0; color: var(--text); font-size: var(--chat-body); line-height: var(--chat-lh); overflow-wrap: anywhere; white-space: pre-wrap; }
