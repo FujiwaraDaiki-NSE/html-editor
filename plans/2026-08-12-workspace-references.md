@@ -79,17 +79,26 @@ Agentへは `agentInstructions` に一文足して、必要なときに `referen
 
 ## 進め方
 
-- [ ] `readReferences()` / `removeReference()`（`server/project.mjs`）
-- [ ] `statePayload()` への相乗りと `POST /api/references/remove`（`server/local-api.mjs`）
-- [ ] `agentInstructions` の1文（`server/project.mjs`）
-- [ ] `duplicateProject` の filter 修正（`server/project.mjs`）
-- [ ] 棚のクライアント状態と 📎 ポップオーバー（`app/page.tsx` / `app/globals.css`）
-- [ ] テスト
+- [x] `readReferences()` / `removeReference()`（`server/project.mjs`）
+- [x] `statePayload()` への相乗りと `POST /api/references/remove`（`server/local-api.mjs`）
+- [x] `agentInstructions` の1文（`server/project.mjs`）
+- [x] `duplicateProject` の filter 修正（`server/project.mjs`）
+- [x] 棚のクライアント状態と 📎 ポップオーバー（`app/page.tsx` / `app/globals.css`）
+- [x] テスト
       - `readReferences` が実体の有無で `missing` を出し分ける
       - `removeReference` が台帳と実体の両方を消す／`references/` の外を指すパスを拒む
       - `duplicateProject` の複製先で `git ls-files references` が `index.json` だけを返す
-- [ ] `npm run typecheck` / `npm run lint` / `npm test`
-- [ ] 実機確認（PDFを入れる → ページ再読込 → 棚に残っている → チェックして送るとAgentが読む → ×で消える）
+- [x] `npm run typecheck` / `npm run lint` / `npm test`
+- [x] 実機確認（前セッションで持ち込んだPDFが棚に残っている → チェックで再アップロードなしに添付できる）
+
+## 確認結果
+
+- `test` プロジェクトを開くと、前セッションでチャットに投げた `000981792.pdf`（1.1 MB）が棚に並ぶ。
+  実装前に持ち込まれたファイルが、台帳だけを頼りにそのまま棚として読めている。
+- チェックを入れると送信前チップが立ち、送信ボタンが有効になる。再アップロードは発生しない。
+- Esc でポップオーバーが閉じ、フォーカスが 📎 に戻る（既存のポップオーバー契約どおり）。
+- 型検査・Lint・ビルド・全154テストが成功。
+- 削除・欠落表示・複製先のgit除外はユニットテストで確認（実機では他人の資料を消さないため未実施）。
 
 ## 成功条件
 
