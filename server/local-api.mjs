@@ -15,6 +15,7 @@ import {
   ensureProject,
   initializeCurrentProject,
   importImageAsset,
+  assetMimeTypes,
   importReference,
   readReferences,
   removeReference,
@@ -71,9 +72,10 @@ async function sendAsset(request, response, filename, filePath) {
   try {
     assertAssetFilename(filename);
     const bytes = await readFile(filePath);
-    const extension = filename.split(".").pop();
-    const types = { png: "image/png", jpg: "image/jpeg", webp: "image/webp", svg: "image/svg+xml", gif: "image/gif" };
-    response.writeHead(200, { ...corsHeaders(request), "content-type": types[extension], "cache-control": "public, max-age=31536000, immutable" });
+    const extension = filename.split(".").pop().toLowerCase();
+    const mimeType = assetMimeTypes.get(extension);
+    if (!mimeType) throw new Error("Unsupported asset type.");
+    response.writeHead(200, { ...corsHeaders(request), "content-type": mimeType, "cache-control": "public, max-age=31536000, immutable" });
     response.end(bytes);
   } catch {
     sendJson(request, response, 404, { error: "Asset not found." });
@@ -263,7 +265,9 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET" && url.pathname.startsWith("/api/assets/")) {
       const filename = url.pathname.slice("/api/assets/".length);
-      return sendAsset(request, response, filename, join(projectRoot(), "assets", filename));
+      let assetPath;
+      try { assertAssetFilename(filename); assetPath = join(projectRoot(), "assets", filename); } catch { return sendJson(request, response, 404, { error: "Asset not found." }); }
+      return sendAsset(request, response, filename, assetPath);
     }
     const projectAssetMatch = request.method === "GET" && url.pathname.match(/^\/api\/projects\/([^/]+)\/assets\/([^/]+)$/);
     if (projectAssetMatch) {

@@ -10,6 +10,7 @@ import { auditContentPolicy, auditHtmlSafety } from "../shared/content-policy.mj
 import { defaultSlideClasses, migrateSlideHtmlToTailwind } from "../shared/tailwind-slide.mjs";
 import { projectSlug } from "../shared/project-slug.mjs";
 import { isReferencePath } from "../shared/context.mjs";
+import { assetFilenamePattern, replaceAssetReferences } from "../shared/asset-path.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspacesRoot = process.env.WEAVE_WORKSPACES_ROOT ? resolve(process.env.WEAVE_WORKSPACES_ROOT) : join(repoRoot, "workspaces");
@@ -101,6 +102,10 @@ format cannot be read with the available tools, tell the human.`;
 const assetTypes = new Map([
   ["image/png", "png"], ["image/jpeg", "jpg"], ["image/webp", "webp"],
   ["image/svg+xml", "svg"], ["image/gif", "gif"],
+]);
+export const assetMimeTypes = new Map([
+  ["png", "image/png"], ["jpg", "image/jpeg"], ["jpeg", "image/jpeg"],
+  ["webp", "image/webp"], ["svg", "image/svg+xml"], ["gif", "image/gif"],
 ]);
 const maxAssetBytes = 10 * 1024 * 1024;
 const maxReferenceBytes = 25 * 1024 * 1024;
@@ -747,7 +752,6 @@ export async function ensureProject() {
 }
 
 const slugPattern = /^[a-z0-9-]+$/;
-const assetFilenamePattern = /^[0-9a-f]{64}\.(?:png|jpg|webp|svg|gif)$/;
 function assertSlug(slug) {
   if (!slugPattern.test(String(slug ?? ""))) throw new Error("Invalid project id.");
   return slug;
@@ -762,7 +766,7 @@ export function projectAssetPath(slug, filename) {
   return join(workspacesRoot, assertSlug(slug), "assets", assertAssetFilename(filename));
 }
 
-const rewriteThumbnailAssets = (html, slug) => html.replace(/\bsrc=(['"])assets\/([0-9a-f]{64}\.(?:png|jpg|webp|svg|gif))\1/g, (_match, quote, filename) => `src=${quote}${assetApiBase}/projects/${slug}/assets/${filename}${quote}`);
+const rewriteThumbnailAssets = (html, slug) => replaceAssetReferences(html, (path) => `${assetApiBase}/projects/${slug}/${path}`);
 
 function generatedSlug(title) {
   return projectSlug(title);
