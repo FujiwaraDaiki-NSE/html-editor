@@ -172,6 +172,30 @@ test("reference imports preserve Unicode names, normalize paths, and track only 
   }
 });
 
+test("reference shelves report missing entries and remove validated paths", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weave-reference-shelf-"));
+  const previousRoot = process.env.WEAVE_PROJECT_ROOT;
+  process.env.WEAVE_PROJECT_ROOT = root;
+  try {
+    const project = await import(`../server/project.mjs?reference-shelf=${Date.now()}`);
+    await project.ensureProject();
+    const data = Buffer.from("shelf reference").toString("base64");
+    const reference = await project.importReference({ data, mimeType: "application/pdf", name: "brief.pdf" });
+    assert.deepEqual((await project.readReferences()).map(({ missing }) => missing), [false]);
+    await rm(join(root, reference.path));
+    assert.deepEqual((await project.readReferences()).map(({ missing }) => missing), [true]);
+    await assert.rejects(project.removeReference("slides/cover.html"), /Invalid reference path/);
+    const remaining = await project.removeReference(reference.path);
+    assert.deepEqual(remaining, []);
+    assert.deepEqual(await project.readReferences(), []);
+    assert.equal(JSON.parse(await readFile(join(root, "references", "index.json"), "utf8")).entries.length, 0);
+  } finally {
+    if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
+    else process.env.WEAVE_PROJECT_ROOT = previousRoot;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("concurrent saves with one revision cannot overwrite each other", async () => {
   const root = await mkdtemp(join(tmpdir(), "weave-save-lock-"));
   const previousRoot = process.env.WEAVE_PROJECT_ROOT;
