@@ -905,7 +905,14 @@ export async function duplicateProject(slug) {
   const sourceManifest = JSON.parse(await readFile(join(source, ".weave", "deck.json"), "utf8"));
   const next = await uniqueSlug(`${sourceManifest.title} のコピー`);
   const target = join(workspacesRoot, next);
-  await cp(source, target, { recursive: true, filter: (path) => !path.split("/").includes(".git") && !/\.slides-[^/]+\.(staged|previous)$/.test(path) });
+  const sourceReferences = resolve(referencesRoot(source));
+  const sourceReferencesIndex = join(sourceReferences, "index.json");
+  await cp(source, target, { recursive: true, filter: (path) => {
+    if (path.split("/").includes(".git") || /\.slides-[^/]+\.(staged|previous)$/.test(path)) return false;
+    const absolutePath = resolve(path);
+    if (absolutePath === sourceReferences || !absolutePath.startsWith(`${sourceReferences}/`)) return true;
+    return absolutePath === sourceReferencesIndex;
+  } });
   const manifestPathCopy = join(target, ".weave", "deck.json");
   sourceManifest.title = `${sourceManifest.title} のコピー`;
   await writeFile(manifestPathCopy, `${JSON.stringify(sourceManifest, null, 2)}\n`);
