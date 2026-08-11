@@ -30,7 +30,7 @@ type ReferenceAttachment = { path: string; name: string; mimeType?: string; size
 
 type SlideNav = "filmstrip" | "rail";
 type ActivityView = "agent" | "history" | "shortcuts" | "settings";
-type OpenPopover = "delivery" | "threads" | "addBlock" | "layouts" | "newSlide" | "quality" | null;
+type OpenPopover = "delivery" | "threads" | "addBlock" | "layouts" | "newSlide" | "quality" | "agentModel" | null;
 
 type ServerState = {
   deck: { title: string; slides: SlideDoc[] };
@@ -85,6 +85,25 @@ const sidebarWidthStore = {
   read: () => clampSidebarWidth(Number(window.localStorage.getItem(sidebarWidthKey)) || 340),
   serverRead: () => 340,
   write(value: number) { window.localStorage.setItem(sidebarWidthKey, String(clampSidebarWidth(value))); sidebarWidthListeners.forEach((listener) => listener()); },
+};
+
+type AgentModel = { model: string; effort: string };
+const agentModelKeys = { model: "weave.agent.model", effort: "weave.agent.effort" };
+const agentModelListeners = new Set<() => void>();
+let agentModelSnapshot: AgentModel = { model: "", effort: "medium" };
+const serverAgentModel: AgentModel = { model: "", effort: "medium" };
+let agentModelRead = false;
+const agentModelStore = {
+  subscribe(listener: () => void) { agentModelListeners.add(listener); return () => { agentModelListeners.delete(listener); }; },
+  read: (): AgentModel => {
+    if (!agentModelRead) {
+      agentModelSnapshot = { model: window.localStorage.getItem(agentModelKeys.model) ?? "", effort: window.localStorage.getItem(agentModelKeys.effort) ?? "medium" };
+      agentModelRead = true;
+    }
+    return agentModelSnapshot;
+  },
+  serverRead: (): AgentModel => serverAgentModel,
+  write(value: AgentModel) { agentModelSnapshot = value; agentModelRead = true; window.localStorage.setItem(agentModelKeys.model, value.model); window.localStorage.setItem(agentModelKeys.effort, value.effort); agentModelListeners.forEach((listener) => listener()); },
 };
 
 const createMessageId = () => `weave-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
@@ -287,8 +306,9 @@ export default function Home() {
   const [threadSearch, setThreadSearch] = useState("");
   const [showArchivedThreads, setShowArchivedThreads] = useState(false);
   const [activityView, setActivityView] = useState<ActivityView>("agent");
-  const [selectedModel, setSelectedModel] = useState("");
-  const [reasoningEffort, setReasoningEffort] = useState("medium");
+  const agentModel = useSyncExternalStore(agentModelStore.subscribe, agentModelStore.read, agentModelStore.serverRead);
+  const selectedModel = agentModel.model;
+  const reasoningEffort = agentModel.effort;
   const [approvalPolicy, setApprovalPolicy] = useState("never");
   const [apiKeyDraft, setApiKeyDraft] = useState("");
   const [mcpResult, setMcpResult] = useState("");
@@ -533,6 +553,8 @@ export default function Home() {
   const activeThread = codexState.activeThreadId ? codexState.threads[codexState.activeThreadId] : null;
   const activeThreadName = activeThread ? displayThreadName(activeThread.name) || activeThread.preview || "New conversation" : "No conversation";
   const selectedModelInfo = useMemo(() => codexState.catalog.models.find((model: any) => (model.id ?? model.model) === selectedModel) as any, [codexState.catalog.models, selectedModel]);
+  /* Display-only fallback: a model that declares no supported efforts still gets the three
+     standard choices in the picker, while `applyServerState` leaves such a model's effort alone. */
   const availableEfforts = useMemo(() => selectedModelInfo?.supportedReasoningEfforts?.map((option: any) => option.reasoningEffort) ?? ["low", "medium", "high"], [selectedModelInfo]);
   const agentActivity = !agentReady ? codexState.connection.error ?? "Connecting to Codex…" : agentRunning ? "Codex is working…" : "Ready";
 
@@ -562,8 +584,15 @@ export default function Home() {
     dispatchCodex({ type: "catalog", catalog: state.codex.catalog });
     dispatchCodex({ type: "pendingRequests", requests: state.codex.pendingRequests });
     dispatchCodex({ type: "activeTurns", activeTurns: state.codex.activeTurns });
-    setSelectedModel((current) => { if (current) return current; const firstModel = state.codex.catalog.models?.[0]; return firstModel?.id ?? firstModel?.model ?? ""; });
-    setReasoningEffort((current) => { const firstModel = state.codex.catalog.models?.[0]; const supported = firstModel?.supportedReasoningEfforts?.map((option: any) => option.reasoningEffort) ?? []; return supported.length > 0 && !supported.includes(current) ? firstModel.defaultReasoningEffort ?? supported[0] : current; });
+    const models = state.codex.catalog.models ?? [];
+    const firstModel = models[0] as any;
+    const current = agentModelStore.read();
+    const selected = models.find((model: any) => (model.id ?? model.model) === current.model) as any;
+    const nextModel = selected ? current.model : firstModel?.id ?? firstModel?.model ?? "";
+    const selectedModelForEffort = selected ?? firstModel;
+    const supported = selectedModelForEffort?.supportedReasoningEfforts?.map((option: any) => option.reasoningEffort) ?? [];
+    const nextEffort = supported.length > 0 && !supported.includes(current.effort) ? selectedModelForEffort.defaultReasoningEffort ?? supported[0] : current.effort;
+    if (nextModel !== current.model || nextEffort !== current.effort) agentModelStore.write({ model: nextModel, effort: nextEffort });
   }, [reinject]);
 
   useEffect(() => {
@@ -2228,8 +2257,6 @@ export default function Home() {
       <div className="activity-panel-body settings-sidebar">
         <section><h3>Appearance</h3><label><span>Color mode</span><select value={theme} onChange={(event) => setTheme(event.target.value as "dark" | "light")}><option value="dark">Dark</option><option value="light">Light</option></select></label><label><span>Slide navigator</span><select value={slideNav} onChange={(event) => slideNavStore.write(event.target.value as SlideNav)}><option value="filmstrip">Filmstrip</option><option value="rail">Rail</option></select></label></section>
         <section><h3>Agent</h3>
-          <label><span>Model</span><select value={selectedModel} onChange={(event) => { const modelId = event.target.value; setSelectedModel(modelId); const model = codexState.catalog.models.find((item: any) => (item.id ?? item.model) === modelId) as any; if (model?.defaultReasoningEffort) setReasoningEffort(model.defaultReasoningEffort); }}>{codexState.catalog.models.map((model: any) => <option key={model.id ?? model.model} value={model.id ?? model.model}>{model.displayName ?? model.name ?? model.id ?? model.model}</option>)}</select></label>
-          <label><span>Reasoning</span><select value={reasoningEffort} onChange={(event) => setReasoningEffort(event.target.value)}>{availableEfforts.map((effort: string) => <option key={effort}>{effort}</option>)}</select></label>
           <label><span>Approvals</span><select value={approvalPolicy} onChange={(event) => setApprovalPolicy(event.target.value)}><option value="never">Never</option><option value="on-request">Ask when needed</option><option value="untrusted">Untrusted commands</option></select></label>
           {codexState.catalog.modelProvider && <pre className="settings-output">{JSON.stringify(codexState.catalog.modelProvider, null, 2)}</pre>}
         </section>
@@ -2389,6 +2416,20 @@ export default function Home() {
               <textarea ref={promptRef} value={promptDraft} onChange={onPromptChange} onCompositionStart={() => { compositionRef.current = true; }} onCompositionEnd={onPromptCompositionEnd} onKeyDown={onPromptKeyDown} placeholder={agentReady ? "Ask Agent to edit this slide…" : "Waiting for local Codex…"} aria-label="Message Agent" maxLength={20000} disabled={!agentReady} />
               <div className="chat-actions">
                 <span>⌘ / Ctrl ↵</span>
+                {codexState.catalog.models.length > 0 && selectedModelInfo && (
+                  <div className="agent-model-control">
+                    <button className="agent-model-button" type="button" onClick={(event) => togglePopover("agentModel", event.currentTarget)} disabled={agentRunning} aria-expanded={openPopover === "agentModel"} aria-haspopup="menu" title="Choose model and reasoning"><span>{selectedModelInfo.displayName ?? selectedModelInfo.name ?? selectedModelInfo.id ?? selectedModelInfo.model} · {reasoningEffort}</span><b aria-hidden="true">⌄</b></button>
+                    {openPopover === "agentModel" && (
+                      <>
+                        <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
+                        <div className="agent-model-popover" role="menu" aria-label="Agent model and reasoning">
+                          <section role="group" aria-label="Model"><strong>Model</strong>{codexState.catalog.models.map((model: any) => { const modelId = model.id ?? model.model; return <button key={modelId} role="menuitemradio" aria-checked={selectedModel === modelId} className={selectedModel === modelId ? "active" : ""} onClick={() => { const nextEffort = model.supportedReasoningEfforts?.map((option: any) => option.reasoningEffort).includes(reasoningEffort) ? reasoningEffort : model.defaultReasoningEffort ?? model.supportedReasoningEfforts?.[0]?.reasoningEffort ?? reasoningEffort; agentModelStore.write({ model: modelId, effort: nextEffort }); dismissPopover(false); }}><span>{model.displayName ?? model.name ?? model.id ?? model.model}</span>{selectedModel === modelId && <b aria-hidden="true">✓</b>}</button>; })}</section>
+                          <section role="group" aria-label="Reasoning"><strong>Reasoning</strong>{availableEfforts.map((effort: string) => <button key={effort} role="menuitemradio" aria-checked={reasoningEffort === effort} className={reasoningEffort === effort ? "active" : ""} onClick={() => { agentModelStore.write({ model: selectedModel, effort }); dismissPopover(false); }}><span>{effort}</span>{reasoningEffort === effort && <b aria-hidden="true">✓</b>}</button>)}</section>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
                 <input ref={referenceInputRef} className="sr-only" type="file" multiple onChange={(event) => { if (event.target.files) void uploadReferences(event.target.files); }} />
                 <button className="attach-button" type="button" onClick={() => referenceInputRef.current?.click()} disabled={!agentReady} aria-label="Attach files" title="Attach files">📎</button>
                 {agentRunning && <button className="stop-button" onClick={() => void interruptAgent()} aria-label="Stop Agent" title="Stop Agent">■</button>}
