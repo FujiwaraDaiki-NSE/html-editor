@@ -27,15 +27,17 @@ import { selectThreadRunning, selectThreadTurns, selectTurnItems } from "./codex
 type SlideDoc = { id: string; title: string; notes: string; html: string };
 type TemplateDoc = { id: string; name: string; html: string };
 type ReferenceAttachment = { path: string; name: string; mimeType?: string; size: number };
+type ReferenceShelfEntry = ReferenceAttachment & { hash?: string; addedAt?: string; missing: boolean };
 
 type SlideNav = "filmstrip" | "rail";
 type ActivityView = "agent" | "history" | "shortcuts" | "settings";
-type OpenPopover = "delivery" | "threads" | "addBlock" | "layouts" | "newSlide" | "quality" | null;
+type OpenPopover = "delivery" | "threads" | "addBlock" | "layouts" | "newSlide" | "quality" | "references" | null;
 
 type ServerState = {
   deck: { title: string; slides: SlideDoc[] };
   css: string;
   templates: TemplateDoc[];
+  references: ReferenceShelfEntry[];
   history: HistoryEntry[];
   variations: Array<{ branch: string; label: string; commit: string; message: string; status: "ready" | "generating" }>;
   project: { root: string; slug?: string; branch: string; commit: string; revision?: string; clean: boolean };
@@ -338,6 +340,7 @@ export default function Home() {
   const [annotationAttachments, setAnnotationAttachments] = useState<SentAnnotationAttachment[]>([]);
   const [activeOverlayAttachmentId, setActiveOverlayAttachmentId] = useState<string | null>(null);
   const [referenceAttachments, setReferenceAttachments] = useState<ReferenceAttachment[]>([]);
+  const [referenceShelf, setReferenceShelf] = useState<ReferenceShelfEntry[]>([]);
 
   const canvasRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -554,6 +557,7 @@ export default function Home() {
       reinject();
     }
     setHistory(state.history);
+    setReferenceShelf(state.references ?? []);
     setVariations(state.variations ?? []);
     setProject(state.project);
     setServerRevision(state.project.revision ?? state.project.commit);
@@ -1374,10 +1378,22 @@ export default function Home() {
         const result = await response.json();
         if (!response.ok) throw new Error(result.error ?? "Reference import failed.");
         setReferenceAttachments((current) => current.some((attachment) => attachment.path === result.path) ? current : [...current, result]);
+        setReferenceShelf((current) => current.some((reference) => reference.path === result.path) ? current : [...current, { ...result, missing: false }]);
         setApiError(null);
       } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
     }
     if (referenceInputRef.current) referenceInputRef.current.value = "";
+  }, []);
+
+  const removeShelfReference = useCallback(async (path: string) => {
+    try {
+      const response = await fetch(`${apiBase}/references/remove`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Reference removal failed.");
+      setReferenceShelf(result.references ?? []);
+      setReferenceAttachments((current) => current.filter((attachment) => attachment.path !== path));
+      setApiError(null);
+    } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   }, []);
 
   const deleteSelected = () => {
@@ -2365,6 +2381,27 @@ export default function Home() {
               onDrop={(event) => { event.preventDefault(); void uploadReferences(event.dataTransfer.files); }}
               onPaste={(event) => { const files = event.clipboardData.files; if (files.length > 0) { event.preventDefault(); void uploadReferences(files); } }}
             >
+              {openPopover === "references" && <>
+                <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
+                <aside className="reference-popover" aria-label="Reference shelf">
+                  <header><strong>Reference shelf</strong><button type="button" onClick={() => dismissPopover()}>×</button></header>
+                  <div className="reference-shelf-list">
+                    {referenceShelf.length === 0 && <p className="reference-shelf-empty">No references yet.</p>}
+                    {referenceShelf.map((reference) => {
+                      const attached = referenceAttachments.some((attachment) => attachment.path === reference.path);
+                      return <div className={`reference-shelf-item${reference.missing ? " missing" : ""}`} key={reference.path}>
+                        <label title={reference.path}>
+                          <input type="checkbox" checked={attached} disabled={reference.missing} onChange={() => setReferenceAttachments((current) => attached ? current.filter((item) => item.path !== reference.path) : [...current, reference])} />
+                          <span className="reference-shelf-name">{reference.name}</span>
+                          <small>{reference.missing ? "Missing" : formatBytes(reference.size)}</small>
+                        </label>
+                        <button type="button" aria-label={`Remove ${reference.name} from shelf`} onClick={() => void removeShelfReference(reference.path)}>×</button>
+                      </div>;
+                    })}
+                  </div>
+                  <button className="reference-add" type="button" onClick={() => referenceInputRef.current?.click()}>+ Add files</button>
+                </aside>
+              </>}
               <div className="context-chip" role="group" aria-label="Editor context">
                 <span className="context-summary" role="status"><span className="context-icon" aria-hidden="true">◎</span> Slide {activeSlide} in context · {agentActivity}</span>
                 {activeElementAnnotations.length > 0 && <span className="context-annotation-count">{activeElementAnnotations.length} element{activeElementAnnotations.length === 1 ? "" : "s"}</span>}
@@ -2390,7 +2427,7 @@ export default function Home() {
               <div className="chat-actions">
                 <span>⌘ / Ctrl ↵</span>
                 <input ref={referenceInputRef} className="sr-only" type="file" multiple onChange={(event) => { if (event.target.files) void uploadReferences(event.target.files); }} />
-                <button className="attach-button" type="button" onClick={() => referenceInputRef.current?.click()} disabled={!agentReady} aria-label="Attach files" title="Attach files">📎</button>
+                <button className={`attach-button${openPopover === "references" ? " active" : ""}`} type="button" onClick={(event) => togglePopover("references", event.currentTarget)} disabled={!agentReady} aria-expanded={openPopover === "references"} aria-haspopup="dialog" aria-label="Reference shelf" title="Reference shelf">📎</button>
                 {agentRunning && <button className="stop-button" onClick={() => void interruptAgent()} aria-label="Stop Agent" title="Stop Agent">■</button>}
                 <button className="send-button" onClick={() => void sendMessage()} disabled={!agentReady || !(canSendTurn(promptDraft, sendableAnnotations) || referenceAttachments.length > 0) || turnSubmitting} aria-label="Send message">↑</button>
               </div>
