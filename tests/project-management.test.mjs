@@ -52,11 +52,15 @@ test("projects are independent repositories with lifecycle operations", async ()
     assert.notEqual(git(join(workspaces, second), ["rev-parse", "HEAD"]), beforeRename);
 
     await project.switchProject(slug);
+    const referenceData = Buffer.from("do not copy this binary").toString("base64");
+    await project.importReference({ data: referenceData, mimeType: "application/pdf", name: "brief.pdf" });
+    project.commitIfChanged("Track reference catalogue");
     assert.equal((await project.listProjects()).find((item) => item.slug === slug).current, true);
     const copy = await project.duplicateProject(slug);
     assert.equal(git(join(workspaces, copy), ["rev-list", "--count", "HEAD"]), "1");
     assert.match(JSON.parse(await readFile(join(workspaces, copy, ".weave", "deck.json"), "utf8")).title, /のコピー$/);
     assert.equal(git(join(workspaces, slug), ["branch", "--list"]), "* main");
+    assert.equal(git(join(workspaces, copy), ["ls-files", "references"]), "references/index.json");
 
     await project.archiveProject(second);
     await access(join(workspaces, ".archive", second, ".git"));

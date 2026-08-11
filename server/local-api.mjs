@@ -16,6 +16,8 @@ import {
   initializeCurrentProject,
   importImageAsset,
   importReference,
+  readReferences,
+  removeReference,
   projectRoot,
   listProjects,
   createProject,
@@ -100,6 +102,7 @@ async function statePayload() {
     deck: await readProject(),
     css: await readDeckCss(),
     templates: await readTemplates(),
+    references: await readReferences(),
     ...state,
     variations: state.variations.map((variation) => ({
       ...variation,
@@ -240,7 +243,7 @@ const server = createServer(async (request, response) => {
       [/^\/api\/projects\/current$/, "POST"],
       [/^\/api\/projects\/[^/]+$/, "PATCH"],
       [/^\/api\/projects\/[^/]+\/(?:duplicate|archive)$/, "POST"],
-      [/^\/api\/(?:assets|references|save|history\/checkout|history\/main|variations\/(?:checkout|generate|accept|archive))$/, "POST"],
+      [/^\/api\/(?:assets|references|references\/remove|save|history\/checkout|history\/main|variations\/(?:checkout|generate|accept|archive))$/, "POST"],
       [/^\/api\/codex\/(?:thread\/(?:start|read|resume|fork|action)|turn\/(?:start|steer|interrupt)|request\/(?:resolve|reject)|catalog\/refresh|skill\/config|account\/(?:login|logout)|mcp\/(?:oauth|resource\/read|tool\/call))$/, "POST"],
     ];
     const routeMethod = routeMethods.find(([pattern]) => pattern.test(url.pathname))?.[1];
@@ -328,6 +331,9 @@ const server = createServer(async (request, response) => {
     }
     if (url.pathname === "/api/references") {
       return sendJson(request, response, 201, await importReference(payload));
+    }
+    if (url.pathname === "/api/references/remove") {
+      return sendJson(request, response, 200, { references: await removeReference(payload.path) });
     }
 
     if (url.pathname === "/api/save") {

@@ -227,6 +227,20 @@ body {
 .annotation-legend-text strong { color: var(--text); font-size: inherit; font-weight: 600; }
 .chat-box .annotation-legend { max-height: 53px; }
 .reference-attachments { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px; }
+.attach-button.active { color: var(--accent); }
+.reference-popover { position: absolute; z-index: 31; right: 7px; bottom: 42px; width: min(360px, calc(100% - 14px)); overflow: hidden; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--panel); box-shadow: var(--shadow); }
+.reference-popover header { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; border-bottom: 1px solid var(--line); font-size: var(--chat-meta); }
+.reference-popover header button { padding: 0 2px; background: transparent; color: var(--muted); font-size: 15px; }
+.reference-shelf-list { max-height: 220px; overflow-y: auto; }
+.reference-shelf-item { display: flex; align-items: center; gap: 5px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.reference-shelf-item label { min-width: 0; flex: 1; display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; align-items: center; gap: 6px; cursor: pointer; }
+.reference-shelf-item label small { color: var(--muted); font-size: var(--chat-micro); }
+.reference-shelf-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: var(--chat-meta); }
+.reference-shelf-item.missing .reference-shelf-name, .reference-shelf-item.missing label small { color: var(--muted); }
+.reference-shelf-item > button { padding: 0 3px; background: transparent; color: var(--muted); font-size: 15px; }
+.reference-shelf-empty { margin: 0; padding: 12px; color: var(--muted); font-size: var(--chat-meta); }
+.reference-add { width: 100%; padding: 8px 10px; border: 0; background: transparent; color: var(--accent); font-size: var(--chat-meta); text-align: left; cursor: pointer; }
+.reference-add:hover, .reference-shelf-item:hover { background: var(--panel-3); }
 .reference-attachment { margin-bottom: 0; }
 .reference-attachment-name { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
 .reference-attachment button { min-width: 20px; padding: 0 3px; border: 0; background: transparent; color: var(--muted); font-size: 15px; cursor: pointer; }
@@ -242,7 +256,7 @@ body {
 .work-details summary span { overflow: hidden; color: var(--soft); font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
 .work-details p { margin: 5px 0 0; padding-left: 9px; position: relative; line-height: 1.45; overflow-wrap: anywhere; white-space: pre-wrap; }
 .work-details p::before { content: "·"; position: absolute; left: 1px; color: var(--accent); }
-.chat-box { margin: 0 9px 9px; padding: 7px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--panel-2); box-shadow: 0 5px 15px rgba(0,0,0,.12); }
+.chat-box { position: relative; margin: 0 9px 9px; padding: 7px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--panel-2); box-shadow: 0 5px 15px rgba(0,0,0,.12); }
 .chat-box:focus-within { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
 .chat-box textarea { width: 100%; min-height: 4.5em; max-height: 168px; field-sizing: content; resize: none; border: 0; outline: 0; background: transparent; color: var(--text); font-size: var(--chat-body); line-height: var(--chat-lh); }
 .chat-box textarea::placeholder { color: var(--soft); }

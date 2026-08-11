@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { access, cp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, readFile, readdir, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,7 @@ import { formatDeckCss, formatSlideHtml } from "../shared/html-format.mjs";
 import { auditContentPolicy, auditHtmlSafety } from "../shared/content-policy.mjs";
 import { defaultSlideClasses, migrateSlideHtmlToTailwind } from "../shared/tailwind-slide.mjs";
 import { projectSlug } from "../shared/project-slug.mjs";
+import { isReferencePath } from "../shared/context.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspacesRoot = process.env.WEAVE_WORKSPACES_ROOT ? resolve(process.env.WEAVE_WORKSPACES_ROOT) : join(repoRoot, "workspaces");
@@ -93,7 +94,9 @@ If no file change is needed, respond with a concise explanation.
 
 Files under references/ are materials brought in by a human through chat. Open and read the paths
 provided in the envelope's attachments yourself. pptx, docx, and xlsx files are zip archives, so
-extract them to read their XML. If a format cannot be read with the available tools, tell the human.`;
+extract them to read their XML. The references/index.json file is the catalogue of materials in the
+project shelf; read it when you need to know what is available beyond this turn's attachments. If a
+format cannot be read with the available tools, tell the human.`;
 
 const assetTypes = new Map([
   ["image/png", "png"], ["image/jpeg", "jpg"], ["image/webp", "webp"],
@@ -161,6 +164,38 @@ export async function importReference({ data, mimeType, name }) {
     await writeFile(indexPath, `${JSON.stringify({ entries }, null, 2)}\n`);
   }
   return { path: relativePath, name: normalizedName, mimeType, size: bytes.length };
+}
+
+export async function readReferences() {
+  const indexPath = join(referencesRoot(), "index.json");
+  let index;
+  try {
+    index = JSON.parse(await readFile(indexPath, "utf8"));
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(index?.entries)) return [];
+  return index.entries
+    .filter((entry) => entry && typeof entry.path === "string")
+    .map((entry) => ({ ...entry, missing: !existsSync(join(projectRoot(), entry.path)) }));
+}
+
+export async function removeReference(path) {
+  if (!isReferencePath(path)) throw new Error("Invalid reference path.");
+  return runProjectExclusive(async () => {
+    const indexPath = join(referencesRoot(), "index.json");
+    let index;
+    try {
+      index = JSON.parse(await readFile(indexPath, "utf8"));
+    } catch {
+      return [];
+    }
+    if (!Array.isArray(index?.entries)) return [];
+    const entries = index.entries.filter((entry) => entry?.path !== path);
+    if (entries.length !== index.entries.length) await writeFile(indexPath, `${JSON.stringify({ entries }, null, 2)}\n`);
+    await unlink(join(projectRoot(), path)).catch((error) => { if (error.code !== "ENOENT") throw error; });
+    return readReferences();
+  });
 }
 
 /* Seed content, authored as blocks and stamped into HTML fragments exactly once. After seeding
@@ -870,7 +905,14 @@ export async function duplicateProject(slug) {
   const sourceManifest = JSON.parse(await readFile(join(source, ".weave", "deck.json"), "utf8"));
   const next = await uniqueSlug(`${sourceManifest.title} のコピー`);
   const target = join(workspacesRoot, next);
-  await cp(source, target, { recursive: true, filter: (path) => !path.split("/").includes(".git") && !/\.slides-[^/]+\.(staged|previous)$/.test(path) });
+  const sourceReferences = resolve(referencesRoot(source));
+  const sourceReferencesIndex = join(sourceReferences, "index.json");
+  await cp(source, target, { recursive: true, filter: (path) => {
+    if (path.split("/").includes(".git") || /\.slides-[^/]+\.(staged|previous)$/.test(path)) return false;
+    const absolutePath = resolve(path);
+    if (absolutePath === sourceReferences || !absolutePath.startsWith(`${sourceReferences}/`)) return true;
+    return absolutePath === sourceReferencesIndex;
+  } });
   const manifestPathCopy = join(target, ".weave", "deck.json");
   sourceManifest.title = `${sourceManifest.title} のコピー`;
   await writeFile(manifestPathCopy, `${JSON.stringify(sourceManifest, null, 2)}\n`);
