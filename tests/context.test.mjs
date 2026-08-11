@@ -88,6 +88,19 @@ test("editor envelopes include non-empty overflowing ids only", () => {
   assert.equal("overflowing" in editorEnvelope({ overflowing: [] }), false);
 });
 
+test("editor envelopes normalize attachments, cap them, and omit invalid or empty values", () => {
+  const attachments = Array.from({ length: 22 }, (_, index) => ({ path: `references/${index}.pdf`, name: `資料${index}.pdf`, bytes: index + 1 }));
+  attachments.push({ path: "", name: "bad", bytes: 1 }, { path: "references/bad", name: "bad", bytes: "1" });
+  assert.equal(editorEnvelope({ attachments }).attachments.length, 20);
+  assert.equal("attachments" in editorEnvelope({ attachments: [] }), false);
+  assert.equal("attachments" in editorEnvelope({ attachments: [{ path: "references/b", name: "", bytes: 1 }] }), false);
+  assert.equal("attachments" in editorEnvelope({ attachments: [
+    { path: "../secret.png", name: "secret.png", bytes: 1 },
+    { path: "/Users/secret.png", name: "secret.png", bytes: 1 },
+    { path: "assets/secret.png", name: "secret.png", bytes: 1 },
+  ] }), false);
+});
+
 test("context rules describe the file-backed truth", () => {
   assert.match(contextPromptRules, /slide HTML, CSS, templates, and history from project files/);
   assert.match(contextPromptRules, /slides\/<slide>\.html/);

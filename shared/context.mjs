@@ -6,6 +6,11 @@ const excerpt = (value) => String(value ?? "").replace(/\s+/g, " ").trim().slice
    smaller is measurement noise rather than a broken layout. */
 const overflowThreshold = 1;
 const maxOverflowingIds = 20;
+const referencePathPattern = /^references\/[^/\\]+$/;
+
+export function isReferencePath(value) {
+  return typeof value === "string" && referencePathPattern.test(value);
+}
 
 export function overflowingIds(measurements, frame = { width: designWidth, height: designHeight }) {
   if (!Array.isArray(measurements)) return [];
@@ -62,6 +67,15 @@ export function editorEnvelope(input) {
       .filter(Boolean))].slice(0, maxOverflowingIds);
     if (overflowing.length > 0) envelope.overflowing = overflowing;
   }
+  if (Array.isArray(input.attachments)) {
+    const attachments = input.attachments.map((attachment) => {
+      if (!attachment || typeof attachment !== "object") return null;
+      if (!isReferencePath(attachment.path) || typeof attachment.name !== "string" || !attachment.name.trim()) return null;
+      if (typeof attachment.bytes !== "number" || !Number.isFinite(attachment.bytes) || attachment.bytes < 0) return null;
+      return { path: attachment.path, name: attachment.name, bytes: attachment.bytes };
+    }).filter(Boolean).slice(0, 20);
+    if (attachments.length > 0) envelope.attachments = attachments;
+  }
   return envelope;
 }
 
@@ -70,4 +84,6 @@ slide is the slide id, whose content is in slides/<slide>.html.
 Those files hold the editor canvas as of the start of this turn, so read them rather than asking for the markup.
 selected.id and annotation weaveId are values of data-weave-id attributes.
 If a snapshot and an id disagree, prefer the id.
-overflowing lists data-weave-ids whose rendered box leaves the slide frame or exceeds its own content box; it is a rendering result the agent cannot measure on its own.`;
+overflowing lists data-weave-ids whose rendered box leaves the slide frame or exceeds its own content box; it is a rendering result the agent cannot measure on its own.
+attachments are files the human brought in for this turn, addressed by paths relative to the project root.
+Their contents are not included; open the files yourself when needed, and use available tools to convert formats you cannot read directly.`;

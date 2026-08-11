@@ -5,12 +5,28 @@ import { CodexAppServerClient } from "./client.mjs";
 import { CodexEventStream } from "./event-stream.mjs";
 import { ServerRequestRouter } from "./request-router.mjs";
 import { checkGeneratedVersion } from "./version.mjs";
+import { referencesRoot } from "../project.mjs";
+import { isReferencePath } from "../../shared/context.mjs";
 
 const WEAVE_THREAD_SOURCE = "weave";
 const WEAVE_NAME_PREFIX = "Weave · ";
 
-function textInput(text) {
-  return [{ type: "text", text, text_elements: [] }];
+export function turnInput(text, attachments, projectRoot) {
+  const input = [{ type: "text", text, text_elements: [] }];
+  if (!Array.isArray(attachments)) return input;
+  for (const attachment of attachments) {
+    if (!attachment || typeof attachment.path !== "string") continue;
+    if (!isReferencePath(attachment.path)) continue;
+    const referenceRoot = resolve(referencesRoot(projectRoot));
+    const absolutePath = resolve(projectRoot, attachment.path);
+    if (absolutePath !== referenceRoot && !absolutePath.startsWith(`${referenceRoot}/`)) continue;
+    const path = attachment.path.toLowerCase();
+    const mimeType = String(attachment.mimeType ?? "").toLowerCase();
+    if (/\.(png|jpe?g|webp|gif|svg)$/.test(path) || /^image\/(png|jpe?g|webp|gif|svg\+xml)$/.test(mimeType)) {
+      input.push({ type: "localImage", path: absolutePath });
+    }
+  }
+  return input;
 }
 
 function unwrapList(result) {
@@ -324,7 +340,7 @@ export class CodexService extends EventEmitter {
     return await this.client.request(method, safeParams);
   }
 
-  async startTurn({ threadId, prompt, clientUserMessageId, model, effort, approvalPolicy = "never" }) {
+  async startTurn({ threadId, prompt, clientUserMessageId, model, effort, approvalPolicy = "never", attachments }) {
     await this.assertWeaveThread(threadId);
     if (this.activeTurns.has(threadId)) throw new Error("This thread already has a running turn.");
     if (!clientUserMessageId) throw new Error("clientUserMessageId is required.");
@@ -333,7 +349,7 @@ export class CodexService extends EventEmitter {
     const request = this.client.request("turn/start", {
       threadId,
       clientUserMessageId,
-      input: textInput(prompt),
+      input: turnInput(prompt, attachments, this.projectRoot),
       cwd: this.projectRoot,
       approvalPolicy,
       approvalsReviewer: approvalPolicy === "never" ? null : "user",
@@ -358,7 +374,7 @@ export class CodexService extends EventEmitter {
     }
   }
 
-  async steerTurn({ threadId, prompt, clientUserMessageId }) {
+  async steerTurn({ threadId, prompt, clientUserMessageId, attachments }) {
     await this.assertWeaveThread(threadId);
     const expectedTurnId = this.activeTurns.get(threadId);
     if (!expectedTurnId) throw new Error("This thread has no running turn.");
@@ -366,7 +382,7 @@ export class CodexService extends EventEmitter {
       threadId,
       expectedTurnId,
       clientUserMessageId,
-      input: textInput(prompt),
+      input: turnInput(prompt, attachments, this.projectRoot),
     });
   }
 

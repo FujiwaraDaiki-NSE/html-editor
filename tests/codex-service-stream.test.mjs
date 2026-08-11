@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
 import { CodexEventStream } from "../server/codex/event-stream.mjs";
-import { CodexService, validateOAuthUrl } from "../server/codex/service.mjs";
+import { CodexService, turnInput, validateOAuthUrl } from "../server/codex/service.mjs";
 
 class FakeClient extends EventEmitter {
   calls = [];
@@ -127,4 +127,20 @@ test("accepts only HTTPS and loopback OAuth destinations", () => {
   assert.equal(validateOAuthUrl("http://127.0.0.1:4389/callback"), "http://127.0.0.1:4389/callback");
   assert.throws(() => validateOAuthUrl("javascript:alert(1)"), /unsafe OAuth URL/);
   assert.throws(() => validateOAuthUrl("http://example.com/login"), /unsafe OAuth URL/);
+});
+
+test("turn input keeps legacy text shape and adds only image attachments", () => {
+  assert.deepEqual(turnInput("hello"), [{ type: "text", text: "hello", text_elements: [] }]);
+  assert.deepEqual(turnInput("hello", [
+    { path: "references/photo.png", name: "photo.png", bytes: 4 },
+    { path: "references/file.pdf", name: "file.pdf", bytes: 4 },
+  ], "/workspace"), [
+    { type: "text", text: "hello", text_elements: [] },
+    { type: "localImage", path: "/workspace/references/photo.png" },
+  ]);
+  assert.deepEqual(turnInput("hello", [
+    { path: "../secret.png", mimeType: "image/png" },
+    { path: "/Users/secret.png", mimeType: "image/png" },
+    { path: "assets/secret.png", mimeType: "image/png" },
+  ], "/workspace"), [{ type: "text", text: "hello", text_elements: [] }]);
 });
