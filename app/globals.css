@@ -248,6 +248,19 @@ body {
 .chat-box textarea::placeholder { color: var(--soft); }
 .chat-box textarea:disabled { cursor: not-allowed; opacity: .65; }
 .chat-box > .chat-actions { display: flex; align-items: center; gap: 7px; color: var(--soft); font-size: var(--chat-meta); }
+.agent-model-control { position: relative; min-width: 0; }
+.agent-model-button { display: flex; align-items: center; gap: 5px; max-width: 220px; padding: 3px 6px; border: 1px solid var(--line); border-radius: 4px; background: var(--panel-3); color: var(--muted); font-size: var(--chat-meta); }
+.agent-model-button:hover:not(:disabled), .agent-model-button[aria-expanded="true"] { border-color: var(--line-strong); color: var(--text); }
+.agent-model-button:disabled { cursor: not-allowed; opacity: .55; }
+.agent-model-button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-model-button b { flex: 0 0 auto; color: var(--soft); font-weight: 400; }
+.agent-model-popover { position: absolute; z-index: 31; bottom: calc(100% + 7px); left: 0; width: 230px; max-height: 320px; overflow: auto; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--panel); box-shadow: var(--shadow); }
+.agent-model-popover section { padding: 6px 0; border-bottom: 1px solid var(--line); }
+.agent-model-popover section:last-child { border-bottom: 0; }
+.agent-model-popover section > strong { display: block; padding: 3px 10px 5px; color: var(--muted); font-size: var(--chat-micro); font-weight: 600; }
+.agent-model-popover section > button { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; padding: 6px 10px; border: 0; background: transparent; color: var(--text); text-align: left; font-size: var(--chat-meta); cursor: pointer; }
+.agent-model-popover section > button:hover, .agent-model-popover section > button.active { background: var(--panel-3); }
+.agent-model-popover section > button b { color: var(--accent); font-weight: 600; }
 .chat-box button { border: 0; cursor: pointer; }
 .attach-button { background: transparent; color: var(--muted); padding: 0; }
 .stop-button { margin-left: auto; width: 28px; height: 28px; border-radius: 5px; background: color-mix(in srgb, #e36860 18%, var(--panel-3)); color: #e9857e; font-size: var(--chat-body); }
