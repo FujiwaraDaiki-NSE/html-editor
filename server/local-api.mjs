@@ -17,8 +17,11 @@ import {
   importImageAsset,
   assetMimeTypes,
   importReference,
+  importReferenceFolder,
+  listFolders,
   readReferences,
   removeReference,
+  syncReferenceFolder,
   projectRoot,
   listProjects,
   createProject,
@@ -240,12 +243,13 @@ const server = createServer(async (request, response) => {
     const routeMethods = [
       [/^\/healthz$/, "GET"],
       [/^\/api\/(?:state|projects|codex\/events|codex\/threads)$/, "GET"],
+      [/^\/api\/folders$/, "GET"],
       [/^\/api\/(?:assets|projects\/[^/]+\/assets)\//, "GET"],
       [/^\/api\/projects$/, "POST"],
       [/^\/api\/projects\/current$/, "POST"],
       [/^\/api\/projects\/[^/]+$/, "PATCH"],
       [/^\/api\/projects\/[^/]+\/(?:duplicate|archive)$/, "POST"],
-      [/^\/api\/(?:assets|references|references\/remove|save|history\/checkout|history\/main|variations\/(?:checkout|generate|accept|archive))$/, "POST"],
+      [/^\/api\/(?:assets|references|references\/remove|references\/folder|references\/folder\/sync|save|history\/checkout|history\/main|variations\/(?:checkout|generate|accept|archive))$/, "POST"],
       [/^\/api\/codex\/(?:thread\/(?:start|read|resume|fork|action)|turn\/(?:start|steer|interrupt)|request\/(?:resolve|reject)|catalog\/refresh|skill\/config|account\/(?:login|logout)|mcp\/(?:oauth|resource\/read|tool\/call))$/, "POST"],
     ];
     const routeMethod = routeMethods.find(([pattern]) => pattern.test(url.pathname))?.[1];
@@ -262,6 +266,9 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET" && url.pathname === "/api/projects") {
       return sendJson(request, response, 200, { projects: await listProjects() });
+    }
+    if (request.method === "GET" && url.pathname === "/api/folders") {
+      return sendJson(request, response, 200, await listFolders(url.searchParams.get("path") || undefined));
     }
     if (request.method === "GET" && url.pathname.startsWith("/api/assets/")) {
       const filename = url.pathname.slice("/api/assets/".length);
@@ -335,6 +342,12 @@ const server = createServer(async (request, response) => {
     }
     if (url.pathname === "/api/references") {
       return sendJson(request, response, 201, await importReference(payload));
+    }
+    if (url.pathname === "/api/references/folder") {
+      return sendJson(request, response, 201, await importReferenceFolder(payload));
+    }
+    if (url.pathname === "/api/references/folder/sync") {
+      return sendJson(request, response, 200, await syncReferenceFolder(payload.path));
     }
     if (url.pathname === "/api/references/remove") {
       return sendJson(request, response, 200, { references: await removeReference(payload.path) });
@@ -467,7 +480,7 @@ const server = createServer(async (request, response) => {
       : error?.code === "WEAVE_INVALID_JSON" ? 400
       : ["WEAVE_QUALITY_FAILED", "WEAVE_CONTENT_POLICY"].includes(error?.code) ? 422
       : ["WEAVE_PROJECT_DIRTY", "WEAVE_PROJECT_BLOCKED", "WEAVE_TURN_RUNNING"].includes(error?.code) ? 409
-      : /required|invalid|unknown|not offered/i.test(message) ? 400
+      : /required|invalid|unknown|not offered|exceeds|already exists/i.test(message) ? 400
       : /owned|running|save|proposal branch|cannot be archived/i.test(message) ? 409 : 500;
     return sendJson(request, response, status, { error: message, code: error?.code, diagnostics: error?.diagnostics });
   }
