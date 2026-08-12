@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { access, cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
+import { performance } from "node:perf_hooks";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defaultDeckCss, escapeHtml, slideFragmentFromBlocks } from "../shared/slide-design.mjs";
@@ -181,10 +182,15 @@ function pathInside(root, target) {
 
 const homePath = () => realpath(homedir());
 
-export async function walkReferenceFolder(source) {
+export async function walkReferenceFolder(source, timeBudgetMs = 5_000) {
   const result = { files: 0, bytes: 0, capped: false };
+  const startedAt = performance.now();
   const walk = async (directory) => {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
+      if (performance.now() - startedAt > timeBudgetMs) {
+        result.capped = true;
+        return;
+      }
       if (entry.name.startsWith(".")) continue;
       const entryPath = join(directory, entry.name);
       const info = await lstat(entryPath);
@@ -233,21 +239,30 @@ async function referenceFolderSource(source) {
 export async function listFolders(path = homedir()) {
   const source = await referenceFolderSource(path);
   const home = await homePath();
-  const folders = (await readdir(source, { withFileTypes: true }))
-    .filter((entry) => !entry.name.startsWith(".") && entry.isDirectory())
-    .map((entry) => ({ name: entry.name, path: join(source, entry.name) }));
   const relativePath = relative(home, source);
   const parts = relativePath ? relativePath.split("/") : [];
   const breadcrumbs = [{ name: "Home", path: home }];
   parts.forEach((part, index) => breadcrumbs.push({ name: part, path: join(home, ...parts.slice(0, index + 1)) }));
-  return { path: source, parent: source === home ? null : dirname(source), breadcrumbs, folders, ...(await walkReferenceFolder(source)) };
+  const directEntries = await readdir(source, { withFileTypes: true });
+  const visibleEntries = directEntries.filter((entry) => !entry.name.startsWith(".") && !entry.isSymbolicLink());
+  const folders = visibleEntries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => ({ name: entry.name, path: join(source, entry.name) }));
+  return {
+    path: source,
+    parent: source === home ? null : dirname(source),
+    breadcrumbs,
+    folders,
+    folderCount: folders.length,
+    fileCount: visibleEntries.filter((entry) => entry.isFile()).length,
+  };
 }
 
 export async function importReferenceFolder({ source }) {
   return runProjectExclusive(async () => {
     const resolved = await referenceFolderSource(source);
     const summary = await walkReferenceFolder(resolved);
-    if (summary.capped) throw new Error("Reference folder exceeds the 2,000-file or 500 MB limit.");
+    if (summary.capped) throw new Error("Reference folder is too large or too slow to read and exceeds the limit (2,000 files / 500 MB).");
     const directory = referencesRoot();
     await mkdir(directory, { recursive: true });
     const indexPath = join(directory, "index.json");
@@ -289,7 +304,7 @@ export async function syncReferenceFolder(path) {
     if (!existsSync(entry.source)) return { references: await readReferences(), sourceMissing: true };
     const source = await referenceFolderSource(entry.source);
     const summary = await walkReferenceFolder(source);
-    if (summary.capped) throw new Error("Reference folder exceeds the 2,000-file or 500 MB limit.");
+    if (summary.capped) throw new Error("Reference folder is too large or too slow to read and exceeds the limit (2,000 files / 500 MB).");
     const destination = join(projectRoot(), path);
     const staged = `${destination}.${randomUUID()}.staged`;
     const previous = `${destination}.${randomUUID()}.previous`;

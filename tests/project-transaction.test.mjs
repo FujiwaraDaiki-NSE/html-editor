@@ -252,6 +252,51 @@ test("folder walks cap imports before copying oversized folders", async () => {
   }
 });
 
+test("folder browsing counts only the current directory", async () => {
+  const home = await mkdtemp(join(tmpdir(), "weave-home-browse-"));
+  const root = join(home, "project");
+  const source = join(home, "browse");
+  await mkdir(join(source, "nested"), { recursive: true });
+  await writeFile(join(source, "here.txt"), "here");
+  await writeFile(join(source, "nested", "there.txt"), "there");
+  const previousRoot = process.env.WEAVE_PROJECT_ROOT;
+  const previousHome = process.env.HOME;
+  process.env.WEAVE_PROJECT_ROOT = root;
+  process.env.HOME = home;
+  try {
+    const project = await import(`../server/project.mjs?folder-browse=${Date.now()}`);
+    await project.ensureProject();
+    const result = await project.listFolders(source);
+    assert.equal(result.folderCount, 1);
+    assert.equal(result.fileCount, 1);
+    assert.equal("bytes" in result, false);
+    assert.equal("capped" in result, false);
+  } finally {
+    if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
+    else process.env.WEAVE_PROJECT_ROOT = previousRoot;
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("folder walks can be capped by a caller-provided time budget", async () => {
+  const home = await mkdtemp(join(tmpdir(), "weave-home-budget-"));
+  const source = join(home, "budget");
+  await mkdir(source, { recursive: true });
+  await writeFile(join(source, "file.txt"), "file");
+  const previousHome = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    const project = await import(`../server/project.mjs?folder-budget=${Date.now()}`);
+    assert.equal((await project.walkReferenceFolder(source, -1)).capped, true);
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
 test("folder browsing and imports reject paths outside the real home", async () => {
   const home = await mkdtemp(join(tmpdir(), "weave-home-boundary-"));
   const outside = await mkdtemp(join(tmpdir(), "weave-outside-"));

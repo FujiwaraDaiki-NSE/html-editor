@@ -29,7 +29,7 @@ type SlideDoc = { id: string; title: string; notes: string; html: string };
 type TemplateDoc = { id: string; name: string; html: string };
 type ReferenceAttachment = { path: string; name: string; mimeType?: string; size: number; kind?: "file" | "folder"; files?: number };
 type ReferenceShelfEntry = ReferenceAttachment & { hash?: string; addedAt?: string; source?: string; sourceMissing?: boolean; missing: boolean; kind: "file" | "folder" };
-type FolderBrowser = { path: string; parent: string | null; breadcrumbs: Array<{ name: string; path: string }>; folders: Array<{ name: string; path: string }>; files: number; bytes: number; capped: boolean };
+type FolderBrowser = { path: string; parent: string | null; breadcrumbs: Array<{ name: string; path: string }>; folders: Array<{ name: string; path: string }>; folderCount: number; fileCount: number };
 
 type SlideNav = "filmstrip" | "rail";
 type ActivityView = "agent" | "history" | "shortcuts" | "settings";
@@ -374,6 +374,7 @@ export default function Home() {
   const [referenceShelf, setReferenceShelf] = useState<ReferenceShelfEntry[]>([]);
   const [referenceView, setReferenceView] = useState<"shelf" | "browse">("shelf");
   const [folderBrowser, setFolderBrowser] = useState<FolderBrowser | null>(null);
+  const [folderImporting, setFolderImporting] = useState(false);
 
   const canvasRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -1465,7 +1466,8 @@ export default function Home() {
   }, []);
 
   const importFolder = useCallback(async () => {
-    if (!folderBrowser || folderBrowser.capped) return;
+    if (!folderBrowser || folderImporting) return;
+    setFolderImporting(true);
     try {
       const response = await fetch(`${apiBase}/references/folder`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ source: folderBrowser.path }) });
       const result = await response.json();
@@ -1473,7 +1475,8 @@ export default function Home() {
       setReferenceShelf((current) => [...current, { ...result, missing: false, sourceMissing: false }]);
       setReferenceView("shelf"); setApiError(null);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
-  }, [folderBrowser]);
+    finally { setFolderImporting(false); }
+  }, [folderBrowser, folderImporting]);
 
   const syncFolder = useCallback(async (path: string) => {
     try {
@@ -2473,7 +2476,7 @@ export default function Home() {
                   {referenceView === "browse" && folderBrowser ? <>
                     <div className="reference-breadcrumbs">{folderBrowser.breadcrumbs.map((crumb, index) => <span key={crumb.path}>{index > 0 && " / "}<button type="button" onClick={() => void browseFolders(crumb.path)}>{crumb.name}</button></span>)}</div>
                     <div className="reference-folder-list">{folderBrowser.parent && <button type="button" onClick={() => void browseFolders(folderBrowser.parent ?? undefined)}>↑ Parent folder</button>}{folderBrowser.folders.map((folder) => <button type="button" key={folder.path} onClick={() => void browseFolders(folder.path)}>📁 {folder.name}</button>)}</div>
-                    <footer className="reference-browser-footer"><span>{folderBrowser.capped ? "2,000+ files" : `${folderBrowser.files.toLocaleString()} files`} · {formatBytes(folderBrowser.bytes)}</span><button type="button" onClick={() => void importFolder()} disabled={folderBrowser.capped}>Import folder</button></footer>
+                    <footer className="reference-browser-footer"><span>{folderBrowser.folderCount.toLocaleString()} folders · {folderBrowser.fileCount.toLocaleString()} files here</span><button type="button" onClick={() => void importFolder()} disabled={folderImporting}>{folderImporting ? "Importing…" : "Import folder"}</button></footer>
                   </> : <>
                   <section className="reference-shelf-section" aria-labelledby="reference-folders-heading">
                     <h4 id="reference-folders-heading">FOLDERS</h4>
