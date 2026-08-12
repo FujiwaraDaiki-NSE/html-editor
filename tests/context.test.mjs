@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { editorEnvelope, overflowingIds, contextPromptRules } from "../shared/context.mjs";
+import { editorEnvelope, isReferencePath, overflowingIds, contextPromptRules } from "../shared/context.mjs";
 import { designHeight, designWidth } from "../shared/slide-design.mjs";
 
 const typicalAnnotations = [
@@ -107,4 +107,17 @@ test("context rules describe the file-backed truth", () => {
   assert.match(contextPromptRules, /data-weave-id/);
   assert.match(contextPromptRules, /prefer the id/);
   assert.match(contextPromptRules, /rendering result/);
+});
+
+test("reference paths allow nested folders without allowing traversal", () => {
+  assert.equal(isReferencePath("references/project/docs/brief.pdf"), true);
+  assert.equal(isReferencePath("references/../secret"), false);
+  assert.equal(isReferencePath("references//secret"), false);
+  assert.equal(isReferencePath("references/\\secret"), false);
+  assert.equal(isReferencePath("/references/secret"), false);
+});
+
+test("folder attachments require kind and a file count", () => {
+  assert.deepEqual(editorEnvelope({ attachments: [{ path: "references/docs", name: "docs", bytes: 12, kind: "folder", files: 3 }] }).attachments, [{ path: "references/docs", name: "docs", bytes: 12, kind: "folder", files: 3 }]);
+  assert.equal("attachments" in editorEnvelope({ attachments: [{ path: "references/docs", name: "docs", bytes: 12, kind: "folder" }] }), false);
 });
