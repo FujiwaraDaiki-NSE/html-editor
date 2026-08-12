@@ -81,13 +81,13 @@
 
 ## 進め方
 
-- [ ] `isReferencePath` の階層許可と envelope の `kind` / `files`（`shared/context.mjs`）
-- [ ] `walkReferenceFolder` / `listFolders`（`server/project.mjs`）
-- [ ] `importReferenceFolder` / `syncReferenceFolder` と `readReferences` / `removeReference` の拡張（`server/project.mjs`）
-- [ ] 3つのAPIと許可リスト（`server/local-api.mjs`）
-- [ ] `turnInput` のフォルダ除外（`server/codex/service.mjs`）
-- [ ] 棚2段化とブラウズ画面（`app/page.tsx` / `app/globals.css`）
-- [ ] テスト
+- [x] `isReferencePath` の階層許可と envelope の `kind` / `files`（`shared/context.mjs`）
+- [x] `walkReferenceFolder` / `listFolders`（`server/project.mjs`）
+- [x] `importReferenceFolder` / `syncReferenceFolder` と `readReferences` / `removeReference` の拡張（`server/project.mjs`）
+- [x] 3つのAPIと許可リスト（`server/local-api.mjs`）
+- [x] `turnInput` のフォルダ除外（`server/codex/service.mjs`）
+- [x] 棚2段化とブラウズ画面（`app/page.tsx` / `app/globals.css`）
+- [x] テスト
       - `isReferencePath` が階層を通し `..` と絶対パスと `\` を弾く
       - envelope が `kind: "folder"` を通し、`files` の無いフォルダを落とす
       - 取り込みでドットファイルとシンボリックリンクが落ち、構造が保たれる
@@ -96,8 +96,34 @@
       - `syncReferenceFolder` が原本の追加・削除を反映する
       - `removeReference` がディレクトリを消し、台帳からも消える
       - `turnInput` がフォルダを `localImage` にしない
-- [ ] `npm run typecheck` / `npm run lint` / `npm test`
-- [ ] 実機確認（実フォルダを取り込み、Agentが `ls` して中のPDFを読む。更新が効く）
+- [x] `npm run typecheck` / `npm run lint` / `npm test`
+- [x] 実機確認
+
+## 実装中に変えた設計: ブラウズは再帰しない
+
+計画では「ブラウズ画面のフッタに現在地の再帰集計（`N files · M MB`）を出し、同じ walk の結果を取り込みにも使う」としていた。
+**実機で `GET /api/folders`（既定＝ホーム）が3分経っても返らず、使い物にならなかった**ため、次のとおり変更した。
+
+- `listFolders` は再帰しない。`readdir` 1回で取れる**直下のみ**の `folderCount` / `fileCount` を返す
+- フッタの表示は `10 folders · 0 files here`。合計サイズは出さない
+- 合計は取り込み時にだけ数える。`walkReferenceFolder` には2000ファイル / 500MB に加えて**5秒の時間予算**を入れた
+- 取り込み中はボタンを `Importing…` にして無効化する
+
+理由: ホーム配下には `~/Library` のような巨大なツリーや応答の遅いマウントが含まれ、
+「2000ファイル見つけたら打ち切る」上限はそこへ到達する前に詰まると効かない。
+ブラウズは1画面ごとに必ず走るので、有界でない仕事を置いてはいけなかった。
+
+## 確認結果
+
+- ホーム直下のブラウズが 19ms で返る（修正前は3分でも返らず）。パンくず・親フォルダ・下降が期待どおり動く
+- API層を直接叩いて確認（作業用の一時プロジェクトに対して実施し、実プロジェクトには触れていない）
+  - 取り込み: 構造を保って複製し、`.hidden` は落ちる
+  - 更新: 原本での追加（`c.txt`）と削除（`a.txt`）の両方が棚に反映される
+  - 同じ `source` の二重取り込み: 400 `Reference folder already exists; use Update to refresh it.`
+  - ホーム外（`/Library/Fonts`）: ブラウズ・取り込みとも 400 `Invalid folder: it must be inside the home directory.`
+  - 削除: ディレクトリごと消え、台帳からも消える
+- 棚が FOLDERS / FILES の2段で描画され、既存の単発ファイル2件がFILES側に残っている
+- 型検査・Lint・ビルド・全165テストが成功
 
 ## 成功条件
 
