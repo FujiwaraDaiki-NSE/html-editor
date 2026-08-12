@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -193,6 +193,115 @@ test("reference shelves report missing entries and remove validated paths", asyn
     if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
     else process.env.WEAVE_PROJECT_ROOT = previousRoot;
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("folder imports exclude dot files and links while preserving structure", async () => {
+  const home = await mkdtemp(join(tmpdir(), "weave-home-"));
+  const root = join(home, "project");
+  const source = join(home, "案件A");
+  await mkdir(join(source, "docs"), { recursive: true });
+  await writeFile(join(source, "docs", "brief.pdf"), "brief");
+  await writeFile(join(source, ".env"), "secret");
+  await symlink(join(source, "docs", "brief.pdf"), join(source, "linked.pdf"));
+  const previousRoot = process.env.WEAVE_PROJECT_ROOT;
+  const previousHome = process.env.HOME;
+  process.env.WEAVE_PROJECT_ROOT = root;
+  process.env.HOME = home;
+  try {
+    const project = await import(`../server/project.mjs?folder=${Date.now()}`);
+    await project.ensureProject();
+    const entry = await project.importReferenceFolder({ source });
+    assert.equal(entry.kind, "folder");
+    assert.equal(entry.files, 1);
+    await assert.rejects(project.importReferenceFolder({ source }), /already exists/);
+    assert.equal(await readFile(join(root, entry.path, "docs", "brief.pdf"), "utf8"), "brief");
+    assert.equal((await readdir(join(root, entry.path))).includes(".env"), false);
+    assert.equal((await readdir(join(root, entry.path))).includes("linked.pdf"), false);
+  } finally {
+    if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
+    else process.env.WEAVE_PROJECT_ROOT = previousRoot;
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("folder walks cap imports before copying oversized folders", async () => {
+  const home = await mkdtemp(join(tmpdir(), "weave-home-cap-"));
+  const root = join(home, "project");
+  const source = join(home, "large");
+  await mkdir(source, { recursive: true });
+  await Promise.all(Array.from({ length: 2001 }, (_, index) => writeFile(join(source, `file-${index}.txt`), "x")));
+  const previousRoot = process.env.WEAVE_PROJECT_ROOT;
+  const previousHome = process.env.HOME;
+  process.env.WEAVE_PROJECT_ROOT = root;
+  process.env.HOME = home;
+  try {
+    const project = await import(`../server/project.mjs?folder-cap=${Date.now()}`);
+    await project.ensureProject();
+    assert.equal((await project.walkReferenceFolder(source)).capped, true);
+    await assert.rejects(project.importReferenceFolder({ source }), /exceeds/);
+    await assert.rejects(readdir(join(root, "references")), { code: "ENOENT" });
+  } finally {
+    if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
+    else process.env.WEAVE_PROJECT_ROOT = previousRoot;
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("folder browsing and imports reject paths outside the real home", async () => {
+  const home = await mkdtemp(join(tmpdir(), "weave-home-boundary-"));
+  const outside = await mkdtemp(join(tmpdir(), "weave-outside-"));
+  const root = join(home, "project");
+  const previousRoot = process.env.WEAVE_PROJECT_ROOT;
+  const previousHome = process.env.HOME;
+  process.env.WEAVE_PROJECT_ROOT = root;
+  process.env.HOME = home;
+  try {
+    const project = await import(`../server/project.mjs?folder-boundary=${Date.now()}`);
+    await project.ensureProject();
+    await assert.rejects(project.listFolders(outside), /inside the home/);
+    await assert.rejects(project.importReferenceFolder({ source: outside }), /inside the home/);
+  } finally {
+    if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
+    else process.env.WEAVE_PROJECT_ROOT = previousRoot;
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    await rm(home, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("folder sync replaces the copy and remove deletes the directory", async () => {
+  const home = await mkdtemp(join(tmpdir(), "weave-home-sync-"));
+  const root = join(home, "project");
+  const source = join(home, "source");
+  await mkdir(source, { recursive: true });
+  await writeFile(join(source, "old.txt"), "old");
+  const previousRoot = process.env.WEAVE_PROJECT_ROOT;
+  const previousHome = process.env.HOME;
+  process.env.WEAVE_PROJECT_ROOT = root;
+  process.env.HOME = home;
+  try {
+    const project = await import(`../server/project.mjs?folder-sync=${Date.now()}`);
+    await project.ensureProject();
+    const entry = await project.importReferenceFolder({ source });
+    await rm(join(source, "old.txt"));
+    await writeFile(join(source, "new.txt"), "new");
+    await project.syncReferenceFolder(entry.path);
+    assert.equal(await readFile(join(root, entry.path, "new.txt"), "utf8"), "new");
+    assert.equal((await readdir(join(root, entry.path))).includes("old.txt"), false);
+    await project.removeReference(entry.path);
+    await assert.rejects(readFile(join(root, entry.path)));
+  } finally {
+    if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
+    else process.env.WEAVE_PROJECT_ROOT = previousRoot;
+    if (previousHome === undefined) delete process.env.HOME;
+    else process.env.HOME = previousHome;
+    await rm(home, { recursive: true, force: true });
   }
 });
 
