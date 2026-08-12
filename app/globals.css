@@ -238,9 +238,18 @@ body {
 .reference-shelf-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: var(--chat-meta); }
 .reference-shelf-item.missing .reference-shelf-name, .reference-shelf-item.missing label small { color: var(--muted); }
 .reference-shelf-item > button { padding: 0 3px; background: transparent; color: var(--muted); font-size: 15px; }
-.reference-shelf-empty { margin: 0; padding: 12px; color: var(--muted); font-size: var(--chat-meta); }
 .reference-add { width: 100%; padding: 8px 10px; border: 0; background: transparent; color: var(--accent); font-size: var(--chat-meta); text-align: left; cursor: pointer; }
 .reference-add:hover, .reference-shelf-item:hover { background: var(--panel-3); }
+.reference-shelf-section + .reference-shelf-section { border-top: 1px solid var(--line); }
+.reference-shelf-section h4 { margin: 0; padding: 7px 10px 4px; color: var(--muted); font-size: var(--chat-micro); letter-spacing: .08em; text-transform: uppercase; }
+.reference-folder-list { max-height: 220px; overflow-y: auto; display: grid; }
+.reference-folder-list button { padding: 8px 10px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+.reference-folder-list button:hover { background: var(--panel-3); }
+.reference-breadcrumbs { display: flex; align-items: center; gap: 4px; padding: 3px 5px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: var(--chat-meta); }
+.reference-breadcrumbs button { padding: 2px 3px; border: 0; background: transparent; color: var(--accent); cursor: pointer; }
+.reference-browser-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px; border-top: 1px solid var(--line); color: var(--muted); font-size: var(--chat-meta); }
+.reference-browser-footer button { padding: 5px 8px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--accent); color: var(--panel); cursor: pointer; }
+.reference-browser-footer button:disabled { opacity: .45; cursor: not-allowed; }
 .reference-attachment { margin-bottom: 0; }
 .reference-attachment-name { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
 .reference-attachment button { min-width: 20px; padding: 0 3px; border: 0; background: transparent; color: var(--muted); font-size: 15px; cursor: pointer; }
