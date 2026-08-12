@@ -16,6 +16,7 @@ export function turnInput(text, attachments, projectRoot) {
   if (!Array.isArray(attachments)) return input;
   for (const attachment of attachments) {
     if (!attachment || typeof attachment.path !== "string") continue;
+    if (attachment.kind === "folder") continue;
     if (!isReferencePath(attachment.path)) continue;
     const referenceRoot = resolve(referencesRoot(projectRoot));
     const absolutePath = resolve(projectRoot, attachment.path);
