@@ -1,8 +1,9 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { access, cp, mkdir, readFile, readdir, rename, rm, unlink, writeFile } from "node:fs/promises";
+import { access, cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { homedir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defaultDeckCss, escapeHtml, slideFragmentFromBlocks } from "../shared/slide-design.mjs";
 import { formatDeckCss, formatSlideHtml } from "../shared/html-format.mjs";
@@ -149,26 +150,164 @@ export async function importImageAsset({ data, mimeType }) {
 }
 
 export async function importReference({ data, mimeType, name }) {
-  const bytes = Buffer.from(String(data ?? ""), "base64");
-  if (!bytes.length) throw new Error("Reference data is required.");
-  if (bytes.length > maxReferenceBytes) throw new Error("Reference must be 25 MB or smaller.");
-  const normalizedName = normalizeReferenceName(name);
-  const hash = createHash("sha256").update(bytes).digest("hex");
-  const filename = `${hash.slice(0, 12)}-${normalizedName}`;
-  const root = currentProjectRoot;
-  const directory = referencesRoot(root);
-  await mkdir(directory, { recursive: true });
-  const filePath = join(directory, filename);
-  if (!existsSync(filePath)) await writeFile(filePath, bytes);
-  const indexPath = join(directory, "index.json");
-  const index = JSON.parse(await readFile(indexPath, "utf8").catch(() => "{\"entries\":[]}"));
-  const entries = Array.isArray(index?.entries) ? index.entries : [];
-  const relativePath = `references/${filename}`;
-  if (!entries.some((entry) => entry?.path === relativePath)) {
-    entries.push({ path: relativePath, name: normalizedName, hash, size: bytes.length, mimeType, addedAt: new Date().toISOString() });
-    await writeFile(indexPath, `${JSON.stringify({ entries }, null, 2)}\n`);
+  return runProjectExclusive(async () => {
+    const bytes = Buffer.from(String(data ?? ""), "base64");
+    if (!bytes.length) throw new Error("Reference data is required.");
+    if (bytes.length > maxReferenceBytes) throw new Error("Reference must be 25 MB or smaller.");
+    const normalizedName = normalizeReferenceName(name);
+    const hash = createHash("sha256").update(bytes).digest("hex");
+    const filename = `${hash.slice(0, 12)}-${normalizedName}`;
+    const root = currentProjectRoot;
+    const directory = referencesRoot(root);
+    await mkdir(directory, { recursive: true });
+    const filePath = join(directory, filename);
+    if (!existsSync(filePath)) await writeFile(filePath, bytes);
+    const indexPath = join(directory, "index.json");
+    const index = JSON.parse(await readFile(indexPath, "utf8").catch(() => "{\"entries\":[]}"));
+    const entries = Array.isArray(index?.entries) ? index.entries : [];
+    const relativePath = `references/${filename}`;
+    if (!entries.some((entry) => entry?.path === relativePath)) {
+      entries.push({ path: relativePath, name: normalizedName, kind: "file", hash, size: bytes.length, mimeType, addedAt: new Date().toISOString() });
+      await writeFile(indexPath, `${JSON.stringify({ entries }, null, 2)}\n`);
+    }
+    return { path: relativePath, name: normalizedName, kind: "file", mimeType, size: bytes.length };
+  });
+}
+
+function pathInside(root, target) {
+  const value = relative(root, target);
+  return value === "" || (value !== ".." && !value.startsWith(`..${sep}`) && !isAbsolute(value));
+}
+
+const homePath = () => realpath(homedir());
+
+export async function walkReferenceFolder(source) {
+  const result = { files: 0, bytes: 0, capped: false };
+  const walk = async (directory) => {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      if (entry.name.startsWith(".")) continue;
+      const entryPath = join(directory, entry.name);
+      const info = await lstat(entryPath);
+      if (info.isSymbolicLink()) continue;
+      if (info.isDirectory()) {
+        await walk(entryPath);
+        if (result.capped) return;
+        continue;
+      }
+      if (!info.isFile()) continue;
+      if (result.files + 1 > 2_000 || result.bytes + info.size > 500 * 1024 * 1024) {
+        result.capped = true;
+        return;
+      }
+      result.files += 1;
+      result.bytes += info.size;
+    }
+  };
+  await walk(source);
+  return result;
+}
+
+async function referenceFolderSource(source) {
+  const requested = resolve(String(source ?? ""));
+  let originalInfo;
+  try {
+    originalInfo = await lstat(requested);
+  } catch (error) {
+    if (error.code === "ENOENT") throw new Error("Invalid folder: it does not exist.");
+    throw error;
   }
-  return { path: relativePath, name: normalizedName, mimeType, size: bytes.length };
+  if (originalInfo.isSymbolicLink()) throw new Error("Invalid reference folder: it must be a real directory.");
+  const home = await homePath();
+  let resolved;
+  try {
+    resolved = await realpath(requested);
+  } catch (error) {
+    if (error.code === "ENOENT") throw new Error("Invalid folder: it does not exist.");
+    throw error;
+  }
+  if (!pathInside(home, resolved)) throw new Error("Invalid folder: it must be inside the home directory.");
+  if (!originalInfo.isDirectory()) throw new Error("Invalid reference folder: it must be a directory.");
+  return resolved;
+}
+
+export async function listFolders(path = homedir()) {
+  const source = await referenceFolderSource(path);
+  const home = await homePath();
+  const folders = (await readdir(source, { withFileTypes: true }))
+    .filter((entry) => !entry.name.startsWith(".") && entry.isDirectory())
+    .map((entry) => ({ name: entry.name, path: join(source, entry.name) }));
+  const relativePath = relative(home, source);
+  const parts = relativePath ? relativePath.split("/") : [];
+  const breadcrumbs = [{ name: "Home", path: home }];
+  parts.forEach((part, index) => breadcrumbs.push({ name: part, path: join(home, ...parts.slice(0, index + 1)) }));
+  return { path: source, parent: source === home ? null : dirname(source), breadcrumbs, folders, ...(await walkReferenceFolder(source)) };
+}
+
+export async function importReferenceFolder({ source }) {
+  return runProjectExclusive(async () => {
+    const resolved = await referenceFolderSource(source);
+    const summary = await walkReferenceFolder(resolved);
+    if (summary.capped) throw new Error("Reference folder exceeds the 2,000-file or 500 MB limit.");
+    const directory = referencesRoot();
+    await mkdir(directory, { recursive: true });
+    const indexPath = join(directory, "index.json");
+    const index = JSON.parse(await readFile(indexPath, "utf8").catch(() => "{\"entries\":[]}"));
+    const entries = Array.isArray(index.entries) ? index.entries : [];
+    if (entries.some((entry) => entry?.kind === "folder" && entry.source === resolved)) {
+      throw new Error("Reference folder already exists; use Update to refresh it.");
+    }
+    const baseName = normalizeReferenceName(basename(resolved));
+    let name = baseName;
+    let number = 2;
+    while (existsSync(join(directory, name))) name = `${baseName}-${number++}`;
+    await copyReferenceFolder(resolved, join(directory, name));
+    const entry = { path: `references/${name}`, name, kind: "folder", source: resolved, size: summary.bytes, files: summary.files, addedAt: new Date().toISOString() };
+    entries.push(entry);
+    await writeFile(indexPath, `${JSON.stringify({ entries }, null, 2)}\n`);
+    return entry;
+  });
+}
+
+async function copyReferenceFolder(source, destination) {
+  await cp(source, destination, {
+    recursive: true,
+    filter: async (entryPath) => {
+      const entryName = basename(entryPath);
+      if (entryName.startsWith(".")) return false;
+      return !(await lstat(entryPath)).isSymbolicLink();
+    },
+  });
+}
+
+export async function syncReferenceFolder(path) {
+  return runProjectExclusive(async () => {
+    if (!isReferencePath(path)) throw new Error("Invalid reference path.");
+    const indexPath = join(referencesRoot(), "index.json");
+    const index = JSON.parse(await readFile(indexPath, "utf8"));
+    const entry = index.entries?.find((item) => item?.path === path && item.kind === "folder");
+    if (!entry) throw new Error("Reference folder not found.");
+    if (!existsSync(entry.source)) return { references: await readReferences(), sourceMissing: true };
+    const source = await referenceFolderSource(entry.source);
+    const summary = await walkReferenceFolder(source);
+    if (summary.capped) throw new Error("Reference folder exceeds the 2,000-file or 500 MB limit.");
+    const destination = join(projectRoot(), path);
+    const staged = `${destination}.${randomUUID()}.staged`;
+    const previous = `${destination}.${randomUUID()}.previous`;
+    try {
+      await copyReferenceFolder(source, staged);
+      if (existsSync(destination)) await rename(destination, previous);
+      await rename(staged, destination);
+      await rm(previous, { recursive: true, force: true });
+    } catch (error) {
+      await rm(staged, { recursive: true, force: true });
+      if (existsSync(previous) && !existsSync(destination)) await rename(previous, destination);
+      throw error;
+    }
+    entry.size = summary.bytes;
+    entry.files = summary.files;
+    await writeFile(indexPath, `${JSON.stringify({ entries: index.entries }, null, 2)}\n`);
+    return { references: await readReferences(), sourceMissing: false };
+  });
 }
 
 export async function readReferences() {
@@ -182,7 +321,7 @@ export async function readReferences() {
   if (!Array.isArray(index?.entries)) return [];
   return index.entries
     .filter((entry) => entry && typeof entry.path === "string")
-    .map((entry) => ({ ...entry, missing: !existsSync(join(projectRoot(), entry.path)) }));
+    .map((entry) => ({ ...entry, kind: entry.kind === "folder" ? "folder" : "file", missing: !existsSync(join(projectRoot(), entry.path)), ...(entry.kind === "folder" && entry.source ? { sourceMissing: !existsSync(entry.source) } : {}) }));
 }
 
 export async function removeReference(path) {
@@ -198,7 +337,7 @@ export async function removeReference(path) {
     if (!Array.isArray(index?.entries)) return [];
     const entries = index.entries.filter((entry) => entry?.path !== path);
     if (entries.length !== index.entries.length) await writeFile(indexPath, `${JSON.stringify({ entries }, null, 2)}\n`);
-    await unlink(join(projectRoot(), path)).catch((error) => { if (error.code !== "ENOENT") throw error; });
+    await rm(join(projectRoot(), path), { recursive: true, force: true });
     return readReferences();
   });
 }

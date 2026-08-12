@@ -27,8 +27,9 @@ import { selectThreadRunning, selectThreadTurns, selectTurnItems } from "./codex
    modelled as tokens any more (concept 2.10). */
 type SlideDoc = { id: string; title: string; notes: string; html: string };
 type TemplateDoc = { id: string; name: string; html: string };
-type ReferenceAttachment = { path: string; name: string; mimeType?: string; size: number };
-type ReferenceShelfEntry = ReferenceAttachment & { hash?: string; addedAt?: string; missing: boolean };
+type ReferenceAttachment = { path: string; name: string; mimeType?: string; size: number; kind?: "file" | "folder"; files?: number };
+type ReferenceShelfEntry = ReferenceAttachment & { hash?: string; addedAt?: string; source?: string; sourceMissing?: boolean; missing: boolean; kind: "file" | "folder" };
+type FolderBrowser = { path: string; parent: string | null; breadcrumbs: Array<{ name: string; path: string }>; folders: Array<{ name: string; path: string }>; files: number; bytes: number; capped: boolean };
 
 type SlideNav = "filmstrip" | "rail";
 type ActivityView = "agent" | "history" | "shortcuts" | "settings";
@@ -371,6 +372,8 @@ export default function Home() {
   const [activeOverlayAttachmentId, setActiveOverlayAttachmentId] = useState<string | null>(null);
   const [referenceAttachments, setReferenceAttachments] = useState<ReferenceAttachment[]>([]);
   const [referenceShelf, setReferenceShelf] = useState<ReferenceShelfEntry[]>([]);
+  const [referenceView, setReferenceView] = useState<"shelf" | "browse">("shelf");
+  const [folderBrowser, setFolderBrowser] = useState<FolderBrowser | null>(null);
 
   const canvasRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -463,12 +466,19 @@ export default function Home() {
   const dismissPopover = useCallback((restoreFocus = true) => {
     cancelTemplatePreview();
     setOpenPopover(null);
+    setReferenceView("shelf");
     if (restoreFocus) requestAnimationFrame(() => popoverTriggerRef.current?.focus());
   }, [cancelTemplatePreview]);
   const togglePopover = (value: Exclude<OpenPopover, null>, trigger: HTMLButtonElement) => {
     cancelTemplatePreview();
     popoverTriggerRef.current = trigger;
-    setOpenPopover((current) => current === value ? null : value);
+    setOpenPopover((current) => {
+      if (current === value) {
+        if (value === "references") setReferenceView("shelf");
+        return null;
+      }
+      return value;
+    });
   };
   const slideRoot = () => canvasRef.current?.querySelector<HTMLElement>(".weave-slide") ?? null;
   const contentSlot = () => canvasRef.current?.querySelector<HTMLElement>(contentSlotSelector) ?? canvasRef.current?.querySelector<HTMLElement>(".hero") ?? null;
@@ -554,7 +564,7 @@ export default function Home() {
     } : undefined,
     annotations: annotationContext,
     overflowing,
-    attachments: attachments.map(({ path, name, size }) => ({ path, name, bytes: size })),
+    attachments: attachments.map(({ path, name, size, kind, files }) => ({ path, name, bytes: size, kind, files })),
   });
 
   const quality = useMemo(() => {
@@ -1442,6 +1452,34 @@ export default function Home() {
       setReferenceShelf(result.references ?? []);
       setReferenceAttachments((current) => current.filter((attachment) => attachment.path !== path));
       setApiError(null);
+    } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
+  }, []);
+
+  const browseFolders = useCallback(async (path?: string) => {
+    try {
+      const response = await fetch(`${apiBase}/folders${path ? `?path=${encodeURIComponent(path)}` : ""}`);
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Folder browsing failed.");
+      setFolderBrowser(result); setReferenceView("browse"); setApiError(null);
+    } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
+  }, []);
+
+  const importFolder = useCallback(async () => {
+    if (!folderBrowser || folderBrowser.capped) return;
+    try {
+      const response = await fetch(`${apiBase}/references/folder`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ source: folderBrowser.path }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Folder import failed.");
+      setReferenceShelf((current) => [...current, { ...result, missing: false, sourceMissing: false }]);
+      setReferenceView("shelf"); setApiError(null);
+    } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
+  }, [folderBrowser]);
+
+  const syncFolder = useCallback(async (path: string) => {
+    try {
+      const response = await fetch(`${apiBase}/references/folder/sync`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path }) });
+      const result = await response.json(); if (!response.ok) throw new Error(result.error ?? "Folder update failed.");
+      setReferenceShelf(result.references ?? []); setApiError(null);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   }, []);
 
@@ -2431,10 +2469,34 @@ export default function Home() {
               {openPopover === "references" && <>
                 <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
                 <aside className="reference-popover" aria-label="Reference shelf">
-                  <header><strong>Reference shelf</strong><button type="button" onClick={() => dismissPopover()}>×</button></header>
-                  <div className="reference-shelf-list">
-                    {referenceShelf.length === 0 && <p className="reference-shelf-empty">No references yet.</p>}
-                    {referenceShelf.map((reference) => {
+                  <header><strong>{referenceView === "browse" ? "Add folder" : "Reference shelf"}</strong><button type="button" onClick={() => dismissPopover()}>×</button></header>
+                  {referenceView === "browse" && folderBrowser ? <>
+                    <div className="reference-breadcrumbs">{folderBrowser.breadcrumbs.map((crumb, index) => <span key={crumb.path}>{index > 0 && " / "}<button type="button" onClick={() => void browseFolders(crumb.path)}>{crumb.name}</button></span>)}</div>
+                    <div className="reference-folder-list">{folderBrowser.parent && <button type="button" onClick={() => void browseFolders(folderBrowser.parent ?? undefined)}>↑ Parent folder</button>}{folderBrowser.folders.map((folder) => <button type="button" key={folder.path} onClick={() => void browseFolders(folder.path)}>📁 {folder.name}</button>)}</div>
+                    <footer className="reference-browser-footer"><span>{folderBrowser.capped ? "2,000+ files" : `${folderBrowser.files.toLocaleString()} files`} · {formatBytes(folderBrowser.bytes)}</span><button type="button" onClick={() => void importFolder()} disabled={folderBrowser.capped}>Import folder</button></footer>
+                  </> : <>
+                  <section className="reference-shelf-section" aria-labelledby="reference-folders-heading">
+                    <h4 id="reference-folders-heading">FOLDERS</h4>
+                    <div className="reference-shelf-list">
+                    {referenceShelf.filter((reference) => reference.kind === "folder").map((reference) => {
+                      const attached = referenceAttachments.some((attachment) => attachment.path === reference.path);
+                      return <div className={`reference-shelf-item${reference.missing ? " missing" : ""}`} key={reference.path}>
+                        <label title={`${reference.path}\nSource: ${reference.source ?? "Unknown"}`}>
+                          <input type="checkbox" checked={attached} disabled={reference.missing} onChange={() => setReferenceAttachments((current) => attached ? current.filter((item) => item.path !== reference.path) : [...current, reference])} />
+                          <span className="reference-shelf-name">{reference.name}</span>
+                          <small>{reference.missing ? "Missing" : `${reference.files ?? 0} files · ${formatBytes(reference.size)}`}</small>
+                        </label>
+                        <button type="button" aria-label={`Update ${reference.name}`} disabled={reference.sourceMissing} onClick={() => void syncFolder(reference.path)}>↻</button>
+                        <button type="button" aria-label={`Remove ${reference.name} from shelf`} onClick={() => void removeShelfReference(reference.path)}>×</button>
+                      </div>;
+                    })}
+                    </div>
+                    <button className="reference-add" type="button" onClick={() => void browseFolders()}>+ Add folder</button>
+                  </section>
+                  <section className="reference-shelf-section" aria-labelledby="reference-files-heading">
+                    <h4 id="reference-files-heading">FILES</h4>
+                    <div className="reference-shelf-list">
+                    {referenceShelf.filter((reference) => reference.kind === "file").map((reference) => {
                       const attached = referenceAttachments.some((attachment) => attachment.path === reference.path);
                       return <div className={`reference-shelf-item${reference.missing ? " missing" : ""}`} key={reference.path}>
                         <label title={reference.path}>
@@ -2445,8 +2507,10 @@ export default function Home() {
                         <button type="button" aria-label={`Remove ${reference.name} from shelf`} onClick={() => void removeShelfReference(reference.path)}>×</button>
                       </div>;
                     })}
-                  </div>
-                  <button className="reference-add" type="button" onClick={() => referenceInputRef.current?.click()}>+ Add files</button>
+                    </div>
+                    <button className="reference-add" type="button" onClick={() => referenceInputRef.current?.click()}>+ Add files</button>
+                  </section>
+                  </>}
                 </aside>
               </>}
               <div className="context-chip" role="group" aria-label="Editor context">

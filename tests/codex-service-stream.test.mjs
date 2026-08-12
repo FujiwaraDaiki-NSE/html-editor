@@ -144,3 +144,7 @@ test("turn input keeps legacy text shape and adds only image attachments", () =>
     { path: "assets/secret.png", mimeType: "image/png" },
   ], "/workspace"), [{ type: "text", text: "hello", text_elements: [] }]);
 });
+
+test("turn input does not turn folder attachments into local images", () => {
+  assert.deepEqual(turnInput("read this folder", [{ path: "references/docs", name: "docs", kind: "folder", files: 4, bytes: 20 }], "/workspace"), [{ type: "text", text: "read this folder", text_elements: [] }]);
+});

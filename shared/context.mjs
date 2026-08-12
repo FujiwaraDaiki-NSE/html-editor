@@ -6,10 +6,11 @@ const excerpt = (value) => String(value ?? "").replace(/\s+/g, " ").trim().slice
    smaller is measurement noise rather than a broken layout. */
 const overflowThreshold = 1;
 const maxOverflowingIds = 20;
-const referencePathPattern = /^references\/[^/\\]+$/;
 
 export function isReferencePath(value) {
-  return typeof value === "string" && referencePathPattern.test(value);
+  if (typeof value !== "string" || !value.startsWith("references/")) return false;
+  const segments = value.slice("references/".length).split("/");
+  return segments.length > 0 && segments.every((segment) => segment && segment !== "." && segment !== ".." && !segment.includes("\\"));
 }
 
 export function overflowingIds(measurements, frame = { width: designWidth, height: designHeight }) {
@@ -72,7 +73,11 @@ export function editorEnvelope(input) {
       if (!attachment || typeof attachment !== "object") return null;
       if (!isReferencePath(attachment.path) || typeof attachment.name !== "string" || !attachment.name.trim()) return null;
       if (typeof attachment.bytes !== "number" || !Number.isFinite(attachment.bytes) || attachment.bytes < 0) return null;
-      return { path: attachment.path, name: attachment.name, bytes: attachment.bytes };
+      const kind = attachment.kind === "folder" ? "folder" : attachment.kind === "file" || attachment.kind == null ? "file" : null;
+      if (!kind || (kind === "folder" && (!Number.isInteger(attachment.files) || attachment.files < 0))) return null;
+      const result = { path: attachment.path, name: attachment.name, bytes: attachment.bytes, kind };
+      if (kind === "folder") result.files = attachment.files;
+      return result;
     }).filter(Boolean).slice(0, 20);
     if (attachments.length > 0) envelope.attachments = attachments;
   }
@@ -86,4 +91,5 @@ selected.id and annotation weaveId are values of data-weave-id attributes.
 If a snapshot and an id disagree, prefer the id.
 overflowing lists data-weave-ids whose rendered box leaves the slide frame or exceeds its own content box; it is a rendering result the agent cannot measure on its own.
 attachments are files the human brought in for this turn, addressed by paths relative to the project root.
+Folder attachments are project-relative directories; their contents are not enumerated in the envelope.
 Their contents are not included; open the files yourself when needed, and use available tools to convert formats you cannot read directly.`;
