@@ -1,0 +1,557 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>年度末報告書テンプレート</title>
+  <style>
+    :root {
+      --ink: #151515;
+      --muted: #646b75;
+      --paper: #ffffff;
+      --surface: #ffffff;
+      --line: #d9dce2;
+      --navy: #151515;
+      --blue: #004dff;
+      --blue-soft: #edf2ff;
+      --red: #e00000;
+      --red-soft: #fff0f0;
+      --gold: #a4a9b2;
+      --slide-width: 960px;
+      --slide-height: 720px;
+      --radius: 12px;
+      --shadow: 0 16px 42px rgba(0, 0, 0, 0.12);
+      --font: "Noto Sans JP", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+
+    html, body { margin: 0; min-height: 100%; }
+
+    body {
+      color: var(--ink);
+      background: #e9edf1;
+      font-family: var(--font);
+      line-height: 1.55;
+      overflow-x: auto;
+    }
+
+    .deck {
+      display: grid;
+      gap: 28px;
+      justify-items: center;
+      min-width: var(--slide-width);
+      padding: 32px 16px 88px;
+    }
+
+    .slide {
+      --frame-start: 98px;
+      position: relative;
+      width: var(--slide-width);
+      height: var(--slide-height);
+      aspect-ratio: 4 / 3;
+      flex-shrink: 0;
+      overflow: hidden;
+      padding: 58px 70px 54px;
+      background: var(--paper);
+      box-shadow: var(--shadow);
+      isolation: isolate;
+    }
+
+    .slide[data-slide="cover"] { --frame-start: 210px; }
+    .slide[data-slide="agenda"],
+    .slide[data-slide="chapter"] { --frame-start: 140px; }
+
+    .slide[hidden] { display: none !important; }
+
+    .slide__frame {
+      position: absolute;
+      inset: 0;
+      z-index: -1;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+
+    .slide__footer {
+      position: absolute;
+      top: 662px;
+      right: 38px;
+      bottom: 0;
+      left: var(--frame-start);
+      color: var(--muted);
+      font-size: 11px;
+      letter-spacing: .03em;
+    }
+
+    .slide__footer > :first-child { position: absolute; bottom: 31px; left: 0; }
+    .slide__footer > :last-child { position: absolute; right: 0; bottom: 34px; text-align: right; }
+    .slide__page {
+      position: absolute;
+      right: 0;
+      bottom: 12px;
+      color: inherit;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: .12em;
+    }
+
+    .slide__footer .placeholder { color: inherit; font-weight: 500; }
+
+    .slide__page,
+    .slide__footer > :first-child,
+    .slide__footer > :last-child { white-space: nowrap; }
+
+    .slide__eyebrow {
+      margin: 0 0 14px;
+      color: var(--blue);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .16em;
+      text-transform: uppercase;
+    }
+
+    h1, h2, h3, p { margin-top: 0; }
+
+    h1, h2, h3 { color: var(--navy); line-height: 1.2; }
+
+    h1 { max-width: 680px; margin-bottom: 20px; font-size: 42px; letter-spacing: -.04em; }
+    h2 { margin-bottom: 12px; font-size: 30px; letter-spacing: -.03em; }
+    h3 { margin-bottom: 8px; font-size: 18px; }
+
+    .slide__lead { max-width: 650px; color: var(--muted); font-size: 18px; }
+
+    .placeholder {
+      color: var(--blue);
+      font-weight: 700;
+    }
+
+    .cover {
+      display: block;
+      padding-top: 132px;
+      color: var(--ink);
+    }
+
+    .cover h1, .cover .slide__lead { color: var(--navy); }
+    .cover h1 .placeholder { color: var(--blue); }
+    .cover .slide__eyebrow { color: var(--blue); }
+    .cover .slide__footer { color: var(--muted); }
+
+    .cover__meta {
+      display: flex;
+      gap: 36px;
+      margin-top: 52px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .cover__meta strong { display: block; margin-top: 3px; color: var(--navy); font-size: 15px; }
+
+    .agenda__list { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 26px; margin: 38px 0 0; padding: 0; list-style: none; }
+
+    .agenda__item {
+      display: grid;
+      grid-template-columns: 48px 1fr;
+      align-items: center;
+      min-height: 76px;
+      border-top: 1px solid var(--line);
+    }
+
+    .agenda__number { color: var(--red); font-size: 14px; font-weight: 800; letter-spacing: .1em; }
+    .agenda__label { color: var(--navy); font-size: 18px; font-weight: 700; }
+    .agenda__hint { display: block; color: var(--muted); font-size: 12px; font-weight: 400; }
+
+    .chapter {
+      display: block;
+      padding-top: 150px;
+      color: var(--ink);
+    }
+
+    .chapter h2 { color: var(--navy); }
+    .chapter .slide__lead { color: var(--muted); }
+    .chapter__number { margin-bottom: 22px; color: var(--red); font-size: 18px; font-weight: 800; letter-spacing: .14em; }
+
+    .section-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 32px; }
+    .section-heading h2 { margin-bottom: 0; }
+    .section-heading__note { max-width: 280px; margin-bottom: 2px; color: var(--muted); font-size: 13px; text-align: right; }
+
+    .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin: 30px 0 24px; }
+
+    .stat { padding: 20px 22px; background: var(--surface); border-left: 4px solid var(--blue); }
+    .stat:nth-child(2) { border-left-color: var(--red); }
+    .stat:nth-child(3) { border-left-color: var(--gold); }
+    .stat__label { display: block; color: var(--muted); font-size: 13px; }
+    .stat__value { display: block; margin-top: 6px; color: var(--navy); font-size: 34px; font-weight: 800; line-height: 1; }
+    .stat__unit { margin-left: 4px; color: var(--muted); font-size: 13px; font-weight: 500; }
+
+    .callout { display: grid; grid-template-columns: 8px 1fr; gap: 18px; align-items: stretch; padding: 18px 20px 18px 0; background: var(--blue-soft); }
+    .callout::before { display: block; background: var(--blue); content: ""; }
+    .callout p { margin: 0; color: var(--navy); font-size: 15px; }
+
+    .body-grid { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, .8fr); gap: 38px; align-items: start; }
+    .body-copy p { color: var(--muted); font-size: 16px; }
+    .body-copy ul { margin: 20px 0 0; padding: 0 0 0 20px; color: var(--navy); }
+    .body-copy li { margin-bottom: 12px; padding-left: 6px; }
+    .body-copy li::marker { color: var(--red); }
+
+    .process { display: grid; gap: 0; margin-top: 4px; }
+    .process__step { display: grid; grid-template-columns: 42px 1fr; gap: 14px; padding: 0 0 22px; }
+    .process__step:last-child { padding-bottom: 0; }
+    .process__number { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; background: var(--navy); color: #fff; font-size: 13px; font-weight: 800; }
+    .process__text { padding-top: 4px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+
+    .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 42px; }
+    .card { min-height: 310px; padding: 24px 22px; background: var(--surface); border-top: 5px solid var(--blue); box-shadow: 0 6px 18px rgba(0, 0, 0, .06); }
+    .card:nth-child(2) { border-top-color: var(--red); }
+    .card:nth-child(3) { border-top-color: var(--gold); }
+    .card__number { display: block; margin-bottom: 42px; color: var(--muted); font-size: 12px; font-weight: 800; letter-spacing: .14em; }
+    .card p { color: var(--muted); font-size: 14px; }
+    .card__tag { display: inline-block; margin-top: 12px; padding: 4px 8px; border-radius: 3px; background: var(--blue-soft); color: var(--blue); font-size: 11px; font-weight: 700; }
+    .card:nth-child(2) .card__tag { background: var(--red-soft); color: var(--red); }
+
+    .comparison { width: 100%; border-collapse: collapse; margin-top: 30px; background: var(--surface); font-size: 14px; }
+    .comparison th, .comparison td { padding: 16px 18px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+    .comparison thead th { background: var(--navy); color: #fff; font-size: 13px; }
+    .comparison thead th:nth-child(3) { background: var(--blue); }
+    .comparison tbody th { width: 28%; color: var(--navy); background: #f0f3f6; }
+    .comparison td { color: var(--muted); }
+    .comparison td strong { display: block; margin-bottom: 4px; color: var(--navy); }
+
+    .media-grid { display: grid; grid-template-columns: 1.25fr .75fr; gap: 28px; align-items: start; margin-top: 30px; }
+    .image-frame { display: grid; place-items: center; min-height: 328px; padding: 24px; border: 2px dashed #9db6c9; background: repeating-linear-gradient(-45deg, #f1f7fb, #f1f7fb 12px, #e9f2f8 12px, #e9f2f8 24px); color: var(--blue); text-align: center; }
+    .image-frame__icon { display: grid; place-items: center; width: 54px; height: 42px; margin: 0 auto 14px; border: 2px solid currentColor; border-radius: 6px; font-size: 24px; line-height: 1; }
+    .image-frame p { margin: 0; font-size: 14px; font-weight: 700; }
+    .image-frame small { display: block; margin-top: 6px; color: var(--muted); font-weight: 400; }
+    .media-notes { padding-top: 8px; }
+    .media-notes h3 { padding-bottom: 12px; border-bottom: 2px solid var(--red); }
+    .media-notes p { color: var(--muted); font-size: 14px; }
+    .media-notes dl { margin: 22px 0 0; }
+    .media-notes dt { margin-top: 12px; color: var(--navy); font-size: 12px; font-weight: 800; }
+    .media-notes dd { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+
+    .summary { color: var(--ink); }
+    .summary .slide__footer { color: var(--muted); }
+    .summary h2 { color: var(--navy); }
+    .summary .slide__lead { color: var(--muted); }
+    .summary__grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 36px; }
+    .summary__item { min-height: 170px; padding: 18px; border: 1px solid var(--line); background: rgba(255, 255, 255, .74); }
+    .summary__item strong { display: block; margin-bottom: 24px; color: var(--red); font-size: 13px; }
+    .summary__item p { color: var(--navy); font-size: 14px; }
+    .summary__next { display: flex; align-items: center; gap: 16px; margin-top: 26px; padding: 16px 20px; background: #f0f2f5; }
+    .summary__next strong { color: var(--red); font-size: 14px; }
+    .summary__next span { color: var(--muted); font-size: 13px; }
+
+    .controls {
+      position: relative;
+      width: max-content;
+      margin: -64px auto 20px;
+      z-index: 10;
+      display: flex;
+      gap: 8px;
+      padding: 8px;
+      border: 1px solid rgba(0, 0, 0, .12);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, .92);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .15);
+      backdrop-filter: blur(8px);
+    }
+
+    .controls button { min-width: 86px; padding: 9px 12px; border: 0; border-radius: 4px; background: var(--navy); color: #fff; cursor: pointer; font: inherit; font-size: 12px; }
+    .controls button:hover, .controls button:focus-visible { background: var(--blue); }
+    .controls button:disabled { cursor: not-allowed; opacity: .42; }
+    .controls__status { display: grid; place-items: center; min-width: 48px; color: var(--navy); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+    @media print {
+      @page { size: 10in 7.5in; margin: 0; }
+      body { background: #fff; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+      .deck { display: block; padding: 0; }
+      .slide { width: 10in; height: 7.5in; margin: 0; box-shadow: none; break-after: page; page-break-after: always; }
+      .slide[hidden] { display: block !important; }
+      .slide:last-child { break-after: auto; page-break-after: auto; }
+      .controls { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="deck" aria-label="年度末報告書テンプレート">
+    <section class="slide cover" data-slide="cover" aria-labelledby="cover-title">
+      <svg class="slide__frame" viewBox="0 0 960 720" preserveAspectRatio="none" aria-hidden="true">
+        <defs>
+          <linearGradient id="frame-gradient-cover" x1="0%" x2="100%" y1="0%" y2="0%">
+            <stop offset="0%" stop-color="#c2c2c2"></stop>
+            <stop offset="55%" stop-color="#dcdcdc"></stop>
+            <stop offset="100%" stop-color="#f3f3f3"></stop>
+          </linearGradient>
+        </defs>
+        <path d="M0 396 C174 150 568 22 960 0 L960 720 L0 720 Z" fill="url(#frame-gradient-cover)"></path>
+        <line x1="210" y1="69" x2="960" y2="69" stroke="#e00000" stroke-width="2"></line>
+        <line x1="210" y1="662" x2="960" y2="662" stroke="#004dff" stroke-width="2"></line>
+      </svg>
+      <p class="slide__eyebrow">Year-end report / template</p>
+      <h1 id="cover-title"><span class="placeholder">[タイトルを入力]</span></h1>
+      <p class="slide__lead">[サブタイトル・対象期間を入力]</p>
+      <div class="cover__meta">
+        <div><span>Organization</span><strong class="placeholder">[組織名を入力]</strong></div>
+        <div><span>Owner</span><strong class="placeholder">[作成者を入力]</strong></div>
+      </div>
+      <footer class="slide__footer"><span class="placeholder">[組織名を入力]</span><span class="slide__page">01 / 09</span><span class="placeholder">[copyright表記を入力]</span></footer>
+    </section>
+
+    <section class="slide" data-slide="agenda" aria-labelledby="agenda-title">
+      <svg class="slide__frame" viewBox="0 0 960 720" preserveAspectRatio="none" aria-hidden="true">
+        <defs>
+          <linearGradient id="frame-gradient-agenda" x1="0%" x2="100%" y1="0%" y2="0%">
+            <stop offset="0%" stop-color="#c2c2c2"></stop>
+            <stop offset="55%" stop-color="#dcdcdc"></stop>
+            <stop offset="100%" stop-color="#f3f3f3"></stop>
+          </linearGradient>
+        </defs>
+        <path d="M0 0 L960 0 C598 24 302 118 124 285 C57 348 18 392 0 416 Z" fill="url(#frame-gradient-agenda)"></path>
+        <line x1="140" y1="69" x2="960" y2="69" stroke="#e00000" stroke-width="2"></line>
+        <line x1="140" y1="662" x2="960" y2="662" stroke="#004dff" stroke-width="2"></line>
+      </svg>
+      <p class="slide__eyebrow">Overview</p>
+      <h2 id="agenda-title">目次</h2>
+      <p class="slide__lead">[報告全体の流れを一文で説明]</p>
+      <ol class="agenda__list">
+        <li class="agenda__item"><span class="agenda__number">01</span><span class="agenda__label">[章タイトルを入力]<small class="agenda__hint">[章の概要を入力]</small></span></li>
+        <li class="agenda__item"><span class="agenda__number">02</span><span class="agenda__label">[章タイトルを入力]<small class="agenda__hint">[章の概要を入力]</small></span></li>
+        <li class="agenda__item"><span class="agenda__number">03</span><span class="agenda__label">[章タイトルを入力]<small class="agenda__hint">[章の概要を入力]</small></span></li>
+        <li class="agenda__item"><span class="agenda__number">04</span><span class="agenda__label">[章タイトルを入力]<small class="agenda__hint">[章の概要を入力]</small></span></li>
+      </ol>
+      <footer class="slide__footer"><span class="placeholder">[組織名を入力]</span><span class="slide__page">02 / 09</span><span class="placeholder">[copyright表記を入力]</span></footer>
+    </section>
+
+    <section class="slide chapter" data-slide="chapter" aria-labelledby="chapter-title">
+      <svg class="slide__frame" viewBox="0 0 960 720" preserveAspectRatio="none" aria-hidden="true">
+        <defs>
+          <linearGradient id="frame-gradient-chapter" x1="0%" x2="100%" y1="0%" y2="0%">
+            <stop offset="0%" stop-color="#c2c2c2"></stop>
+            <stop offset="55%" stop-color="#dcdcdc"></stop>
+            <stop offset="100%" stop-color="#f3f3f3"></stop>
+          </linearGradient>
+        </defs>
+        <path d="M0 0 L960 0 C598 24 302 118 124 285 C57 348 18 392 0 416 Z" fill="url(#frame-gradient-chapter)"></path>
+        <line x1="140" y1="69" x2="960" y2="69" stroke="#e00000" stroke-width="2"></line>
+        <line x1="140" y1="662" x2="960" y2="662" stroke="#004dff" stroke-width="2"></line>
+      </svg>
+      <p class="chapter__number">01 / SECTION</p>
+      <h2 id="chapter-title"><span class="placeholder">[章タイトルを入力]</span></h2>
+      <p class="slide__lead">[章の目的や要点を短く入力]</p>
+      <footer class="slide__footer"><span class="placeholder">[組織名を入力]</span><span class="slide__page">03 / 09</span><span class="placeholder">[copyright表記を入力]</span></footer>
+    </section>
+
+    <section class="slide" data-slide="overview" aria-labelledby="overview-title">
+      <svg class="slide__frame" viewBox="0 0 960 720" preserveAspectRatio="none" aria-hidden="true">
+        <defs>
+          <linearGradient id="frame-gradient-overview" x1="0%" x2="100%" y1="0%" y2="0%">
+            <stop offset="0%" stop-color="#c2c2c2"></stop>
+            <stop offset="55%" stop-color="#dcdcdc"></stop>
+            <stop offset="100%" stop-color="#f3f3f3"></stop>
+          </linearGradient>
+        </defs>
+        <path d="M0 0 L960 0 C598 24 302 118 124 285 C57 348 18 392 0 416 Z" fill="url(#frame-gradient-overview)"></path>
+        <line x1="98" y1="69" x2="960" y2="69" stroke="#e00000" stroke-width="2"></line>
+        <line x1="98" y1="662" x2="960" y2="662" stroke="#004dff" stroke-width="2"></line>
+      </svg>
+      <div class="section-heading">
+        <div><p class="slide__eyebrow">01 / Highlights</p><h2 id="overview-title">概況とハイライト</h2></div>
+        <p class="section-heading__note">[このページの読み方や前提条件を入力]</p>
+      </div>
+      <div class="stats">
+        <div class="stat"><span class="stat__label">[指標名を入力]</span><span class="stat__value placeholder">[00]<span class="stat__unit">[単位]</span></span></div>
+        <div class="stat"><span class="stat__label">[指標名を入力]</span><span class="stat__value placeholder">[00]<span class="stat__unit">[単位]</span></span></div>
+        <div class="stat"><span class="stat__label">[指標名を入力]</span><span class="stat__value placeholder">[00]<span class="stat__unit">[単位]</span></span></div>
+      </div>
+      <div class="callout"><p><strong>Key message</strong><br><span class="placeholder">[この章で伝えたい結論を一文で入力]</span></p></div>
+      <footer class="slide__footer"><span class="placeholder">[組織名を入力]</span><span class="slide__page">04 / 09</span><span class="placeholder">[copyright表記を入力]</span></footer>
+    </section>
+
+    <section class="slide" data-slide="body" aria-labelledby="body-title">
+      <svg class="slide__frame" viewBox="0 0 960 720" preserveAspectRatio="none" aria-hidden="true">
+        <defs>
+          <linearGradient id="frame-gradient-body" x1="0%" x2="100%" y1="0%" y2="0%">
+            <stop offset="0%" stop-color="#c2c2c2"></stop>
+            <stop offset="55%" stop-color="#dcdcdc"></stop>
+            <stop offset="100%" stop-color="#f3f3f3"></stop>
+          </linearGradient>
+        </defs>
+        <path d="M0 0 L960 0 C598 24 302 118 124 285 C57 348 18 392 0 416 Z" fill="url(#frame-gradient-body)"></path>
+        <line x1="98" y1="69" x2="960" y2="69" stroke="#e00000" stroke-width="2"></line>
+        <line x1="98" y1="662" x2="960" y2="662" stroke="#004dff" stroke-width="2"></line>
+      </svg>
+      <p class="slide__eyebrow">01 / Detail</p>
+      <h2 id="body-title">本文レイアウト</h2>
+      <div class="body-grid">
+        <div class="body-copy">
+          <p class="placeholder">[本文の要約を入力。背景、施策、結果の順に記載すると読みやすくなります。]</p>
+          <ul>
+            <li><span class="placeholder">[要点を入力]</span> — [補足説明を入力]</li>
+            <li><span class="placeholder">[要点を入力]</span> — [補足説明を入力]</li>
+            <li><span class="placeholder">[要点を入力]</span> — [補足説明を入力]</li>
+          </ul>
+        </div>
+        <div class="process" aria-label="プロセスの例">
+          <div class="process__step"><span class="process__number">01</span><span class="process__text"><strong>[ステップ名を入力]</strong><br>[説明を入力]</span></div>
+          <div class="process__step"><span class="process__number">02</span><span class="process__text"><strong>[ステップ名を入力]</strong><br>[説明を入力]</span></div>
+          <div class="process__step"><span class="process__number">03</span><span class="process__text"><strong>[ステップ名を入力]</strong><br>[説明を入力]</span></div>
+        </div>
+      </div>
+      <footer class="slide__footer"><span class="placeholder">[組織名を入力]</span><span class="slide__page">05 / 09</span><span class="placeholder">[copyright表記を入力]</span></footer>
+    </section>
+
+    <section class="slide" data-slide="cards" aria-labelledby="cards-title">
+      <svg class="slide__frame" viewBox="0 0 960 720" preserveAspectRatio="none" aria-hidden="true">
+        <defs>
+          <linearGradient id="frame-gradient-cards" x1="0%" x2="100%" y1="0%" y2="0%">
+            <stop offset="0%" stop-color="#c2c2c2"></stop>
+            <stop offset="55%" stop-color="#dcdcdc"></stop>
+            <stop offset="100%" stop-color="#f3f3f3"></stop>
+          </linearGradient>
+        </defs>
+        <path d="M0 0 L960 0 C598 24 302 118 124 285 C57 348 18 392 0 416 Z" fill="url(#frame-gradient-cards)"></path>
+        <line x1="98" y1="69" x2="960" y2="69" stroke="#e00000" stroke-width="2"></line>
+        <line x1="98" y1="662" x2="960" y2="662" stroke="#004dff" stroke-width="2"></line>
+      </svg>
+      <p class="slide__eyebrow">02 / Initiatives</p>
+      <h2 id="cards-title">取り組みカード</h2>
+      <p class="slide__lead">[複数の取り組みを同じ粒度で並べるレイアウト]</p>
+      <div class="cards">
+        <article class="card"><span class="card__number">01 / CARD</span><h3>[取り組み名を入力]</h3><p>[目的・成果・次の課題を短く入力]</p><span class="card__tag">[分類を入力]</span></article>
+        <article class="card"><span class="card__number">02 / CARD</span><h3>[取り組み名を入力]</h3><p>[目的・成果・次の課題を短く入力]</p><span class="card__tag">[分類を入力]</span></article>
+        <article class="card"><span class="card__number">03 / CARD</span><h3>[取り組み名を入力]</h3><p>[目的・成果・次の課題を短く入力]</p><span class="card__tag">[分類を入力]</span></article>
+      </div>
+      <footer class="slide__footer"><span class="placeholder">[組織名を入力]</span><span class="slide__page">06 / 09</span><span class="placeholder">[copyright表記を入力]</span></footer>
+    </section>
+
+    <section class="slide" data-slide="comparison" aria-labelledby="comparison-title">
+      <svg class="slide__frame" viewBox="0 0 960 720" preserveAspectRatio="none" aria-hidden="true">
+        <defs>
+          <linearGradient id="frame-gradient-comparison" x1="0%" x2="100%" y1="0%" y2="0%">
+            <stop offset="0%" stop-color="#c2c2c2"></stop>
+            <stop offset="55%" stop-color="#dcdcdc"></stop>
+            <stop offset="100%" stop-color="#f3f3f3"></stop>
+          </linearGradient>
+        </defs>
+        <path d="M0 0 L960 0 C598 24 302 118 124 285 C57 348 18 392 0 416 Z" fill="url(#frame-gradient-comparison)"></path>
+        <line x1="98" y1="69" x2="960" y2="69" stroke="#e00000" stroke-width="2"></line>
+        <line x1="98" y1="662" x2="960" y2="662" stroke="#004dff" stroke-width="2"></line>
+      </svg>
+      <p class="slide__eyebrow">03 / Comparison</p>
+      <h2 id="comparison-title">比較表レイアウト</h2>
+      <table class="comparison">
+        <thead><tr><th scope="col">[比較軸]</th><th scope="col">[現状・選択肢A]</th><th scope="col">[目標・選択肢B]</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">[観点を入力]</th><td><strong>[値を入力]</strong>[補足を入力]</td><td><strong>[値を入力]</strong>[補足を入力]</td></tr>
+          <tr><th scope="row">[観点を入力]</th><td><strong>[値を入力]</strong>[補足を入力]</td><td><strong>[値を入力]</strong>[補足を入力]</td></tr>
+          <tr><th scope="row">[観点を入力]</th><td><strong>[値を入力]</strong>[補足を入力]</td><td><strong>[値を入力]</strong>[補足を入力]</td></tr>
+          <tr><th scope="row">[観点を入力]</th><td><strong>[値を入力]</strong>[補足を入力]</td><td><strong>[値を入力]</strong>[補足を入力]</td></tr>
+        </tbody>
+      </table>
+      <footer class="slide__footer"><span class="placeholder">[組織名を入力]</span><span class="slide__page">07 / 09</span><span class="placeholder">[copyright表記を入力]</span></footer>
+    </section>
+
+    <section class="slide" data-slide="media" aria-labelledby="media-title">
+      <svg class="slide__frame" viewBox="0 0 960 720" preserveAspectRatio="none" aria-hidden="true">
+        <defs>
+          <linearGradient id="frame-gradient-media" x1="0%" x2="100%" y1="0%" y2="0%">
+            <stop offset="0%" stop-color="#c2c2c2"></stop>
+            <stop offset="55%" stop-color="#dcdcdc"></stop>
+            <stop offset="100%" stop-color="#f3f3f3"></stop>
+          </linearGradient>
+        </defs>
+        <path d="M0 0 L960 0 C598 24 302 118 124 285 C57 348 18 392 0 416 Z" fill="url(#frame-gradient-media)"></path>
+        <line x1="98" y1="69" x2="960" y2="69" stroke="#e00000" stroke-width="2"></line>
+        <line x1="98" y1="662" x2="960" y2="662" stroke="#004dff" stroke-width="2"></line>
+      </svg>
+      <p class="slide__eyebrow">03 / Evidence</p>
+      <h2 id="media-title">画像・図版レイアウト</h2>
+      <div class="media-grid">
+        <div class="image-frame" role="img" aria-label="画像差し替え枠">
+          <div><span class="image-frame__icon" aria-hidden="true">＋</span><p>[画像または図版を配置]</p><small>推奨比率：[横:縦] / キャプション：[説明を入力]</small></div>
+        </div>
+        <div class="media-notes">
+          <h3>[図版の見出しを入力]</h3>
+          <p>[画像から読み取るべきポイントを短く入力]</p>
+          <dl><dt>Source</dt><dd>[出典・作成条件を入力]</dd><dt>Insight</dt><dd>[示唆を入力]</dd></dl>
+        </div>
+      </div>
+      <footer class="slide__footer"><span class="placeholder">[組織名を入力]</span><span class="slide__page">08 / 09</span><span class="placeholder">[copyright表記を入力]</span></footer>
+    </section>
+
+    <section class="slide summary" data-slide="summary" aria-labelledby="summary-title">
+      <svg class="slide__frame" viewBox="0 0 960 720" preserveAspectRatio="none" aria-hidden="true">
+        <defs>
+          <linearGradient id="frame-gradient-summary" x1="0%" x2="100%" y1="0%" y2="0%">
+            <stop offset="0%" stop-color="#c2c2c2"></stop>
+            <stop offset="55%" stop-color="#dcdcdc"></stop>
+            <stop offset="100%" stop-color="#f3f3f3"></stop>
+          </linearGradient>
+        </defs>
+        <path d="M0 0 L960 0 C598 24 302 118 124 285 C57 348 18 392 0 416 Z" fill="url(#frame-gradient-summary)"></path>
+        <line x1="98" y1="69" x2="960" y2="69" stroke="#e00000" stroke-width="2"></line>
+        <line x1="98" y1="662" x2="960" y2="662" stroke="#004dff" stroke-width="2"></line>
+      </svg>
+      <p class="slide__eyebrow">04 / Closing</p>
+      <h2 id="summary-title">まとめと次の一手</h2>
+      <p class="slide__lead">[報告の結論を短く入力]</p>
+      <div class="summary__grid">
+        <div class="summary__item"><strong>01 / TAKEAWAY</strong><p class="placeholder">[伝えたい要点を入力]</p></div>
+        <div class="summary__item"><strong>02 / TAKEAWAY</strong><p class="placeholder">[伝えたい要点を入力]</p></div>
+        <div class="summary__item"><strong>03 / TAKEAWAY</strong><p class="placeholder">[伝えたい要点を入力]</p></div>
+      </div>
+      <div class="summary__next"><strong>Next action</strong><span class="placeholder">[次のアクション・担当・期限を入力]</span></div>
+      <footer class="slide__footer"><span class="placeholder">[組織名を入力]</span><span class="slide__page">09 / 09</span><span class="placeholder">[copyright表記を入力]</span></footer>
+    </section>
+  </main>
+
+  <nav class="controls" aria-label="スライド移動">
+    <button type="button" data-action="previous" aria-label="前のスライド">前へ</button>
+    <span class="controls__status" aria-live="polite">1 / 9</span>
+    <button type="button" data-action="next" aria-label="次のスライド">次へ</button>
+  </nav>
+
+  <script>
+    (() => {
+      const slides = [...document.querySelectorAll('.slide')];
+      const previous = document.querySelector('[data-action="previous"]');
+      const next = document.querySelector('[data-action="next"]');
+      const status = document.querySelector('.controls__status');
+      let current = 0;
+
+      const show = (index) => {
+        current = Math.max(0, Math.min(index, slides.length - 1));
+        slides.forEach((slide, slideIndex) => {
+          const page = String(slideIndex + 1).padStart(2, '0');
+          slide.querySelector('.slide__page').textContent = `${page} / ${String(slides.length).padStart(2, '0')}`;
+          slide.hidden = slideIndex !== current;
+        });
+        status.textContent = `${current + 1} / ${slides.length}`;
+        previous.disabled = current === 0;
+        next.disabled = current === slides.length - 1;
+        slides[current].focus({ preventScroll: true });
+        slides[current].scrollIntoView({ block: 'center' });
+      };
+
+      previous.addEventListener('click', () => show(current - 1));
+      next.addEventListener('click', () => show(current + 1));
+      document.addEventListener('keydown', (event) => {
+        const target = event.target;
+        if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey ||
+            (target instanceof HTMLElement &&
+             (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)))) return;
+        if (event.key === 'ArrowLeft' || event.key === 'PageUp') {
+          event.preventDefault();
+          show(current - 1);
+        }
+        if (event.key === 'ArrowRight' || event.key === 'PageDown') {
+          event.preventDefault();
+          show(current + 1);
+        }
+      });
+
+      slides.forEach((slide) => slide.setAttribute('tabindex', '-1'));
+      show(0);
+    })();
+  </script>
+</body>
+</html>
