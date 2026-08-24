@@ -24,6 +24,6 @@ Allow the local Weave development UI to use the local API when Vite starts on a 
 ## Verification
 
 - `npm run lint`
-- `npm test` (build and 142 tests)
+- `npm test` (build and 144 tests)
 - Browser load on port 3001 while port 3000 was occupied
 - API CORS: selected origin returned 200; wrong-port origin returned 403
