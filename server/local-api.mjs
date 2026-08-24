@@ -24,16 +24,18 @@ import {
 import { CodexService } from "./codex/service.mjs";
 import { annotationPromptRules, canSendTurn } from "../shared/annotation.mjs";
 import { contextPromptRules, editorEnvelope } from "../shared/context.mjs";
+import { parseConfiguredPort } from "../scripts/dev-port.mjs";
+import { isAllowedWebOrigin } from "./dev-origin.mjs";
 
 const apiPort = Number(process.env.WEAVE_API_PORT ?? 4317);
+const webPort = parseConfiguredPort(process.env.WEAVE_WEB_PORT);
 const codex = new CodexService({ projectRoot, instructions: agentInstructions });
 const pendingTurns = new Map();
 const completedSaves = new Map();
 const migrationNotice = "Legacy .weave/chat.json history was removed. Conversations now use Codex app-server Threads only.";
 
 function hasAllowedOrigin(request) {
-  const origin = request.headers.origin;
-  return !origin || origin === "http://localhost:3000" || origin === "http://127.0.0.1:3000";
+  return isAllowedWebOrigin(request.headers.origin, webPort);
 }
 
 function corsHeaders(request) {

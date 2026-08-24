@@ -16,7 +16,11 @@ const geistMono = Geist_Mono({
 export async function generateMetadata(): Promise<Metadata> {
   const requestHeaders = await headers();
   const host = requestHeaders.get("host") ?? "localhost:3000";
-  const protocol = requestHeaders.get("x-forwarded-proto") ?? (host.startsWith("localhost") ? "http" : "https");
+  const isLoopbackHost = host === "localhost"
+    || host.startsWith("localhost:")
+    || host === "127.0.0.1"
+    || host.startsWith("127.0.0.1:");
+  const protocol = requestHeaders.get("x-forwarded-proto") ?? (isLoopbackHost ? "http" : "https");
   const origin = `${protocol}://${host}`;
   const title = "Weave — Human + Agent HTML Editor";
   const description = "A shared visual HTML editor for creating polished slide decks with an agent.";
