@@ -11,7 +11,7 @@ npm install
 npm run dev
 ```
 
-ブラウザで [http://localhost:3000](http://localhost:3000) を開きます。
+起動スクリプトが3000番から空きポートを選び、Viteをそのポートで起動します。3000番ポートが使用中の場合は、次の空きポート（3001など）が選ばれます。ブラウザでは、起動時に `Weave web:` と表示された `127.0.0.1` のURLを開きます。
 
 `npm run dev`は画面、ローカルAPI、Codex app-serverをまとめて起動します。OpenAIの資格情報をアプリ内へコピーせず、Codex CLIの既存ログインを利用します。
 

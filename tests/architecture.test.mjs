@@ -275,10 +275,19 @@ test("canvas class operations support SVG blocks", async () => {
 
 test("local API constrains origins and exposes reconnectable NDJSON events", async () => {
   const source = await readFile(new URL("../server/local-api.mjs", import.meta.url), "utf8");
-  assert.match(source, /127\.0\.0\.1:3000/);
+  assert.match(source, /isAllowedWebOrigin/);
+  assert.match(source, /WEAVE_WEB_PORT/);
   assert.match(source, /application\/x-ndjson/);
   assert.match(source, /codex\.events\.attach/);
   assert.doesNotMatch(source, /response.*close.*interrupt/is);
+});
+
+test("development processes share one strict loopback web port", async () => {
+  const source = await readFile(new URL("../scripts/dev.mjs", import.meta.url), "utf8");
+  assert.match(source, /resolveWebPort/);
+  assert.match(source, /WEAVE_WEB_PORT/);
+  assert.match(source, /127\.0\.0\.1/);
+  assert.match(source, /--strictPort/);
 });
 
 test("production code does not call excluded or experimental app-server APIs", async () => {

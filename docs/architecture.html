@@ -176,7 +176,7 @@
         <rect x="30" y="62" width="240" height="86" rx="8" fill="none" stroke="currentColor" stroke-width="1.5" />
         <text x="150" y="92" text-anchor="middle" font-size="14" font-weight="700" fill="var(--text)">画面（ブラウザ）</text>
         <text x="150" y="113" text-anchor="middle" font-size="12" fill="currentColor">React · キャンバスは実DOM</text>
-        <text x="150" y="132" text-anchor="middle" font-size="11.5" font-family="ui-monospace, monospace" fill="currentColor">localhost:3000</text>
+        <text x="150" y="132" text-anchor="middle" font-size="11.5" font-family="ui-monospace, monospace" fill="currentColor">127.0.0.1:3000〜</text>
 
         <rect x="345" y="62" width="220" height="86" rx="8" fill="none" stroke="var(--human)" stroke-width="2" />
         <text x="455" y="92" text-anchor="middle" font-size="14" font-weight="700" fill="var(--text)">ローカルAPI</text>
@@ -222,13 +222,13 @@
         <tbody>
           <tr>
             <td class="name">画面</td>
-            <td>vinext（Vite + React）の開発サーバ、<code>:3000</code></td>
+            <td>vinext（Vite + React）の開発サーバ、<code>127.0.0.1:3000</code> から空きポートを選択</td>
             <td>編集UI。キャンバスはスライドHTMLを実DOMとして注入し、その場で書き換える。状態モデルを別に持たない</td>
           </tr>
           <tr>
             <td class="name">ローカルAPI</td>
             <td><code>server/local-api.mjs</code>、素のnode HTTP、<code>:4317</code></td>
-            <td>プロジェクトファイルの所有、保存トランザクション、git操作、Codexの中継。CORSは <code>localhost:3000</code> のみ許可</td>
+            <td>プロジェクトファイルの所有、保存トランザクション、git操作、Codexの中継。CORSは実際に選択した <code>127.0.0.1</code> のOriginだけを許可</td>
           </tr>
           <tr>
             <td class="name">Codex app-server</td>
