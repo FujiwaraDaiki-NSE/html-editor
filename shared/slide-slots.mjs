@@ -103,9 +103,37 @@ const applyFrameAccent = (html, accent) => {
   });
 };
 
-export function applyTemplateToSlideHtml(slideInput, templateInput, { position = 1, total = 1, accent = "#fbbf24" } = {}) {
+const framePageNumber = (html) => {
+  const main = openingTagWithClass(html, "weave-slide");
+  const mainElement = main && elementInner(html, main);
+  if (!main || !mainElement) return null;
+  const content = openingTagWithAttribute(html, "data-weave-slot", contentSlotName);
+  const contentElement = content && elementInner(html, content);
+  const tags = /<([a-z][\w:-]*)\b[^>]*>/gi;
+  for (const match of html.matchAll(tags)) {
+    if (match.index <= main.index || match.index >= mainElement.closing.start) continue;
+    if (content && contentElement && match.index >= content.index && match.index < contentElement.closing.end) continue;
+    const classes = match[0].match(/\bclass\s*=\s*(["'])(.*?)\1/i)?.[2].split(/\s+/) ?? [];
+    if (classes.includes("page-number")) return { index: match.index, end: match.index + match[0].length, tag: match[1], opening: match[0] };
+  }
+  return null;
+};
+
+export const withUniqueFragmentIds = (html, instanceId) => {
+  if (!instanceId) return html;
+  const suffix = String(instanceId).replace(/[^a-z0-9_-]+/gi, "-");
+  const ids = [...html.matchAll(/\sid\s*=\s*(["'])(.*?)\1/gi)].map((match) => match[2]);
+  return ids.reduce((result, id) => result
+    .replaceAll(`id="${id}"`, `id="${id}-${suffix}"`)
+    .replaceAll(`id='${id}'`, `id='${id}-${suffix}'`)
+    .replaceAll(`url(#${id})`, `url(#${id}-${suffix})`)
+    .replaceAll(`href="#${id}"`, `href="#${id}-${suffix}"`)
+    .replaceAll(`href='#${id}'`, `href='#${id}-${suffix}'`), html);
+};
+
+export function applyTemplateToSlideHtml(slideInput, templateInput, { position = 1, total = 1, accent = "#fbbf24", instanceId = null } = {}) {
   const slideHtml = String(slideInput);
-  let frame = applyFrameAccent(String(templateInput), accent);
+  let frame = withUniqueFragmentIds(applyFrameAccent(String(templateInput), accent), instanceId);
   const frameTitle = openingTagWithAttribute(frame, "data-weave-slot", titleSlotName);
   const frameContent = openingTagWithAttribute(frame, "data-weave-slot", contentSlotName);
   const frameMain = openingTagWithClass(frame, "weave-slide");
@@ -135,11 +163,19 @@ export function applyTemplateToSlideHtml(slideInput, templateInput, { position =
   if (!nextContent || !nextContentElement) return slideHtml;
   frame = replaceElementInner(frame, nextContent, appendToInner(nextContentElement.inner, movedContent));
 
-  const page = openingTagWithClass(frame, "page-number");
+  const page = framePageNumber(frame);
   if (page) frame = replaceElementInner(frame, page, `${String(position).padStart(2, "0")} / ${String(total).padStart(2, "0")}`);
   const main = openingTagWithClass(frame, "weave-slide");
   const mainElement = main && elementInner(frame, main);
   return main && mainElement ? frame.slice(main.index, mainElement.closing.end) : slideHtml;
+}
+
+export function updateSlidePageNumber(input, position, total) {
+  const html = String(input);
+  const page = framePageNumber(html);
+  return page
+    ? replaceElementInner(html, page, `${String(position).padStart(2, "0")} / ${String(total).padStart(2, "0")}`)
+    : html;
 }
 
 const namedEntities = { amp: "&", apos: "'", gt: ">", lt: "<", nbsp: " ", quot: '"' };

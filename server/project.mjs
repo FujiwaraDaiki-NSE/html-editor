@@ -32,7 +32,7 @@ const templateRootClasses = ({ id, background, text }) => [
   text,
 ].join(" ");
 
-export const builtInTemplates = templateThemes.map((theme) => ({
+const defaultTemplates = templateThemes.map((theme) => ({
   id: theme.id,
   name: theme.name,
   filename: `${theme.id}.html`,
@@ -44,6 +44,34 @@ export const builtInTemplates = templateThemes.map((theme) => ({
     <div class="page-number absolute top-0 right-0 p-8 text-xs font-semibold tracking-widest text-slate-400">01 / 01</div>
   </main>`,
 }));
+
+const yearEndReportTemplate = {
+  id: "year-end-report",
+  name: "年度末報告 / Red & Blue",
+  filename: "year-end-report.html",
+  html: `<main class="${templateRootClasses({ id: "plain", background: "bg-white", text: "text-slate-950" })}" data-weave-slide data-weave-template="year-end-report" data-weave-template-name="年度末報告 / Red & Blue">
+    <svg class="report-frame absolute inset-0 h-full w-full" data-weave-id="year-end-report-frame" viewBox="0 0 1280 720" preserveAspectRatio="none" aria-hidden="true">
+      <defs>
+        <linearGradient id="year-end-report-gradient" x1="0%" x2="100%" y1="0%" y2="0%">
+          <stop offset="0%" stop-color="#c2c2c2"></stop>
+          <stop offset="55%" stop-color="#dcdcdc"></stop>
+          <stop offset="100%" stop-color="#f3f3f3"></stop>
+        </linearGradient>
+      </defs>
+      <path d="M0 0 L1280 0 C797.33 24 402.67 118 165.33 285 C76 348 24 392 0 416 Z" fill="url(#year-end-report-gradient)"></path>
+      <line x1="131" y1="69" x2="1280" y2="69" stroke="#e00000" stroke-width="2"></line>
+      <line x1="131" y1="662" x2="1280" y2="662" stroke="#004dff" stroke-width="2"></line>
+    </svg>
+    <div class="report-organization brand flex items-center gap-2 text-xs font-bold tracking-widest text-slate-400" data-weave-id="year-end-report-organization">Organization Name</div>
+    <section class="hero flex flex-1 flex-col items-start justify-center gap-6" data-weave-slot="content">
+      <h1 class="heading text-6xl font-semibold leading-none tracking-tight" data-weave-slot="title" data-weave-id="title"></h1>
+    </section>
+    <div class="report-copyright brand flex items-center gap-2 text-xs font-bold tracking-widest text-slate-400" data-weave-id="year-end-report-copyright">© Organization Name</div>
+    <div class="page-number absolute top-0 right-0 p-8 text-xs font-semibold tracking-widest text-slate-400" data-weave-id="year-end-report-page-number">01 / 01</div>
+  </main>`,
+};
+
+export const builtInTemplates = [...defaultTemplates, yearEndReportTemplate];
 
 export const agentInstructions = `You are the editing agent embedded in Weave, a visual HTML slide editor.
 The truth of every slide is its own file: slides/<id>.html holds a <main class="weave-slide"> fragment.
