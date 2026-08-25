@@ -50,6 +50,8 @@ npm run dev
 
 Codex app-serverとの通信は公式のJSON-RPCライフサイクル（初期化、thread、turn、通知ストリーム）に沿ってローカルAPIが担当します。ブラウザからapp-serverや資格情報へ直接アクセスしません。
 
+生成済みapp-server型のCLI版と実行中CLI版が異なっても、起動時には警告メタデータとして保持し、`initialize` → `initialized` のハンドシェイクが成功する限り利用を続けます。実際の初期化に失敗した場合だけ、画面に再生成・確認手順付きの `incompatible` 状態を表示します。型の差分を確認するだけなら、既存ファイルを変更せず、差分がある場合は比較用の一時生成物を残す `npm run codex:check` を使ってください。意図的に更新するときだけ `npm run codex:generate` を実行します。
+
 ## 検証
 
 ```bash

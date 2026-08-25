@@ -39,8 +39,8 @@ type ServerState = {
   project: { root: string; branch: string; commit: string; revision?: string; clean: boolean };
   codex: {
     ready: boolean;
-    connection: string;
-    version: { compatible: boolean; running: string; generated: string; message: string | null } | null;
+    connection: { status: "connecting" | "connected" | "reconnecting" | "disconnected" | "incompatible"; error: string | null; cliVersion?: string | null };
+    version: { matches: boolean; running: string; generated: string; warning: string | null } | null;
     catalog: { models: any[]; skills: any[]; hooks: any[]; mcpServers: any[]; account: Record<string, any> | null; modelProvider: Record<string, any> | null };
     activeTurns: Record<string, string>;
     pendingRequests: Array<{ id: string | number; method: string; params: Record<string, any>; createdAt: number }>;
@@ -503,7 +503,7 @@ export default function Home() {
       setSaved(state.project.clean);
       reinject();
     }
-    dispatchCodex({ type: "connection", connection: { status: state.codex.ready ? "connected" : state.codex.version?.compatible === false ? "incompatible" : "connecting", error: state.codex.version?.message ?? null, cliVersion: state.codex.version?.running } });
+    dispatchCodex({ type: "connection", connection: state.codex.connection });
     dispatchCodex({ type: "catalog", catalog: state.codex.catalog });
     dispatchCodex({ type: "pendingRequests", requests: state.codex.pendingRequests });
     dispatchCodex({ type: "activeTurns", activeTurns: state.codex.activeTurns });

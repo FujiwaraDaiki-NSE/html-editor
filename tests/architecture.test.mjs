@@ -92,6 +92,8 @@ test("UI uses Thread APIs, reducer, item cards, steering, interrupt, approvals, 
   ]) {
     assert.equal(page.includes(surface), true, `missing UI surface: ${surface}`);
   }
+  assert.match(page, /connection: state\.codex\.connection/);
+  assert.doesNotMatch(page, /version\?\.compatible/);
 });
 
 test("activity rail destinations render their details in the left sidebar", async () => {

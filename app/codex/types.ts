@@ -2,7 +2,7 @@
 export type CodexConnectionState = {
   status: "connecting" | "connected" | "reconnecting" | "disconnected" | "incompatible";
   error: string | null;
-  cliVersion?: string;
+  cliVersion?: string | null;
 };
 
 export type ThreadState = {
