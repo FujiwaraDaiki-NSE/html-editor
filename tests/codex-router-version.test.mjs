@@ -65,6 +65,17 @@ test("detects generated binding version mismatches", async () => {
   const file = join(directory, "version.json");
   await writeFile(file, JSON.stringify({ cliVersion: "0.144.0" }));
   const result = await checkGeneratedVersion(file, { exec: () => "codex-cli 0.145.0" });
-  assert.equal(result.compatible, false);
-  assert.match(result.message, /npm run codex:generate/);
+  assert.equal(result.matches, false);
+  assert.equal(result.running, "0.145.0");
+  assert.equal(result.generated, "0.144.0");
+  assert.match(result.warning, /npm run codex:generate/);
+});
+
+test("accepts matching generated binding versions without a warning", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "weave-version-"));
+  const file = join(directory, "version.json");
+  await writeFile(file, JSON.stringify({ cliVersion: "0.145.0" }));
+  const result = await checkGeneratedVersion(file, { exec: () => "codex-cli 0.145.0" });
+  assert.equal(result.matches, true);
+  assert.equal(result.warning, null);
 });

@@ -14,7 +14,8 @@
     "test:unit": "node --experimental-strip-types --test tests/*.test.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "db:generate": "drizzle-kit generate",
-    "codex:generate": "node scripts/generate-codex-types.mjs"
+    "codex:generate": "node scripts/generate-codex-types.mjs",
+    "codex:check": "node scripts/check-codex-types.mjs"
   },
   "dependencies": {
     "drizzle-orm": "0.45.2",

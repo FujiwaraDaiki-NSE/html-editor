@@ -28,7 +28,7 @@ export function validateOAuthUrl(value) {
 }
 
 export class CodexService {
-  constructor({ projectRoot, instructions, client, eventStream } = {}) {
+  constructor({ projectRoot, instructions, client, eventStream, checkVersion = checkGeneratedVersion } = {}) {
     this.projectRoot = projectRoot;
     this.instructions = instructions;
     this.client = client ?? new CodexAppServerClient({ cwd: projectRoot });
@@ -37,6 +37,8 @@ export class CodexService {
     this.ready = false;
     this.initializing = null;
     this.version = null;
+    this.checkVersion = checkVersion;
+    this.connection = { status: "connecting", error: null, cliVersion: null };
     this.catalog = {
       models: [],
       skills: [],
@@ -53,8 +55,17 @@ export class CodexService {
     this.client.on("notification", (message) => this.handleNotification(message));
     this.client.on("connection", (connection) => {
       this.ready = false;
-      this.events.publish("codex/connection", connection);
-      if (connection.status === "connected") void this.initialize();
+      if (connection.status === "connected") {
+        // The child process is reachable, but it is not ready until the official
+        // initialize -> initialized handshake succeeds.
+        this.publishConnection({ status: "connecting", error: null });
+        void this.initialize().catch(() => {
+          // initialize() publishes the actionable incompatible state. This catch
+          // is deliberately attached because reconnect callbacks are fire-and-forget.
+        });
+        return;
+      }
+      this.publishConnection({ ...connection, error: connection.error ?? null });
     });
     this.client.on("protocolError", (error, line) => {
       this.events.publish("codex/protocolError", { error: error.message, line: String(line).slice(0, 1000) });
@@ -73,15 +84,24 @@ export class CodexService {
     const versionFile = resolve(
       fileURLToPath(new URL("../../generated/codex-app-server/version.json", import.meta.url)),
     );
-    this.version = await checkGeneratedVersion(versionFile);
-    if (!this.version.compatible) {
-      this.events.publish("codex/connection", {
-        status: "incompatible",
-        error: this.version.message,
-        cliVersion: this.version.running,
-      });
-      throw new Error(this.version.message);
+    try {
+      this.version = await this.checkVersion(versionFile);
+    } catch (error) {
+      this.publishIncompatible(error, "version check");
+      throw error;
     }
+    if (!this.version.matches) {
+      this.events.publish("codex/versionWarning", {
+        warning: this.version.warning,
+        generated: this.version.generated,
+        running: this.version.running,
+      });
+    }
+    this.connection = {
+      status: "connecting",
+      error: null,
+      cliVersion: this.version.running,
+    };
     await this.client.start();
     await this.initialize();
   }
@@ -90,27 +110,50 @@ export class CodexService {
     if (this.ready) return;
     if (this.initializing) return await this.initializing;
     this.initializing = (async () => {
-      await this.client.request("initialize", {
-        clientInfo: { name: "weave_local", title: "Weave Local Editor", version: "0.1.0" },
-        capabilities: {
-          experimentalApi: false,
-          requestAttestation: false,
-          optOutNotificationMethods: [],
-          mcpServerOpenaiFormElicitation: true,
-        },
-      });
-      this.client.notify("initialized", {});
-      this.ready = true;
-      this.events.publish("codex/connection", {
-        status: "connected",
-        error: null,
-        cliVersion: this.version?.running,
-      });
-      await this.refreshCatalog();
+      try {
+        await this.client.request("initialize", {
+          clientInfo: { name: "weave_local", title: "Weave Local Editor", version: "0.1.0" },
+          capabilities: {
+            experimentalApi: false,
+            requestAttestation: false,
+            optOutNotificationMethods: [],
+            mcpServerOpenaiFormElicitation: true,
+          },
+        });
+        this.client.notify("initialized", {});
+        this.ready = true;
+        this.publishConnection({
+          status: "connected",
+          error: null,
+          cliVersion: this.version?.running ?? null,
+        });
+        await this.refreshCatalog();
+      } catch (error) {
+        this.publishIncompatible(error, "initialize");
+        throw error;
+      }
     })().finally(() => {
       this.initializing = null;
     });
     return await this.initializing;
+  }
+
+  publishConnection(connection) {
+    this.connection = {
+      ...this.connection,
+      ...connection,
+      cliVersion: connection.cliVersion ?? this.version?.running ?? this.connection.cliVersion ?? null,
+    };
+    this.events.publish("codex/connection", this.connection);
+  }
+
+  publishIncompatible(error, phase) {
+    this.ready = false;
+    const message = error instanceof Error ? error.message : String(error);
+    const generated = this.version?.generated ?? "unknown";
+    const running = this.version?.running ?? "unknown";
+    const actionable = `Codex app-server ${phase} failed: ${message} (generated bindings ${generated}, running CLI ${running}). Check the Codex CLI/app-server version with npm run codex:check and retry.`;
+    this.publishConnection({ status: "incompatible", error: actionable });
   }
 
   async refreshCatalog() {

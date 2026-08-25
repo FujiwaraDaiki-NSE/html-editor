@@ -37,6 +37,27 @@ class FakeClient extends EventEmitter {
   }
 }
 
+class HandshakeClient extends EventEmitter {
+  calls = [];
+  notifications = [];
+  constructor({ initializeError = null } = {}) {
+    super();
+    this.initializeError = initializeError;
+  }
+  async start() {
+    this.emit("connection", { status: "connected" });
+  }
+  async request(method, params) {
+    this.calls.push({ method, params });
+    if (method === "initialize" && this.initializeError) throw this.initializeError;
+    if (method === "initialize") return {};
+    throw new Error(`Unexpected method: ${method}`);
+  }
+  notify(method, params) { this.notifications.push({ method, params }); }
+  respond() {}
+  respondError() {}
+}
+
 test("lists only durably marked Weave Threads and excludes legacy/other-client Threads", async () => {
   const client = new FakeClient();
   const service = new CodexService({ projectRoot: "/workspace", instructions: "test", client });
@@ -96,4 +117,61 @@ test("accepts only HTTPS and loopback OAuth destinations", () => {
   assert.equal(validateOAuthUrl("http://127.0.0.1:4389/callback"), "http://127.0.0.1:4389/callback");
   assert.throws(() => validateOAuthUrl("javascript:alert(1)"), /unsafe OAuth URL/);
   assert.throws(() => validateOAuthUrl("http://example.com/login"), /unsafe OAuth URL/);
+});
+
+test("version mismatch is retained as a warning while a successful handshake makes Codex ready", async () => {
+  const client = new HandshakeClient();
+  const events = new CodexEventStream();
+  const service = new CodexService({
+    projectRoot: "/workspace",
+    instructions: "test",
+    client,
+    eventStream: events,
+    checkVersion: async () => ({
+      matches: false,
+      running: "0.149.1",
+      generated: "0.146.0",
+      warning: "Generated bindings are from an older CLI.",
+    }),
+  });
+
+  await service.start();
+  assert.equal(service.version.matches, false);
+  assert.equal(service.version.warning, "Generated bindings are from an older CLI.");
+  assert.equal(service.ready, true);
+  assert.equal(service.connection.status, "connected");
+  assert.equal(client.calls[0].method, "initialize");
+  assert.equal(client.calls[0].params.capabilities.experimentalApi, false);
+  assert.deepEqual(client.notifications, [{ method: "initialized", params: {} }]);
+  assert.deepEqual(
+    events.since().filter((event) => event.type === "codex/connection").map((event) => event.payload.status),
+    ["connecting", "connected"],
+  );
+  assert.deepEqual(events.since().find((event) => event.type === "codex/versionWarning")?.payload, {
+    warning: "Generated bindings are from an older CLI.",
+    generated: "0.146.0",
+    running: "0.149.1",
+  });
+  service.router.dispose();
+});
+
+test("failed initialize publishes an actionable incompatible state and remains rejected", async () => {
+  const client = new HandshakeClient({ initializeError: new Error("method not found") });
+  const service = new CodexService({
+    projectRoot: "/workspace",
+    instructions: "test",
+    client,
+    checkVersion: async () => ({ matches: false, running: "0.149.1", generated: "0.146.0", warning: "version mismatch" }),
+  });
+
+  await assert.rejects(service.start(), /method not found/);
+  assert.equal(service.ready, false);
+  assert.equal(service.connection.status, "incompatible");
+  assert.match(service.connection.error, /initialize failed/);
+  assert.match(service.connection.error, /generated bindings 0\.146\.0, running CLI 0\.149\.1/);
+  assert.match(service.connection.error, /npm run codex:check/);
+  client.emit("connection", { status: "connected" });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(service.connection.status, "incompatible");
+  service.router.dispose();
 });

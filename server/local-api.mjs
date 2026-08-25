@@ -79,7 +79,7 @@ async function statePayload() {
     })),
     codex: {
       ready: codex.ready,
-      connection: codex.ready ? "connected" : "connecting",
+      connection: codex.connection,
       version: codex.version,
       catalog: codex.catalog,
       activeTurns: Object.fromEntries(codex.activeTurns),

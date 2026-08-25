@@ -398,7 +398,7 @@
     <div class="prose">
       <p>Codex CLIの <code>app-server</code> を子プロセスとして起動し、stdio越しのJSON-RPCで話す。HTTPでもSDKでもない。</p>
       <ul>
-        <li><strong>型は生成する</strong> — <code>codex app-server generate-ts</code> の出力を <code>generated/codex-app-server/</code> に置く。生成時のCLI版（現在 <code>0.146.0</code>）を記録し、起動時に実際のCLI版と比較して、食い違えば画面に出す。プロトコルの変化を黙って踏まない</li>
+        <li><strong>型は生成する</strong> — <code>codex app-server generate-ts</code> の出力を <code>generated/codex-app-server/</code> に置き、生成時のCLI版を記録する。起動時は実際のCLI版と比較して警告メタデータに残す。実際の互換性は公式の <code>initialize</code> → <code>initialized</code> ハンドシェイクで判定し、失敗時だけ <code>incompatible</code> にする。差分確認は既存ファイルを変更しない <code>npm run codex:check</code> で行う</li>
         <li><strong>イベントは連番付きNDJSON</strong> — <code>/api/codex/events?after=N</code> でストリームする。直近2000件をメモリに保持しているので、再接続時に続きから受け取れる</li>
         <li><strong>承認要求は逆方向のRPC</strong> — コマンド実行やファイル変更の承認、MCPの問い合わせはサーバ→クライアント方向の要求として届く。ローカルAPIがUIに出せるものだけを選んで画面へ渡し、返答を戻す</li>
         <li><strong>文脈は自動で渡す</strong> — 選択中の要素、直近の履歴などAgentがファイルから得られない視点</li>
@@ -441,7 +441,7 @@
             <td>ライブラリを介さず <code>execFileSync</code> で叩く。人間が同じリポジトリを普通のgitとして触れることが要件</td>
           </tr>
           <tr>
-            <td class="name">Codex app-server</td><td class="ver">CLI 0.146.0</td>
+            <td class="name">Codex app-server</td><td class="ver">実行時CLI</td>
             <td>Agent</td>
             <td>公式のライフサイクル（初期化・thread・turn・通知）に沿う。資格情報はCLIに置いたまま</td>
           </tr>
