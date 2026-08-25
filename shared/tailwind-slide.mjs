@@ -223,7 +223,7 @@ const extraUtilities = {
   "text-slate-950": "color: #020617", uppercase: "text-transform: uppercase", "tracking-tight": "letter-spacing: -0.025em", "tracking-wide": "letter-spacing: 0.025em", "tracking-widest": "letter-spacing: 0.1em",
 };
 
-export const structuralSlideClasses = new Set(["weave-slide", "hero", "brand", "page-number", "heading", "paragraph", "eyebrow", "note", "metrics", "image", "list", "table", "weave-container", "row", "column", "grid", "theme-orbit", "theme-grid", "theme-plain", "report-frame", "report-organization", "report-copyright"]);
+export const structuralSlideClasses = new Set(["weave-slide", "hero", "brand", "page-number", "heading", "paragraph", "eyebrow", "note", "metrics", "image", "list", "table", "weave-container", "row", "column", "grid", "theme-orbit", "theme-grid", "theme-plain", "report-frame", "report-organization", "report-copyright", "report-brand-placeholder", "report-tagline", "report-subtitle", "report-meta"]);
 export const utilityDeclarations = new Map([
   ...Object.values(slideControlGroups).flatMap((group) => group.options.flatMap(({ className, css }) => className ? [[className, css]] : [])),
   ...Object.entries(extraUtilities),
@@ -263,10 +263,12 @@ ${utilities}
   width: 1280px;
   height: 720px;
   flex: none;
-  padding: 90px 33px 58px;
-  color: #151515;
-  font-family: "Noto Sans JP", "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
-  line-height: 1.55;
+  padding: 0 33.33px 58px;
+  color: #000;
+  font-family: "Noto Sans CJK JP", "Noto Sans JP", "Yu Gothic", "YuGothic", "Hiragino Sans", Meiryo, sans-serif;
+  font-size: 23px;
+  line-height: 1.32;
+  letter-spacing: normal;
 }
 .weave-slide[data-weave-template="year-end-report"] .report-frame {
   z-index: 0;
@@ -275,21 +277,22 @@ ${utilities}
 .weave-slide[data-weave-template="year-end-report"] [data-weave-slot="content"] {
   position: relative;
   z-index: 1;
+  padding-top: 90px;
   justify-content: flex-start;
+  overflow: hidden;
 }
 .weave-slide[data-weave-template="year-end-report"] [data-weave-slot="title"] {
   position: absolute;
-  top: -64px;
+  top: 26px;
   right: 0;
   left: 44px;
-  color: #151515;
+  color: #000;
   font-size: 23px;
-  font-weight: 600;
+  font-weight: 400;
   line-height: 1;
   letter-spacing: 0;
-}
-.weave-slide[data-weave-template="year-end-report"] [data-weave-slot="title"]:has(br) {
-  font-size: 20px;
+  max-height: 43px;
+  overflow: hidden;
 }
 .weave-slide[data-weave-template="year-end-report"] .report-organization {
   position: absolute;
@@ -299,33 +302,189 @@ ${utilities}
   color: #303030;
   font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.03em;
+  letter-spacing: 0;
   white-space: nowrap;
 }
 .weave-slide[data-weave-template="year-end-report"] .report-copyright {
   position: absolute;
   z-index: 1;
-  right: 38px;
+  right: 50.67px;
   bottom: 34px;
   color: #4b5563;
   font-size: 9px;
-  font-weight: 500;
-  letter-spacing: 0.03em;
+  font-weight: 400;
+  letter-spacing: 0;
   text-align: right;
   white-space: nowrap;
 }
 .weave-slide[data-weave-template="year-end-report"] .page-number {
   z-index: 1;
-  right: 38px;
+  right: 50.67px;
   bottom: 12px;
   top: auto;
   padding: 0;
   color: #6b7280;
   font-size: 10px;
   font-variant-numeric: tabular-nums;
-  letter-spacing: 0.12em;
+  font-weight: 500;
+  letter-spacing: 0;
   opacity: 0.72;
   white-space: nowrap;
+}
+.weave-slide[data-weave-template="year-end-report-cover"] {
+  width: 1280px;
+  height: 720px;
+  flex: none;
+  padding: 0;
+  color: #000;
+  font-family: "Noto Sans CJK JP", "Noto Sans JP", "Yu Gothic", "YuGothic", "Hiragino Sans", Meiryo, sans-serif;
+  font-size: 23px;
+  line-height: 1.32;
+  letter-spacing: normal;
+}
+.weave-slide[data-weave-template="year-end-report-cover"] .report-frame,
+.weave-slide[data-weave-template="year-end-report-agenda"] .report-frame {
+  z-index: 0;
+  pointer-events: none;
+}
+.weave-slide[data-weave-template="year-end-report-cover"] [data-weave-slot="content"] {
+  position: absolute;
+  z-index: 1;
+  top: 324px;
+  left: 74.67px;
+  width: 1040px;
+  height: auto;
+  bottom: 58px;
+  justify-content: flex-start;
+  overflow: hidden;
+}
+.weave-slide[data-weave-template="year-end-report-cover"] [data-weave-slot="title"] {
+  position: static;
+  color: #000;
+  font-size: 42px;
+  font-weight: 700;
+  line-height: 1.18;
+  letter-spacing: 0;
+}
+.weave-slide[data-weave-template="year-end-report-cover"] .report-brand-placeholder {
+  position: absolute;
+  z-index: 1;
+  top: 22px;
+  left: 56px;
+  width: 157.33px;
+  color: #1f1f1f;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+.weave-slide[data-weave-template="year-end-report-cover"] .report-tagline {
+  position: absolute;
+  z-index: 1;
+  top: 38px;
+  right: 48px;
+  color: #1f1f1f;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+.weave-slide[data-weave-template="year-end-report-cover"] .report-subtitle {
+  position: absolute;
+  z-index: 1;
+  top: 264px;
+  left: 74.67px;
+  border-left: 8px solid #e00000;
+  padding-left: 20px;
+  color: #202020;
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+.weave-slide[data-weave-template="year-end-report-cover"] .report-meta {
+  position: absolute;
+  z-index: 1;
+  right: 53.33px;
+  bottom: 88px;
+  width: 693.33px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  color: #000;
+  font-size: 21px;
+  line-height: 1.32;
+  text-align: right;
+  white-space: nowrap;
+}
+.weave-slide[data-weave-template="year-end-report-cover"] .report-organization,
+.weave-slide[data-weave-template="year-end-report-agenda"] .report-organization {
+  position: absolute;
+  z-index: 1;
+  bottom: 31px;
+  color: #303030;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+.weave-slide[data-weave-template="year-end-report-cover"] .report-organization {
+  left: 280px;
+}
+.weave-slide[data-weave-template="year-end-report-agenda"] .report-organization {
+  left: 186.67px;
+}
+.weave-slide[data-weave-template="year-end-report-cover"] .report-copyright,
+.weave-slide[data-weave-template="year-end-report-agenda"] .report-copyright {
+  position: absolute;
+  z-index: 1;
+  right: 50.67px;
+  bottom: 34px;
+  color: #4b5563;
+  font-size: 9px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-align: right;
+  white-space: nowrap;
+}
+.weave-slide[data-weave-template="year-end-report-cover"] .page-number,
+.weave-slide[data-weave-template="year-end-report-agenda"] .page-number {
+  z-index: 1;
+  right: 50.67px;
+  bottom: 12px;
+  top: auto;
+  padding: 0;
+  color: #6b7280;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  letter-spacing: 0;
+  opacity: 0.72;
+  white-space: nowrap;
+}
+.weave-slide[data-weave-template="year-end-report-agenda"] {
+  width: 1280px;
+  height: 720px;
+  flex: none;
+  padding: 132px 122.67px 58px;
+  color: #000;
+  font-family: "Noto Sans CJK JP", "Noto Sans JP", "Yu Gothic", "YuGothic", "Hiragino Sans", Meiryo, sans-serif;
+  font-size: 23px;
+  line-height: 1.32;
+  letter-spacing: normal;
+}
+.weave-slide[data-weave-template="year-end-report-agenda"] [data-weave-slot="content"] {
+  position: relative;
+  z-index: 1;
+  justify-content: center;
+  overflow: hidden;
+}
+.weave-slide[data-weave-template="year-end-report-agenda"] [data-weave-slot="title"] {
+  position: static;
+  color: #303030;
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.32;
+  letter-spacing: 0;
 }
 `;
 }
