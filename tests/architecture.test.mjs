@@ -58,10 +58,39 @@ test("policy gates protect commits while turn writes stay available", async () =
   assert.ok(save.includes("saveProject"));
   assert.ok(atomicSave.includes("assertCommittable"));
   assert.ok(atomicSave.indexOf("assertCommittable") < atomicSave.indexOf("commitIfChanged"));
-  assert.match(turnStart, /writeProject\(payload\.deck\)/);
-  assert.doesNotMatch(turnStart, /writeProject\(payload\.deck,\s*[^)]/);
+  assert.match(turnStart, /const root = projectRoot\(\)/);
+  assert.match(turnStart, /writeProject\(payload\.deck, null, root\)/);
   assert.doesNotMatch(steer, /writeProject/);
   assert.doesNotMatch(writeBody, /auditContentPolicy/);
+});
+
+test("completed Agent turns gate ordinary updates and keep variation handling intact", async () => {
+  const [source, page] = await Promise.all([
+    readFile(new URL("../server/local-api.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+  ]);
+  const completion = source.slice(source.indexOf('codex.on("notification"'), source.indexOf("const server = createServer"));
+  const write = completion.indexOf("await writeProjectUnlocked(project, null, pending.root)");
+  const ordinaryGate = completion.indexOf("} else {\n          await assertCommittable(pending.root);\n        }");
+  const updated = completion.indexOf('status: "updated"');
+  assert.ok(write >= 0 && write < ordinaryGate, "failed output must remain written for inspection before auditing");
+  assert.ok(ordinaryGate >= 0, "ordinary completion must run the committable audit");
+  assert.ok(ordinaryGate < updated, "ordinary audit must run before the updated event");
+  assert.match(completion, /status: "error",\n\s+error: error\.message/);
+  assert.match(completion, /\.\.\.\(error\.code \? \{ code: error\.code \} : \{\}\)/);
+  assert.match(completion, /\.\.\.\(Array\.isArray\(error\.diagnostics\) \? \{ diagnostics: error\.diagnostics \} : \{\}\)/);
+  assert.match(completion, /if \(pending\.variation\) \{[\s\S]*?commitIfChanged\([^\n]+pending\.root\)/);
+  assert.match(completion, /await restoreFailedTurn\(pending\)/);
+  assert.match(source, /pendingTurn\(\{[^\n]+preTurnDeck: deck, preTurnCss/);
+  assert.match(source, /await restoreDeckCss\(pending\.preTurnCss, pending\.root\)/);
+  assert.match(source, /discardVariation\(pending\.branch, pending\.root\)/);
+  assert.match(source, /return codex\.activeTurns\.size > 0 \|\| pendingTurns\.size > 0/);
+  assert.match(source, /const finalizations = \[\.\.\.pendingTurns\.values\(\)\]\.map\(\(pending\) => pending\.finalization\)/);
+  assert.match(source, /await Promise\.all\(finalizations\)/);
+  assert.match(page, /projectEventDecision\(envelope\.payload\)/);
+  assert.match(page, /setProjectEventDiagnostics\(projectEvent\.diagnostics\)/);
+  assert.match(page, /if \(projectEvent\.error\) setApiError\(projectEvent\.error\)/);
+  assert.match(page, /if \(!projectEvent\.refreshState\) continue/);
 });
 
 test("variation turns share prompt validation and editor annotation context", async () => {

@@ -21,6 +21,7 @@ import { ItemCard } from "./codex/components/ItemCard";
 import { ServerRequestCard } from "./codex/components/ServerRequestCard";
 import { codexReducer, initialCodexState } from "./codex/reducer";
 import { selectThreadRunning, selectThreadTurns, selectTurnItems } from "./codex/selectors";
+import { projectEventDecision } from "./project-events";
 
 /* A slide is now a real HTML file: its `<main class="weave-slide">` fragment is the single
    truth. The editor renders that fragment as live DOM and edits it in place; nothing is
@@ -361,6 +362,7 @@ export default function Home() {
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [project, setProject] = useState<ServerState["project"] | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
+  const [projectEventDiagnostics, setProjectEventDiagnostics] = useState<Array<{ code?: string; message?: string; severity?: string; source?: string }>>([]);
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [galleryView, setGalleryView] = useState<"list" | "new">("list");
   const [galleryProjects, setGalleryProjects] = useState<ProjectSummary[]>([]);
@@ -641,12 +643,21 @@ export default function Home() {
     attachments: attachments.map(({ path, name, size, kind, files }) => ({ path, name, bytes: size, kind, files })),
   });
 
-  const quality = (() => {
+  const quality = useMemo(() => {
     let html = "";
     try { html = composedSlides(slides).join("\n"); } catch (error) { return { ok: false, diagnostics: [{ code: "template-reference", source: "slides", severity: "error", message: error instanceof Error ? error.message : String(error) }], errors: 1, warnings: 0 }; }
     const result = auditContentPolicy({ css: deckCss, html });
     return { ok: result.ok, diagnostics: result.diagnostics, errors: result.summary.errors, warnings: result.summary.warnings };
-  })();
+  }, [slides, deckCss, templates]);
+  const qualityReport = useMemo(() => {
+    const rejectedErrors = projectEventDiagnostics.filter((item) => item.severity !== "warning").length;
+    const rejectedWarnings = projectEventDiagnostics.length - rejectedErrors;
+    return {
+      ok: quality.ok && rejectedErrors === 0,
+      errors: quality.errors + rejectedErrors,
+      warnings: quality.warnings + rejectedWarnings,
+    };
+  }, [quality, projectEventDiagnostics]);
 
   const activeThread = codexState.activeThreadId ? codexState.threads[codexState.activeThreadId] : null;
   const activeThreadName = activeThread ? displayThreadName(activeThread.name) || activeThread.preview || "New conversation" : "No conversation";
@@ -744,6 +755,12 @@ export default function Home() {
             const envelope = JSON.parse(line);
             eventSequenceRef.current = Math.max(eventSequenceRef.current, envelope.sequence ?? 0);
             if (envelope.type === "weave/project" || envelope.type === "codex/gap") {
+              const projectEvent = envelope.type === "weave/project" ? projectEventDecision(envelope.payload) : null;
+              if (projectEvent) {
+                setProjectEventDiagnostics(projectEvent.diagnostics);
+                if (projectEvent.error) setApiError(projectEvent.error);
+                if (!projectEvent.refreshState) continue;
+              }
               const generation = editGenerationRef.current;
               const stateResponse = await fetch(`${apiBase}/state`);
               if (stateResponse.ok) {
@@ -3049,7 +3066,7 @@ export default function Home() {
 
       <footer className="statusbar">
         <div>
-          <button className={`quality-button ${quality.ok ? "ok" : "error"}`} onClick={(event) => togglePopover("quality", event.currentTarget)} aria-expanded={openPopover === "quality"}>Quality {quality.ok ? (quality.warnings ? `${quality.warnings} warnings` : "✓") : `${quality.errors} errors`}</button>
+          <button className={`quality-button ${qualityReport.ok ? "ok" : "error"}`} onClick={(event) => togglePopover("quality", event.currentTarget)} aria-expanded={openPopover === "quality"}>Quality {qualityReport.ok ? (qualityReport.warnings ? `${qualityReport.warnings} warnings` : "✓") : `${qualityReport.errors} errors`}</button>
           <span>{project ? `${project.branch} · ${project.commit}` : "Connecting…"}</span>
           {apiError && <span className="status-error">{apiError}</span>}
         </div>
@@ -3061,10 +3078,16 @@ export default function Home() {
           <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
           <aside className="quality-popover" aria-label="Deck quality report">
             <header><strong>Deck quality</strong><button onClick={() => dismissPopover()}>×</button></header>
-            {quality.ok && <p className="quality-empty">No blocking quality issues.</p>}
+            {qualityReport.ok && <p className="quality-empty">No blocking quality issues.</p>}
             {quality.diagnostics.map((item: any, index: number) => (
               <div key={`${item.code}-${index}`} className="quality-row"><i className={item.severity === "warning" ? "warning" : "error"} /><span><strong>{item.message}</strong><small>{item.code} · {item.source}</small></span></div>
             ))}
+            {projectEventDiagnostics.length > 0 && <>
+              <div className="quality-report-heading">Last Agent output rejected</div>
+              {projectEventDiagnostics.map((item, index) => (
+                <div key={`agent-${item.code ?? "diagnostic"}-${index}`} className="quality-row"><i className={item.severity === "warning" ? "warning" : "error"} /><span><strong>{item.message}</strong><small>{item.code ?? "agent quality gate"} · {item.source ?? "html"}</small></span></div>
+              ))}
+            </>}
           </aside>
         </>
       )}

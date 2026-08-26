@@ -127,7 +127,8 @@ template/layout references, titles, notes, and accents (Weave keeps it in sync).
 Every template has template.json, one master.html, and one or more named layouts. A template is
 the reusable design package; a layout is its purpose-specific arrangement (cover, content, agenda).
 Every layout has data-weave-slot="title" and data-weave-slot="content"; the title slot's text is
-the slide name. Master/layout files are shared and must be edited intentionally because their next
+the slide name; these roles are semantic attributes, never CSS classes; do not add title or content
+to class. Master/layout files are shared and must be edited intentionally because their next
 render changes every slide that references them. Ordinary slide edits may change only source
 elements and slot contents. Unknown template or layout identifiers are invalid; do not invent or
 silently substitute another design.
@@ -739,7 +740,7 @@ export async function readProject(root = currentProjectRoot) {
 }
 
 /** Write the project: every slide file (formatted) plus the manifest, transactionally. */
-async function writeProjectUnlocked(input, expectedRevision = null, root = currentProjectRoot) {
+export async function writeProjectUnlocked(input, expectedRevision = null, root = currentProjectRoot) {
   const project = validateProject(input);
   await requireTemplate(project.defaultTemplateId, root);
   for (const slide of project.slides) await requireLayout(slide.templateId, slide.layoutId, root);
@@ -808,15 +809,20 @@ async function writeProjectUnlocked(input, expectedRevision = null, root = curre
   return { title: project.title, slides };
 }
 
-export async function writeProject(input, expectedRevision = null) {
-  const root = currentProjectRoot;
+export async function writeProject(input, expectedRevision = null, root = currentProjectRoot) {
   return await runProjectExclusive(
     () => writeProjectUnlocked(input, expectedRevision, root),
     root,
   );
 }
 
-export async function saveProject(input, expectedRevision, message, templatePackages) {
+/** Restore only the generated stylesheet captured before an Agent turn. */
+export async function restoreDeckCss(css, root = currentProjectRoot) {
+  await mkdir(stylesRoot(root), { recursive: true });
+  await writeFile(deckCssPath(root), String(css));
+}
+
+export async function saveProject(input, expectedRevision, message, templatePackages = null) {
   const root = currentProjectRoot;
   return await runProjectExclusive(async () => {
     let normalizedPackages = null;
@@ -923,8 +929,8 @@ export function getHistory() {
   }) : [];
 }
 
-export function getVariations() {
-  const output = runGit(["for-each-ref", "--sort=creatordate", "--format=%(refname:short)%09%(objectname:short)%09%(subject)", "refs/heads/weave/variation"]);
+export function getVariations(root = currentProjectRoot) {
+  const output = runGit(["for-each-ref", "--sort=creatordate", "--format=%(refname:short)%09%(objectname:short)%09%(subject)", "refs/heads/weave/variation"], { cwd: root });
   return output ? output.split("\n").map((line, index) => {
     const [branch, commit, message] = line.split("\t");
     return { branch, label: `Direction ${String.fromCharCode(65 + index)}`, commit, message, status: "ready" };
@@ -1013,14 +1019,14 @@ export function archiveVariation() {
   runGit(["branch", "-m", selected, selected.replace("weave/variation/", "weave/history/")]);
 }
 
-export function discardVariation(branch) {
+export function discardVariation(branch, root = currentProjectRoot) {
   if (!/^weave\/variation\/[a-z]+$/.test(branch)) return;
-  if (runGit(["branch", "--show-current"]) === branch) {
-    runGit(["restore", "--staged", "--worktree", "."]);
-    runGit(["clean", "-fd", "--", ".weave", "slides", "styles"]);
-    runGit(["checkout", "main"]);
+  if (runGit(["branch", "--show-current"], { cwd: root }) === branch) {
+    runGit(["restore", "--staged", "--worktree", "."], { cwd: root });
+    runGit(["clean", "-fd", "--", ".weave", "slides", "styles"], { cwd: root });
+    runGit(["checkout", "main"], { cwd: root });
   }
-  if (getVariations().some((item) => item.branch === branch)) runGit(["branch", "-D", branch]);
+  if (getVariations(root).some((item) => item.branch === branch)) runGit(["branch", "-D", branch], { cwd: root });
 }
 
 async function removeLegacyChatData() {

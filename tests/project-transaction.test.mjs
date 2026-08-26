@@ -471,3 +471,70 @@ test("a rejected imported template package leaves both templates and deck untouc
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("restoring the pre-turn deck removes rejected slide HTML from active state", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weave-turn-restore-"));
+  const previousRoot = process.env.WEAVE_PROJECT_ROOT;
+  process.env.WEAVE_PROJECT_ROOT = root;
+  try {
+    const project = await import(`../server/project.mjs?turn-restore=${Date.now()}`);
+    await project.ensureProject();
+    const before = await project.readProject(root);
+    const rejected = { ...before, slides: before.slides.map((slide) => ({ ...slide, html: slide.html.replace('data-weave-slot="content"', 'class="content" data-weave-slot="content"') })) };
+    await project.writeProject(rejected, null, root);
+    await assert.rejects(project.assertCommittable(root), (error) => error.code === "WEAVE_CONTENT_POLICY");
+    await project.runProjectExclusive(() => project.writeProjectUnlocked(before, null, root), root);
+    assert.deepEqual(await project.readProject(root), before);
+    await project.assertCommittable(root);
+  } finally {
+    if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
+    else process.env.WEAVE_PROJECT_ROOT = previousRoot;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("restoring a rejected turn also restores the generated stylesheet", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weave-turn-css-restore-"));
+  const previousRoot = process.env.WEAVE_PROJECT_ROOT;
+  process.env.WEAVE_PROJECT_ROOT = root;
+  try {
+    const project = await import(`../server/project.mjs?turn-css-restore=${Date.now()}`);
+    await project.ensureProject();
+    const before = await project.readProject(root);
+    const beforeCss = await project.readDeckCss(root);
+    await writeFile(join(root, "styles", "deck.css"), "body { color: red; }\n");
+    await assert.rejects(project.assertCommittable(root), (error) => error.code === "WEAVE_TAILWIND_STYLESHEET");
+    await project.runProjectExclusive(async () => {
+      await project.writeProjectUnlocked(before, null, root);
+      await project.restoreDeckCss(beforeCss, root);
+    }, root);
+    assert.equal(await project.readDeckCss(root), beforeCss);
+    await project.assertCommittable(root);
+  } finally {
+    if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
+    else process.env.WEAVE_PROJECT_ROOT = previousRoot;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("discarding a rejected variation returns to main and removes its branch", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weave-variation-restore-"));
+  const previousRoot = process.env.WEAVE_PROJECT_ROOT;
+  process.env.WEAVE_PROJECT_ROOT = root;
+  try {
+    const project = await import(`../server/project.mjs?variation-restore=${Date.now()}`);
+    await project.ensureProject();
+    const before = await project.readProject(root);
+    const branch = project.createVariationBranch();
+    await project.writeProject({ ...before, slides: before.slides.map((slide) => ({ ...slide, html: slide.html.replace('data-weave-slot="title"', 'class="title" data-weave-slot="title"') })) }, null, root);
+    await assert.rejects(project.assertCommittable(root), (error) => error.code === "WEAVE_CONTENT_POLICY");
+    project.discardVariation(branch, root);
+    assert.equal(git(root, ["branch", "--show-current"]), "main");
+    assert.deepEqual(project.getVariations(root), []);
+    assert.deepEqual(await project.readProject(root), before);
+  } finally {
+    if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
+    else process.env.WEAVE_PROJECT_ROOT = previousRoot;
+    await rm(root, { recursive: true, force: true });
+  }
+});

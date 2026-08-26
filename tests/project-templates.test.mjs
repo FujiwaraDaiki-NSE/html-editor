@@ -15,6 +15,8 @@ test("agent instructions describe the template and slot vocabulary", () => {
   assert.match(agentInstructions, /data-weave-slot="content"/);
   assert.match(agentInstructions, /title slot's text is[\s\S]*the slide name/);
   assert.match(agentInstructions, /Master\/layout files are shared/);
+  assert.match(agentInstructions, /these roles are semantic attributes, never CSS classes/);
+  assert.match(agentInstructions, /do not add title or content[\s\S]*to class/);
 });
 
 test("built-in templates are valid empty frames with the title first inside content", () => {

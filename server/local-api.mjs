@@ -34,9 +34,12 @@ import {
   readProject,
   readDeckCss,
   readTemplates,
+  restoreDeckCss,
   assertAssetFilename,
   projectAssetPath,
   writeProject,
+  writeProjectUnlocked,
+  runProjectExclusive,
   saveProject,
 } from "./project.mjs";
 import { CodexService } from "./codex/service.mjs";
@@ -54,6 +57,17 @@ const pendingTurns = new Map();
 const completedSaves = new Map();
 let projectSwitchQueue = Promise.resolve();
 const migrationNotice = "Legacy .weave/chat.json history was removed. Conversations now use Codex app-server Threads only.";
+
+function pendingTurn(value) {
+  let resolveFinalization;
+  const finalization = new Promise((resolve) => { resolveFinalization = resolve; });
+  return { ...value, finalization, resolveFinalization };
+}
+
+function finishPendingTurn(threadId, pending) {
+  pendingTurns.delete(threadId);
+  pending.resolveFinalization();
+}
 
 function hasAllowedOrigin(request) {
   return isAllowedWebOrigin(request.headers.origin, webPort);
@@ -159,7 +173,7 @@ function requireTurnPrompt(payload) {
 }
 
 function activeProjectTurn() {
-  return codex.activeTurns.size > 0;
+  return codex.activeTurns.size > 0 || pendingTurns.size > 0;
 }
 
 function serializeEditorContext(payload) {
@@ -174,14 +188,21 @@ function serializeEditorContext(payload) {
 async function startEditorTurn(payload, { variation = false } = {}) {
   if (activeProjectTurn()) throw new Error("Another Agent turn is already running in this project.");
   const prompt = requireTurnPrompt(payload);
+  const root = projectRoot();
   let branch = null;
+  let registeredPending = null;
+  let registeredThreadId = null;
   if (variation) branch = createVariationBranch();
   try {
-    const deck = await writeProject(payload.deck);
+    const deck = await writeProject(payload.deck, null, root);
+    const preTurnCss = await readDeckCss(root);
     const thread = await codex.startThread({
       approvalPolicy: payload.approvalPolicy ?? "never",
       model: payload.model,
     });
+    registeredPending = pendingTurn({ prompt, branch, variation, deckTitle: deck.title, root, preTurnDeck: deck, preTurnCss });
+    registeredThreadId = thread.id;
+    pendingTurns.set(thread.id, registeredPending);
     const context = `${variation ? "Create a meaningfully different, polished direction. " : ""}User request: ${prompt}
 
 The latest editor state has been written to slides/*.html.
@@ -195,12 +216,23 @@ Do not commit; Weave will commit after this turn.${serializeEditorContext(payloa
       effort: payload.effort,
       approvalPolicy: payload.approvalPolicy ?? "never",
     });
-    pendingTurns.set(thread.id, { prompt, branch, variation, deckTitle: deck.title });
     return { thread, turn: result.turn, branch };
   } catch (error) {
-    if (variation && branch) discardVariation(branch);
+    if (registeredPending && registeredThreadId) finishPendingTurn(registeredThreadId, registeredPending);
+    if (variation && branch) discardVariation(branch, root);
     throw error;
   }
+}
+
+async function restoreFailedTurn(pending) {
+  await runProjectExclusive(async () => {
+    if (pending.variation) {
+      if (pending.branch) discardVariation(pending.branch, pending.root);
+      return;
+    }
+    await writeProjectUnlocked(pending.preTurnDeck, null, pending.root);
+    await restoreDeckCss(pending.preTurnCss, pending.root);
+  }, pending.root);
 }
 
 codex.on("notification", (message) => {
@@ -208,36 +240,58 @@ codex.on("notification", (message) => {
   const threadId = message.params?.threadId;
   const pending = pendingTurns.get(threadId);
   if (!pending) return;
-  pendingTurns.delete(threadId);
   void (async () => {
     const status = message.params?.turn?.status;
     if (status !== "completed") {
-      if (pending.variation && pending.branch) discardVariation(pending.branch);
-      codex.events.publish("weave/project", { status, ...projectState() });
+      let cleanupError;
+      try {
+        await restoreFailedTurn(pending);
+      } catch (error) {
+        cleanupError = error;
+      }
+      codex.events.publish("weave/project", {
+        status: cleanupError ? "error" : status,
+        ...projectState(),
+        ...(cleanupError ? { error: `Could not restore the project after the Agent turn: ${cleanupError.message}` } : {}),
+        ...(cleanupError ? { cleanupError: cleanupError.message } : {}),
+      });
+      finishPendingTurn(threadId, pending);
       return;
     }
     try {
-      const project = await readProject();
-      await writeProject(project);
-      /* Ordinary Agent edits remain an unsaved working result. A variation needs a
-         commit because its branch is the durable unit switched by the direction tabs. */
-      let commitError;
-      if (pending.variation) {
-        try {
-          await assertCommittable();
-          commitIfChanged(`Variation: ${pending.prompt.replace(/\s+/g, " ").slice(0, 100)}`);
-        } catch (error) {
-          commitError = error.message;
+      await runProjectExclusive(async () => {
+        const project = await readProject(pending.root);
+        await writeProjectUnlocked(project, null, pending.root);
+        /* Ordinary Agent edits remain an unsaved working result. A variation needs a
+           commit because its branch is the durable unit switched by the direction tabs. */
+        if (pending.variation) {
+          await assertCommittable(pending.root);
+          commitIfChanged(`Variation: ${pending.prompt.replace(/\s+/g, " ").slice(0, 100)}`, pending.root);
+        } else {
+          await assertCommittable(pending.root);
         }
-      }
+      }, pending.root);
       codex.events.publish("weave/project", {
         status: "updated",
         ...projectState(),
-        deck: await readProject(),
-        ...(commitError ? { commitError } : {}),
+        deck: await readProject(pending.root),
       });
     } catch (error) {
-      codex.events.publish("weave/project", { status: "error", error: error.message });
+      let cleanupError;
+      try {
+        await restoreFailedTurn(pending);
+      } catch (restoreError) {
+        cleanupError = restoreError;
+      }
+      codex.events.publish("weave/project", {
+        status: "error",
+        error: error.message,
+        ...(error.code ? { code: error.code } : {}),
+        ...(Array.isArray(error.diagnostics) ? { diagnostics: error.diagnostics } : {}),
+        ...(cleanupError ? { cleanupError: cleanupError.message } : {}),
+      });
+    } finally {
+      finishPendingTurn(threadId, pending);
     }
   })();
 });
@@ -305,6 +359,7 @@ const server = createServer(async (request, response) => {
 
     if (request.method === "POST" && url.pathname === "/api/projects") {
       const result = await enqueueProjectSwitch(async () => {
+        if (activeProjectTurn()) throw new Error("An Agent turn is running.");
         await assertSwitchable();
         const slug = await createProject({ title: requireText(payload.title, "Title"), templateId: requireText(payload.templateId, "templateId") });
         await switchProject(slug);
@@ -318,7 +373,11 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && url.pathname === "/api/projects/current") {
       const result = await enqueueProjectSwitch(async () => {
         if (activeProjectTurn() && payload.interrupt !== true) throw Object.assign(new Error("An Agent turn is running."), { code: "WEAVE_TURN_RUNNING" });
-        if (payload.interrupt === true) await Promise.all([...codex.activeTurns.keys()].map((threadId) => codex.interruptTurn(threadId)));
+        if (payload.interrupt === true) {
+          const finalizations = [...pendingTurns.values()].map((pending) => pending.finalization);
+          await Promise.all([...codex.activeTurns.keys()].map((threadId) => codex.interruptTurn(threadId)));
+          await Promise.all(finalizations);
+        }
         await switchProject(requireText(payload.slug, "Project id"));
         await ensureProject();
         await retargetCodex();
@@ -423,10 +482,18 @@ const server = createServer(async (request, response) => {
     if (url.pathname === "/api/codex/turn/start") {
       if (activeProjectTurn()) return sendJson(request, response, 409, { error: "Another Agent turn is already running in this project." });
       const prompt = requireTurnPrompt(payload);
-      if (payload.deck) await writeProject(payload.deck);
-      const result = await codex.startTurn({ ...payload, prompt: `${prompt}${serializeEditorContext(payload)}` });
-      pendingTurns.set(payload.threadId, { prompt, branch: null, variation: false });
-      return sendJson(request, response, 202, result);
+      const root = projectRoot();
+      const deck = payload.deck ? await writeProject(payload.deck, null, root) : await readProject(root);
+      const preTurnCss = await readDeckCss(root);
+      const pending = pendingTurn({ prompt, branch: null, variation: false, root, preTurnDeck: deck, preTurnCss, deckTitle: deck.title });
+      pendingTurns.set(payload.threadId, pending);
+      try {
+        const result = await codex.startTurn({ ...payload, prompt: `${prompt}${serializeEditorContext(payload)}` });
+        return sendJson(request, response, 202, result);
+      } catch (error) {
+        finishPendingTurn(payload.threadId, pending);
+        throw error;
+      }
     }
     if (url.pathname === "/api/codex/turn/steer") {
       const prompt = requireTurnPrompt(payload);
