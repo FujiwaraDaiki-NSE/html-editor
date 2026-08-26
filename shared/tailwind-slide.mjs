@@ -223,7 +223,7 @@ const extraUtilities = {
   "text-slate-950": "color: #020617", uppercase: "text-transform: uppercase", "tracking-tight": "letter-spacing: -0.025em", "tracking-wide": "letter-spacing: 0.025em", "tracking-widest": "letter-spacing: 0.1em",
 };
 
-export const structuralSlideClasses = new Set(["weave-slide", "hero", "brand", "page-number", "heading", "paragraph", "eyebrow", "note", "metrics", "image", "list", "table", "weave-container", "row", "column", "grid", "theme-orbit", "theme-grid", "theme-plain", "report-frame", "report-organization", "report-copyright", "report-brand-placeholder", "report-tagline", "report-subtitle", "report-meta"]);
+export const structuralSlideClasses = new Set(["weave-slide", "hero", "brand", "page-number", "heading", "paragraph", "eyebrow", "note", "metrics", "image", "list", "table", "weave-container", "row", "column", "grid", "theme-orbit", "theme-grid", "theme-plain", "report-frame", "report-organization", "report-copyright", "report-logo", "report-tagline", "report-subtitle", "report-meta"]);
 export const utilityDeclarations = new Map([
   ...Object.values(slideControlGroups).flatMap((group) => group.options.flatMap(({ className, css }) => className ? [[className, css]] : [])),
   ...Object.entries(extraUtilities),
@@ -366,16 +366,13 @@ ${utilities}
   line-height: 1.18;
   letter-spacing: 0;
 }
-.weave-slide[data-weave-template="year-end-report"][data-weave-layout="cover"] .report-brand-placeholder {
+.weave-slide[data-weave-template="year-end-report"][data-weave-layout="cover"] .report-logo {
   position: absolute;
   z-index: 1;
   top: 22px;
   left: 56px;
   width: 157.33px;
-  color: #1f1f1f;
-  font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
+  height: auto;
 }
 .weave-slide[data-weave-template="year-end-report"][data-weave-layout="cover"] .report-tagline {
   position: absolute;

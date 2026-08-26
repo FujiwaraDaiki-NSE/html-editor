@@ -99,13 +99,14 @@ const reportLayout = ({ id, name, titleClass = "text-6xl", sectionClass } = {}) 
 
 const reportContentPath = "M0 0 L1280 0 C797.33 24 402.67 118 165.33 285 C76 348 24 392 0 416 Z";
 const reportTitlePath = "M0 396 C232 150 757.33 22 1280 0 L1280 720 L0 720 Z";
+const reportLogoAssetFilename = "9442acd1fa8abd6f7e4eeac678dad653a43d2d63663c45c1c09775bbc0dcf0ee.png";
 const yearEndReportTemplate = templatePackage({
   id: "year-end-report",
   name: "年度末報告",
   background: "bg-white",
   text: "text-slate-950",
   layouts: [
-    { ...reportLayout({ id: "cover", name: "表紙", titleClass: "text-6xl" }), html: `${reportFrameSvg({ id: "year-end-report-cover", path: reportTitlePath, lineStart: 280 })}${contentLayout({ sectionClass: "hero flex flex-1 flex-col items-start justify-end gap-3" })}` },
+    { ...reportLayout({ id: "cover", name: "表紙", titleClass: "text-6xl" }), html: `${reportFrameSvg({ id: "year-end-report-cover", path: reportTitlePath, lineStart: 280 })}<img class="report-logo" data-weave-id="year-end-report-cover-logo" src="assets/${reportLogoAssetFilename}" alt="NIPPON STEEL ENGINEERING">${contentLayout({ sectionClass: "hero flex flex-1 flex-col items-start justify-end gap-3" })}` },
     { ...reportLayout({ id: "content", name: "本文", titleClass: "text-6xl" }), html: `${reportFrameSvg({ id: "year-end-report", path: reportContentPath, lineStart: 131 })}${contentLayout({ sectionClass: "hero flex flex-1 flex-col items-start justify-center gap-6" })}` },
     { ...reportLayout({ id: "agenda", name: "目次・章区切り", titleClass: "text-6xl" }), html: `${reportFrameSvg({ id: "year-end-report-agenda", path: reportContentPath, lineStart: 186.67 })}${contentLayout({ sectionClass: "hero flex flex-1 flex-col items-start justify-center gap-6" })}` },
   ],
@@ -582,6 +583,15 @@ export async function ensureTemplates(root = currentProjectRoot) {
       await writeFile(filePath, content);
       touched.push(filePath.slice(root.length + 1));
     }
+  }
+  const logoSource = join(repoRoot, "shared", "assets", reportLogoAssetFilename);
+  const logoDestination = join(assetsRoot(root), reportLogoAssetFilename);
+  const logoBytes = await readFile(logoSource);
+  const existingLogo = await readFile(logoDestination).catch(() => null);
+  if (!existingLogo || !existingLogo.equals(logoBytes)) {
+    await mkdir(assetsRoot(root), { recursive: true });
+    await writeFile(logoDestination, logoBytes);
+    touched.push(`assets/${reportLogoAssetFilename}`);
   }
   return touched;
 }

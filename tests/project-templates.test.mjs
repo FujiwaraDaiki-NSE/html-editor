@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -69,6 +70,9 @@ test("built-in templates are valid empty frames with the title first inside cont
         assert.match(template.html, /d="M0 396 C232 150 757\.33 22 1280 0 L1280 720 L0 720 Z"/);
         assert.match(template.html, /x1="280" y1="69" x2="1280" y2="69" stroke="#e00000" stroke-width="2"/);
         assert.match(template.html, /x1="280" y1="662" x2="1280" y2="662" stroke="#004dff" stroke-width="2"/);
+        assert.match(template.html, /<img class="report-logo" data-weave-id="year-end-report-cover-logo" src="assets\/9442acd1fa8abd6f7e4eeac678dad653a43d2d63663c45c1c09775bbc0dcf0ee\.png" alt="NIPPON STEEL ENGINEERING">/);
+      } else {
+        assert.doesNotMatch(template.html, /class="report-logo"/);
       }
       if (template.id === "year-end-report-agenda") {
         assert.match(template.html, /d="M0 0 L1280 0 C797\.33 24 402\.67 118 165\.33 285 C76 348 24 392 0 416 Z"/);
@@ -86,10 +90,23 @@ test("template seeding is idempotent and discovery skips bad files with sensible
   process.env.WEAVE_PROJECT_ROOT = root;
   try {
     const project = await import(`../server/project.mjs?templates=${Date.now()}`);
-    assert.deepEqual(await project.ensureTemplates(), ["templates/orbit.html", "templates/grid.html", "templates/plain.html", "templates/year-end-report.html", "templates/year-end-report-cover.html", "templates/year-end-report-agenda.html"]);
+    const logoAsset = "assets/9442acd1fa8abd6f7e4eeac678dad653a43d2d63663c45c1c09775bbc0dcf0ee.png";
+    assert.deepEqual(await project.ensureTemplates(), ["templates/orbit.html", "templates/grid.html", "templates/plain.html", "templates/year-end-report.html", "templates/year-end-report-cover.html", "templates/year-end-report-agenda.html", logoAsset]);
     const firstOrbit = await readFile(join(root, "templates", "orbit.html"), "utf8");
+    const firstLogo = await readFile(join(root, logoAsset));
+    assert.equal(firstLogo.length, 71263);
+    assert.equal(firstLogo.readUInt32BE(16), 250);
+    assert.equal(firstLogo.readUInt32BE(20), 372);
+    assert.equal(createHash("sha256").update(firstLogo).digest("hex"), "9442acd1fa8abd6f7e4eeac678dad653a43d2d63663c45c1c09775bbc0dcf0ee");
     assert.deepEqual(await project.ensureTemplates(), []);
     assert.equal(await readFile(join(root, "templates", "orbit.html"), "utf8"), firstOrbit);
+    assert.deepEqual(await readFile(join(root, logoAsset)), firstLogo);
+
+    await writeFile(join(root, logoAsset), "stale logo");
+    assert.deepEqual(await project.ensureTemplates(), [logoAsset]);
+    const refreshedLogo = await readFile(join(root, logoAsset));
+    assert.equal(refreshedLogo.length, 71263);
+    assert.equal(createHash("sha256").update(refreshedLogo).digest("hex"), "9442acd1fa8abd6f7e4eeac678dad653a43d2d63663c45c1c09775bbc0dcf0ee");
 
     await writeFile(join(root, "templates", "bad.html"), '<main class="weave-slide" data-weave-slide><script>alert(1)</script></main>');
     await writeFile(join(root, "templates", "fallback-card.html"), '<main class="weave-slide" data-weave-slide></main>');
@@ -113,6 +130,7 @@ test("year-end report variants expose the source-derived CSS geometry", () => {
   assert.doesNotMatch(css, /data-weave-template="year-end-report"[^}]*:has\(br\)/);
   assert.match(css, /data-weave-template="year-end-report-cover"[\s\S]*top: 324px[\s\S]*left: 74\.67px[\s\S]*width: 1040px[\s\S]*bottom: 58px[\s\S]*overflow: hidden/);
   assert.match(css, /data-weave-template="year-end-report-cover"[\s\S]*top: 264px[\s\S]*border-left: 8px solid #e00000/);
+  assert.match(css, /data-weave-template="year-end-report-cover"[\s\S]*\.report-logo \{[\s\S]*top: 22px[\s\S]*left: 56px[\s\S]*width: 157\.33px[\s\S]*height: auto/);
   assert.match(css, /data-weave-template="year-end-report-cover"[\s\S]*bottom: 88px[\s\S]*gap: 12px/);
   assert.match(css, /data-weave-template="year-end-report-agenda"[\s\S]*padding: 132px 122\.67px 58px/);
   assert.match(css, /data-weave-template="year-end-report-cover"[\s\S]*letter-spacing: normal/);

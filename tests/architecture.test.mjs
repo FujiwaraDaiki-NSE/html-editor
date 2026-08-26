@@ -98,6 +98,27 @@ test("UI uses Thread APIs, reducer, item cards, steering, interrupt, approvals, 
   assert.doesNotMatch(page, /version\?\.compatible/);
 });
 
+test("offline export and print embed local assets through the shared helper", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /import \{ embedAssetReferences, isAssetPath, rewriteAssetUrls \} from "\.\.\/shared\/asset-path\.mjs"/);
+  const exportStart = page.indexOf("const exportDeck = async");
+  const printStart = page.indexOf("const printDeck = async");
+  const downloadStart = page.indexOf("const downloadBundle", exportStart);
+  const restoreStart = page.indexOf("const restoreHistory", printStart);
+  const exportBody = page.slice(exportStart, downloadStart);
+  const printBody = page.slice(printStart, restoreStart);
+  assert.match(exportBody, /const fragments = await embedAssetReferences\(exportFragments\(\), apiBase\)/);
+  assert.match(printBody, /const fragments = await embedAssetReferences\(exportFragments\(\), apiBase\)/);
+  assert.ok(printBody.indexOf("window.open") < printBody.indexOf("await embedAssetReferences"));
+  assert.match(printBody, /const popup = window\.open\("", "_blank"\);\n\s+if \(!popup\)/);
+  assert.ok(printBody.indexOf("popup.opener = null") < printBody.indexOf("await embedAssetReferences"));
+  assert.doesNotMatch(printBody, /window\.open\([^\n]+noopener/);
+  assert.match(printBody, /popup\.document\.write\(renderDeckDocument\(fragments/);
+  assert.match(printBody, /popup\.document\.close\(\)/);
+  assert.match(printBody, /popup\.addEventListener\("load", \(\) => popup\.print\(\)/);
+  assert.match(printBody, /catch \(error\) \{\n\s+popup\.close\(\);\n\s+setApiError/);
+});
+
 test("activity rail destinations render their details in the left sidebar", async () => {
   const [page, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
@@ -355,7 +376,7 @@ test("async editor updates preserve newer local edits", async () => {
   assert.match(page, /targetSlideId/);
   assert.match(page, /targetElementId/);
   assert.match(page, /annotations: annotations\.map\(cloneAnnotation\)/);
-  assert.match(page, /embeddedAssets/);
+  assert.match(page, /embedAssetReferences/);
 });
 
 test("production code does not call excluded or experimental app-server APIs", async () => {
