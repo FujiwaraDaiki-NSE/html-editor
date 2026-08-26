@@ -331,7 +331,7 @@ ${utilities}
   opacity: 0.72;
   white-space: nowrap;
 }
-.weave-slide[data-weave-template="year-end-report-cover"] {
+.weave-slide[data-weave-template="year-end-report"][data-weave-layout="cover"] {
   width: 1280px;
   height: 720px;
   flex: none;
@@ -342,12 +342,12 @@ ${utilities}
   line-height: 1.32;
   letter-spacing: normal;
 }
-.weave-slide[data-weave-template="year-end-report-cover"] .report-frame,
-.weave-slide[data-weave-template="year-end-report-agenda"] .report-frame {
+.weave-slide[data-weave-template="year-end-report"][data-weave-layout="cover"] .report-frame,
+.weave-slide[data-weave-template="year-end-report"][data-weave-layout="agenda"] .report-frame {
   z-index: 0;
   pointer-events: none;
 }
-.weave-slide[data-weave-template="year-end-report-cover"] [data-weave-slot="content"] {
+.weave-slide[data-weave-template="year-end-report"][data-weave-layout="cover"] [data-weave-slot="content"] {
   position: absolute;
   z-index: 1;
   top: 324px;
@@ -358,7 +358,7 @@ ${utilities}
   justify-content: flex-start;
   overflow: hidden;
 }
-.weave-slide[data-weave-template="year-end-report-cover"] [data-weave-slot="title"] {
+.weave-slide[data-weave-template="year-end-report"][data-weave-layout="cover"] [data-weave-slot="title"] {
   position: static;
   color: #000;
   font-size: 42px;
@@ -366,7 +366,7 @@ ${utilities}
   line-height: 1.18;
   letter-spacing: 0;
 }
-.weave-slide[data-weave-template="year-end-report-cover"] .report-brand-placeholder {
+.weave-slide[data-weave-template="year-end-report"][data-weave-layout="cover"] .report-brand-placeholder {
   position: absolute;
   z-index: 1;
   top: 22px;
@@ -377,7 +377,7 @@ ${utilities}
   font-weight: 700;
   letter-spacing: 0.12em;
 }
-.weave-slide[data-weave-template="year-end-report-cover"] .report-tagline {
+.weave-slide[data-weave-template="year-end-report"][data-weave-layout="cover"] .report-tagline {
   position: absolute;
   z-index: 1;
   top: 38px;
@@ -388,7 +388,7 @@ ${utilities}
   letter-spacing: 0;
   white-space: nowrap;
 }
-.weave-slide[data-weave-template="year-end-report-cover"] .report-subtitle {
+.weave-slide[data-weave-template="year-end-report"][data-weave-layout="cover"] .report-subtitle {
   position: absolute;
   z-index: 1;
   top: 264px;
@@ -401,7 +401,7 @@ ${utilities}
   line-height: 1;
   white-space: nowrap;
 }
-.weave-slide[data-weave-template="year-end-report-cover"] .report-meta {
+.weave-slide[data-weave-template="year-end-report"][data-weave-layout="cover"] .report-meta {
   position: absolute;
   z-index: 1;
   right: 53.33px;
@@ -416,8 +416,8 @@ ${utilities}
   text-align: right;
   white-space: nowrap;
 }
-.weave-slide[data-weave-template="year-end-report-cover"] .report-organization,
-.weave-slide[data-weave-template="year-end-report-agenda"] .report-organization {
+.weave-slide[data-weave-template="year-end-report"][data-weave-layout="cover"] .report-organization,
+.weave-slide[data-weave-template="year-end-report"][data-weave-layout="agenda"] .report-organization {
   position: absolute;
   z-index: 1;
   bottom: 31px;
@@ -427,14 +427,14 @@ ${utilities}
   letter-spacing: 0;
   white-space: nowrap;
 }
-.weave-slide[data-weave-template="year-end-report-cover"] .report-organization {
+.weave-slide[data-weave-template="year-end-report"][data-weave-layout="cover"] .report-organization {
   left: 280px;
 }
-.weave-slide[data-weave-template="year-end-report-agenda"] .report-organization {
+.weave-slide[data-weave-template="year-end-report"][data-weave-layout="agenda"] .report-organization {
   left: 186.67px;
 }
-.weave-slide[data-weave-template="year-end-report-cover"] .report-copyright,
-.weave-slide[data-weave-template="year-end-report-agenda"] .report-copyright {
+.weave-slide[data-weave-template="year-end-report"][data-weave-layout="cover"] .report-copyright,
+.weave-slide[data-weave-template="year-end-report"][data-weave-layout="agenda"] .report-copyright {
   position: absolute;
   z-index: 1;
   right: 50.67px;
@@ -446,8 +446,8 @@ ${utilities}
   text-align: right;
   white-space: nowrap;
 }
-.weave-slide[data-weave-template="year-end-report-cover"] .page-number,
-.weave-slide[data-weave-template="year-end-report-agenda"] .page-number {
+.weave-slide[data-weave-template="year-end-report"][data-weave-layout="cover"] .page-number,
+.weave-slide[data-weave-template="year-end-report"][data-weave-layout="agenda"] .page-number {
   z-index: 1;
   right: 50.67px;
   bottom: 12px;
@@ -461,7 +461,7 @@ ${utilities}
   opacity: 0.72;
   white-space: nowrap;
 }
-.weave-slide[data-weave-template="year-end-report-agenda"] {
+.weave-slide[data-weave-template="year-end-report"][data-weave-layout="agenda"] {
   width: 1280px;
   height: 720px;
   flex: none;
@@ -472,13 +472,13 @@ ${utilities}
   line-height: 1.32;
   letter-spacing: normal;
 }
-.weave-slide[data-weave-template="year-end-report-agenda"] [data-weave-slot="content"] {
+.weave-slide[data-weave-template="year-end-report"][data-weave-layout="agenda"] [data-weave-slot="content"] {
   position: relative;
   z-index: 1;
   justify-content: center;
   overflow: hidden;
 }
-.weave-slide[data-weave-template="year-end-report-agenda"] [data-weave-slot="title"] {
+.weave-slide[data-weave-template="year-end-report"][data-weave-layout="agenda"] [data-weave-slot="title"] {
   position: static;
   color: #303030;
   font-size: 28px;

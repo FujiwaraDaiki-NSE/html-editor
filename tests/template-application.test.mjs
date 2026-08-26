@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { auditContentPolicy } from "../shared/content-policy.mjs";
 import { formatSlideHtml } from "../shared/html-format.mjs";
-import { applyTemplateToSlideHtml, updateSlidePageNumber, withUniqueFragmentIds } from "../shared/slide-slots.mjs";
+import { applyTemplateToSlideHtml, composeSlideHtml, extractSlideSourceHtml, updateSlidePageNumber, withUniqueFragmentIds } from "../shared/slide-slots.mjs";
 import { builtInTemplates } from "../server/project.mjs";
 
 const template = (id) => builtInTemplates.find((item) => item.id === id)?.html ?? "";
@@ -90,4 +90,41 @@ test("duplicating an instantiated slide re-instances its SVG fragment ids", () =
   assert.match(duplicate, /id="year-end-report-gradient-slide-a-slide-a-copy"/);
   assert.match(duplicate, /fill="url\(#year-end-report-gradient-slide-a-slide-a-copy\)"/);
   assert.doesNotMatch(duplicate, /id="year-end-report-gradient-slide-a"/);
+});
+
+test("hierarchical composition inserts a layout into the master and fills the editable slots", () => {
+  const masterHtml = `<main class="weave-slide master" data-weave-slide><div class="master-brand">MASTER</div><div data-weave-layout-slot></div><div class="page-number">01 / 01</div><svg><defs><linearGradient id="master-gradient" /></defs><path fill="url(#master-gradient)" /></svg></main>`;
+  const layoutHtml = `<section class="content-layout"><section data-weave-slot="content"><h1 class="layout-heading" data-weave-slot="title" data-weave-id="layout-title"></h1></section></section>`;
+  const slideHtml = `<main data-weave-slide-source data-weave-template="old" data-weave-layout="old" data-weave-accent="#fbbf24"><section data-weave-slot="content"><h1 data-weave-slot="title" data-weave-id="slide-title">Quarterly <em>review</em></h1><p data-weave-id="body">Supporting copy</p></section></main>`;
+  const result = composeSlideHtml({ slideHtml, masterHtml, layoutHtml, templateId: "annual-report", layoutId: "content", position: 2, total: 8, accent: "#2dd4bf", instanceId: "slide-2" });
+
+  assert.match(result, /data-weave-template="annual-report"/);
+  assert.match(result, /data-weave-layout="content"/);
+  assert.match(result, /data-weave-accent="#2dd4bf"/);
+  assert.match(result, /class="master-brand">MASTER/);
+  assert.match(result, /class="layout-heading"[^>]*data-weave-id="slide-title">Quarterly <em>review<\/em>/);
+  assert.match(result, /data-weave-id="body">Supporting copy/);
+  assert.match(result, /class="page-number">02 \/ 08<\/div>/);
+  assert.match(result, /id="master-gradient-slide-2"/);
+  assert.match(result, /url\(#master-gradient-slide-2\)/);
+  assert.equal((result.match(/data-weave-slot="title"/g) ?? []).length, 1);
+  assert.equal((result.match(/data-weave-slot="content"/g) ?? []).length, 1);
+});
+
+test("hierarchical extraction keeps only title/content and round-trips without inherited furniture", () => {
+  const rendered = `<main class="weave-slide" data-weave-template="annual-report" data-weave-layout="content" data-weave-accent="#2dd4bf"><header class="master-brand">MASTER</header><div data-weave-layout-slot><section class="content-layout"><section class="layout-content" data-weave-slot="content"><h1 class="layout-heading" data-weave-slot="title" data-weave-id="slide-title">Quarterly review</h1><p data-weave-id="body">Supporting copy</p></section></section></div><footer class="page-number">02 / 08</footer></main>`;
+  const sourceHtml = extractSlideSourceHtml(rendered, { templateId: "annual-report", layoutId: "content", accent: "#2dd4bf" });
+
+  assert.match(sourceHtml, /^<main data-weave-slide-source data-weave-template="annual-report" data-weave-layout="content" data-weave-accent="#2dd4bf">/);
+  assert.doesNotMatch(sourceHtml, /master-brand|layout-content|layout-heading|page-number|data-weave-layout-slot/);
+  assert.match(sourceHtml, /<h1 data-weave-slot="title" data-weave-id="slide-title">Quarterly review<\/h1>/);
+  assert.match(sourceHtml, /<p data-weave-id="body">Supporting copy<\/p>/);
+});
+
+test("hierarchical composition rejects incomplete masters, layouts, and slide sources", () => {
+  const args = { slideHtml: '<main><section data-weave-slot="content"><h1 data-weave-slot="title"></h1></section></main>', masterHtml: '<main><div data-weave-layout-slot></div></main>', layoutHtml: '<section><h1 data-weave-slot="title"></h1></section>', templateId: "template", layoutId: "layout", position: 1, total: 1, accent: "#fbbf24" };
+  assert.throws(() => composeSlideHtml({ ...args, layoutHtml: "" }), /layoutHtml is required/);
+  assert.throws(() => composeSlideHtml({ ...args, masterHtml: "<main></main>" }), /data-weave-layout-slot/);
+  assert.throws(() => composeSlideHtml({ ...args, slideHtml: "<main></main>" }), /data-weave-slot="content"/);
+  assert.throws(() => composeSlideHtml(args), /master\/layout composition.*data-weave-slot="content"/);
 });

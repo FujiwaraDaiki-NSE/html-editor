@@ -53,11 +53,34 @@ const openingTagWithAttribute = (html, name, value) => {
   return null;
 };
 
+/* Unlike openingTagWithAttribute, this matcher deliberately does not inspect the
+   value. It is used for the empty insertion point owned by a Master. */
+const openingTagWithAttributeName = (html, name) => {
+  const tags = /<([a-z][\w:-]*)\b[^>]*>/gi;
+  for (const match of html.matchAll(tags)) {
+    if (new RegExp(`\\b${name}\\s*(?:=\\s*(?:(["'])(.*?)\\1|[^\\s>]+))?`, "i").test(match[0])) {
+      return { index: match.index, end: match.index + match[0].length, tag: match[1], opening: match[0] };
+    }
+  }
+  return null;
+};
+
+const firstMain = (html) => {
+  const match = String(html).match(/<main\b[^>]*>/i);
+  return match ? { index: match.index, end: match.index + match[0].length, tag: "main", opening: match[0] } : null;
+};
+
 const attributeValue = (opening, name) => opening.match(new RegExp(`\\b${name}\\s*=\\s*(["'])(.*?)\\1`, "i"))?.[2] ?? null;
 const setAttribute = (opening, name, value) => {
   const expression = new RegExp(`\\b${name}\\s*=\\s*(["'])(.*?)\\1`, "i");
   return expression.test(opening) ? opening.replace(expression, `${name}="${value}"`) : withAttribute(opening, name, value);
 };
+const escapeAttributeValue = (value) => String(value)
+  .replaceAll("&", "&amp;")
+  .replaceAll('"', "&quot;")
+  .replaceAll("<", "&lt;")
+  .replaceAll(">", "&gt;");
+const removeAttribute = (opening, name) => opening.replace(new RegExp(`\\s+${name}(?:\\s*=\\s*(?:(["'])(.*?)\\1|[^\\s>]+))?`, "ig"), "");
 const elementInner = (html, opening) => {
   const closing = closingTagEnd(html, opening);
   return closing ? { inner: html.slice(opening.end, closing.start), closing } : null;
@@ -104,7 +127,7 @@ const applyFrameAccent = (html, accent) => {
 };
 
 const framePageNumber = (html) => {
-  const main = openingTagWithClass(html, "weave-slide");
+  const main = openingTagWithClass(html, "weave-slide") ?? firstMain(html);
   const mainElement = main && elementInner(html, main);
   if (!main || !mainElement) return null;
   const content = openingTagWithAttribute(html, "data-weave-slot", contentSlotName);
@@ -168,6 +191,110 @@ export function applyTemplateToSlideHtml(slideInput, templateInput, { position =
   const main = openingTagWithClass(frame, "weave-slide");
   const mainElement = main && elementInner(frame, main);
   return main && mainElement ? frame.slice(main.index, mainElement.closing.end) : slideHtml;
+}
+
+const requiredString = (value, name) => {
+  if (typeof value !== "string" || !value.trim()) throw new Error(`${name} is required.`);
+  return value;
+};
+
+const slotElement = (html, name, sourceName) => {
+  const opening = openingTagWithAttribute(html, "data-weave-slot", name);
+  if (!opening) throw new Error(`${sourceName} is missing data-weave-slot="${name}".`);
+  const element = elementInner(html, opening);
+  if (!element) throw new Error(`${sourceName} has an unclosed ${name} slot.`);
+  return { opening, ...element };
+};
+
+const removeNestedElement = (html, parentOpening, parentElement, childOpening, childElement) => {
+  if (!childOpening || !childElement) return html;
+  if (childOpening.index < parentOpening.end || childElement.closing.end > parentElement.closing.start) return html;
+  const start = childOpening.index - parentOpening.end;
+  const end = childElement.closing.end - parentOpening.end;
+  return `${html.slice(0, start)}${html.slice(end)}`;
+};
+
+const canonicalTitleOpening = (opening) => {
+  const tag = opening.match(/^<([a-z][\w:-]*)\b/i)?.[1] ?? "h1";
+  const id = attributeValue(opening, "data-weave-id");
+  return `<${tag} data-weave-slot="${titleSlotName}"${id ? ` data-weave-id="${escapeAttributeValue(id)}"` : ""}>`;
+};
+
+/**
+ * Compose the persisted slide source with a Template's inherited Master and
+ * selected Layout. The returned HTML is a render artifact; callers should
+ * persist extractSlideSourceHtml instead.
+ */
+export function composeSlideHtml({ slideHtml, masterHtml, layoutHtml, templateId, layoutId, position, total, accent, instanceId } = {}) {
+  const slide = requiredString(slideHtml, "slideHtml");
+  const master = requiredString(masterHtml, "masterHtml");
+  const layout = requiredString(layoutHtml, "layoutHtml");
+  const template = requiredString(templateId, "templateId");
+  const selectedLayout = requiredString(layoutId, "layoutId");
+  const selectedAccent = requiredString(accent, "accent");
+  if (!Number.isFinite(Number(position)) || Number(position) < 1) throw new Error("position must be a positive number.");
+  if (!Number.isFinite(Number(total)) || Number(total) < 1) throw new Error("total must be a positive number.");
+
+  const sourceContent = slotElement(slide, contentSlotName, "slideHtml");
+  const sourceTitle = slotElement(slide, titleSlotName, "slideHtml");
+  let movedContent = sourceContent.inner;
+  movedContent = removeNestedElement(movedContent, sourceContent.opening, sourceContent, sourceTitle.opening, sourceTitle);
+
+  let frame = master;
+  const layoutSlot = openingTagWithAttributeName(frame, "data-weave-layout-slot");
+  if (!layoutSlot) throw new Error("masterHtml is missing data-weave-layout-slot.");
+  if (!elementInner(frame, layoutSlot)) throw new Error("masterHtml has an unclosed data-weave-layout-slot.");
+  frame = replaceElementInner(frame, layoutSlot, layout);
+  frame = withUniqueFragmentIds(applyFrameAccent(frame, selectedAccent), instanceId);
+
+  const root = firstMain(frame);
+  if (!root) throw new Error("masterHtml must contain a <main> root.");
+  const rootElement = elementInner(frame, root);
+  if (!rootElement) throw new Error("masterHtml has an unclosed <main> root.");
+  let rootOpening = removeAttribute(root.opening, "data-weave-slide-source");
+  rootOpening = setAttribute(rootOpening, "data-weave-template", escapeAttributeValue(template));
+  rootOpening = setAttribute(rootOpening, "data-weave-layout", escapeAttributeValue(selectedLayout));
+  rootOpening = setAttribute(rootOpening, "data-weave-accent", escapeAttributeValue(selectedAccent));
+  frame = replaceElementInner(frame, root, rootElement.inner, rootOpening);
+
+  const frameTitle = slotElement(frame, titleSlotName, "master/layout composition");
+  slotElement(frame, contentSlotName, "master/layout composition");
+  const titleId = attributeValue(sourceTitle.opening.opening, "data-weave-id");
+  const titleOpening = titleId ? setAttribute(frameTitle.opening.opening, "data-weave-id", escapeAttributeValue(titleId)) : frameTitle.opening.opening;
+  frame = replaceElementInner(frame, frameTitle.opening, sourceTitle.inner, titleOpening);
+  const nextContent = slotElement(frame, contentSlotName, "master/layout composition");
+  frame = replaceElementInner(frame, nextContent.opening, appendToInner(nextContent.inner, movedContent));
+
+  const page = framePageNumber(frame);
+  if (page) frame = replaceElementInner(frame, page, `${String(position).padStart(2, "0")} / ${String(total).padStart(2, "0")}`);
+  const resultRoot = firstMain(frame);
+  const resultElement = resultRoot && elementInner(frame, resultRoot);
+  if (!resultRoot || !resultElement) throw new Error("Composed slide has no complete <main> root.");
+  return frame.slice(resultRoot.index, resultElement.closing.end);
+}
+
+/**
+ * Reduce a rendered slide back to its persisted source. Only the title and
+ * content slots survive; Master/Layout furniture is intentionally discarded.
+ */
+export function extractSlideSourceHtml(renderedHtml, { templateId, layoutId, accent } = {}) {
+  const rendered = requiredString(renderedHtml, "renderedHtml");
+  const template = requiredString(templateId, "templateId");
+  const selectedLayout = requiredString(layoutId, "layoutId");
+  const selectedAccent = requiredString(accent, "accent");
+  const root = firstMain(rendered);
+  if (!root) throw new Error("renderedHtml must contain a <main> root.");
+  const rootElement = elementInner(rendered, root);
+  if (!rootElement) throw new Error("renderedHtml has an unclosed <main> root.");
+  const content = slotElement(rendered, contentSlotName, "renderedHtml");
+  const title = slotElement(rendered, titleSlotName, "renderedHtml");
+  let body = content.inner;
+  body = removeNestedElement(body, content.opening, content, title.opening, title);
+  const titleElement = rendered.slice(title.opening.index, title.closing.end);
+  const titleOpening = canonicalTitleOpening(title.opening.opening);
+  const canonicalTitle = titleElement.replace(title.opening.opening, titleOpening);
+  const canonicalRoot = `<main data-weave-slide-source data-weave-template="${escapeAttributeValue(template)}" data-weave-layout="${escapeAttributeValue(selectedLayout)}" data-weave-accent="${escapeAttributeValue(selectedAccent)}">`;
+  return `${canonicalRoot}<section data-weave-slot="${contentSlotName}">${canonicalTitle}${body}</section></main>`;
 }
 
 export function updateSlidePageNumber(input, position, total) {
