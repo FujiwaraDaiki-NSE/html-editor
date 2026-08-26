@@ -44,6 +44,7 @@ import { annotationPromptRules, canSendTurn } from "../shared/annotation.mjs";
 import { contextPromptRules, editorEnvelope } from "../shared/context.mjs";
 import { parseConfiguredPort } from "../scripts/dev-port.mjs";
 import { isAllowedWebOrigin } from "./dev-origin.mjs";
+import { routeMethodDecision } from "./route-methods.mjs";
 
 const apiPort = Number(process.env.WEAVE_API_PORT ?? 4317);
 await initializeCurrentProject();
@@ -249,21 +250,9 @@ const server = createServer(async (request, response) => {
       return response.end();
     }
     const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
-    const routeMethods = [
-      [/^\/healthz$/, "GET"],
-      [/^\/api\/(?:state|projects|codex\/events|codex\/threads)$/, "GET"],
-      [/^\/api\/folders$/, "GET"],
-      [/^\/api\/(?:assets|projects\/[^/]+\/assets)\//, "GET"],
-      [/^\/api\/projects$/, "POST"],
-      [/^\/api\/projects\/current$/, "POST"],
-      [/^\/api\/projects\/[^/]+$/, "PATCH"],
-      [/^\/api\/projects\/[^/]+\/(?:duplicate|archive)$/, "POST"],
-      [/^\/api\/(?:assets|references|references\/remove|references\/folder|references\/folder\/sync|save|history\/checkout|history\/main|variations\/(?:checkout|generate|accept|archive))$/, "POST"],
-      [/^\/api\/codex\/(?:thread\/(?:start|read|resume|fork|action)|turn\/(?:start|steer|interrupt)|request\/(?:resolve|reject)|catalog\/refresh|skill\/config|account\/(?:login|logout)|mcp\/(?:oauth|resource\/read|tool\/call))$/, "POST"],
-    ];
-    const routeMethod = routeMethods.find(([pattern]) => pattern.test(url.pathname))?.[1];
-    if (routeMethod && request.method !== routeMethod) {
-      response.setHeader("allow", routeMethod);
+    const routeMethod = routeMethodDecision(url.pathname, request.method);
+    if (!routeMethod.allowed) {
+      response.setHeader("allow", routeMethod.allow);
       return sendJson(request, response, 405, { error: `Method ${request.method} is not allowed.` });
     }
 

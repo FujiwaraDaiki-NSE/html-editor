@@ -311,6 +311,7 @@ test("local API constrains origins and exposes reconnectable NDJSON events", asy
   const source = await readFile(new URL("../server/local-api.mjs", import.meta.url), "utf8");
   assert.match(source, /isAllowedWebOrigin/);
   assert.match(source, /WEAVE_WEB_PORT/);
+  assert.match(source, /routeMethodDecision/);
   assert.match(source, /application\/x-ndjson/);
   assert.match(source, /codex\.events\.attach/);
   assert.doesNotMatch(source, /response.*close.*interrupt/is);
