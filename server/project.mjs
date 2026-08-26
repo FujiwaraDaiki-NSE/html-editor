@@ -130,7 +130,8 @@ generate or hand-maintain any intermediate model; .weave/deck.json is only a man
 titles, and speaker notes (Weave keeps it in sync — you rarely touch it, except to reorder slides).
 templates/<id>.html holds an empty frame whose root carries data-weave-template and
 data-weave-template-name. Every slide has data-weave-slot="title" and data-weave-slot="content";
-the title slot's text is the slide name, and .weave/deck.json's title is derived from it. Templates
+these roles are semantic attributes, never CSS classes (do not add title or content to class); the
+title slot's text is the slide name, and .weave/deck.json's title is derived from it. Templates
 supply typography by inheritance, so ordinary blocks omit color and font size unless they mean to
 differ. Kind-identity sizes such as eyebrow and note, and accent colors, stay explicit. To change a
 slide's layout, move the title slot's inner content and the remaining content children into the new
@@ -621,7 +622,7 @@ export async function readProject(root = currentProjectRoot) {
 }
 
 /** Write the project: every slide file (formatted) plus the manifest, transactionally. */
-async function writeProjectUnlocked(input, expectedRevision = null, root = currentProjectRoot) {
+export async function writeProjectUnlocked(input, expectedRevision = null, root = currentProjectRoot) {
   const project = validateProject(input);
   const slides = await Promise.all(project.slides.map(async (slide) => ({
     ...slide,
@@ -688,12 +689,17 @@ async function writeProjectUnlocked(input, expectedRevision = null, root = curre
   return { title: project.title, slides };
 }
 
-export async function writeProject(input, expectedRevision = null) {
-  const root = currentProjectRoot;
+export async function writeProject(input, expectedRevision = null, root = currentProjectRoot) {
   return await runProjectExclusive(
     () => writeProjectUnlocked(input, expectedRevision, root),
     root,
   );
+}
+
+/** Restore only the generated stylesheet captured before an Agent turn. */
+export async function restoreDeckCss(css, root = currentProjectRoot) {
+  await mkdir(stylesRoot(root), { recursive: true });
+  await writeFile(deckCssPath(root), String(css));
 }
 
 export async function saveProject(input, expectedRevision, message) {
@@ -760,8 +766,8 @@ export function getHistory() {
   }) : [];
 }
 
-export function getVariations() {
-  const output = runGit(["for-each-ref", "--sort=creatordate", "--format=%(refname:short)%09%(objectname:short)%09%(subject)", "refs/heads/weave/variation"]);
+export function getVariations(root = currentProjectRoot) {
+  const output = runGit(["for-each-ref", "--sort=creatordate", "--format=%(refname:short)%09%(objectname:short)%09%(subject)", "refs/heads/weave/variation"], { cwd: root });
   return output ? output.split("\n").map((line, index) => {
     const [branch, commit, message] = line.split("\t");
     return { branch, label: `Direction ${String.fromCharCode(65 + index)}`, commit, message, status: "ready" };
@@ -848,14 +854,14 @@ export function archiveVariation() {
   runGit(["branch", "-m", selected, selected.replace("weave/variation/", "weave/history/")]);
 }
 
-export function discardVariation(branch) {
+export function discardVariation(branch, root = currentProjectRoot) {
   if (!/^weave\/variation\/[a-z]+$/.test(branch)) return;
-  if (runGit(["branch", "--show-current"]) === branch) {
-    runGit(["restore", "--staged", "--worktree", "."]);
-    runGit(["clean", "-fd", "--", ".weave", "slides", "styles"]);
-    runGit(["checkout", "main"]);
+  if (runGit(["branch", "--show-current"], { cwd: root }) === branch) {
+    runGit(["restore", "--staged", "--worktree", "."], { cwd: root });
+    runGit(["clean", "-fd", "--", ".weave", "slides", "styles"], { cwd: root });
+    runGit(["checkout", "main"], { cwd: root });
   }
-  if (getVariations().some((item) => item.branch === branch)) runGit(["branch", "-D", branch]);
+  if (getVariations(root).some((item) => item.branch === branch)) runGit(["branch", "-D", branch], { cwd: root });
 }
 
 async function removeLegacyChatData() {

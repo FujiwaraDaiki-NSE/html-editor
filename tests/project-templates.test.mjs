@@ -13,6 +13,8 @@ test("agent instructions describe the template and slot vocabulary", () => {
   assert.match(agentInstructions, /templates\/<id>\.html/);
   assert.match(agentInstructions, /data-weave-slot="title"/);
   assert.match(agentInstructions, /data-weave-slot="content"/);
+  assert.match(agentInstructions, /these roles are semantic attributes, never CSS classes/);
+  assert.match(agentInstructions, /do not add title or content to class/);
   assert.match(agentInstructions, /title slot's text is the slide name/);
   assert.match(agentInstructions, /do not edit the shared template frame in place/);
 });
