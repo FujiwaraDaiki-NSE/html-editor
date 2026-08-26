@@ -13,20 +13,39 @@ import {
   createVariationBranch,
   discardVariation,
   ensureProject,
+  initializeCurrentProject,
   importImageAsset,
+  assetMimeTypes,
+  importReference,
+  importReferenceFolder,
+  listFolders,
+  readReferences,
+  removeReference,
+  syncReferenceFolder,
   projectRoot,
+  listProjects,
+  createProject,
+  renameProject,
+  duplicateProject,
+  archiveProject,
+  assertSwitchable,
+  switchProject,
   projectState,
   readProject,
   readDeckCss,
   readTemplates,
+  assertAssetFilename,
+  projectAssetPath,
   writeProject,
+  saveProject,
 } from "./project.mjs";
 import { CodexService } from "./codex/service.mjs";
 import { annotationPromptRules, canSendTurn } from "../shared/annotation.mjs";
 import { contextPromptRules, editorEnvelope } from "../shared/context.mjs";
 
 const apiPort = Number(process.env.WEAVE_API_PORT ?? 4317);
-const codex = new CodexService({ projectRoot, instructions: agentInstructions });
+await initializeCurrentProject();
+const codex = new CodexService({ projectRoot: projectRoot(), instructions: agentInstructions });
 const pendingTurns = new Map();
 const completedSaves = new Map();
 const migrationNotice = "Legacy .weave/chat.json history was removed. Conversations now use Codex app-server Threads only.";
@@ -39,7 +58,7 @@ function hasAllowedOrigin(request) {
 function corsHeaders(request) {
   const origin = request.headers.origin;
   const headers = {
-    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-methods": "GET, POST, PATCH, OPTIONS",
     "access-control-allow-headers": "content-type",
     vary: "Origin",
   };
@@ -52,15 +71,33 @@ function sendJson(request, response, status, value) {
   response.end(`${JSON.stringify(value)}\n`);
 }
 
+async function sendAsset(request, response, filename, filePath) {
+  try {
+    assertAssetFilename(filename);
+    const bytes = await readFile(filePath);
+    const extension = filename.split(".").pop().toLowerCase();
+    const mimeType = assetMimeTypes.get(extension);
+    if (!mimeType) throw new Error("Unsupported asset type.");
+    response.writeHead(200, { ...corsHeaders(request), "content-type": mimeType, "cache-control": "public, max-age=31536000, immutable" });
+    response.end(bytes);
+  } catch {
+    sendJson(request, response, 404, { error: "Asset not found." });
+  }
+}
+
 async function readJson(request, limit = 1_500_000) {
   const chunks = [];
   let size = 0;
   for await (const chunk of request) {
     size += chunk.length;
-    if (size > limit) throw new Error("Request is too large.");
+    if (size > limit) throw Object.assign(new Error("Request is too large."), { code: "WEAVE_REQUEST_TOO_LARGE" });
     chunks.push(chunk);
   }
-  return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+  } catch {
+    throw Object.assign(new Error("Request body must be valid JSON."), { code: "WEAVE_INVALID_JSON" });
+  }
 }
 
 async function statePayload() {
@@ -70,6 +107,7 @@ async function statePayload() {
     deck: await readProject(),
     css: await readDeckCss(),
     templates: await readTemplates(),
+    references: await readReferences(),
     ...state,
     variations: state.variations.map((variation) => ({
       ...variation,
@@ -87,6 +125,14 @@ async function statePayload() {
   };
 }
 
+async function retargetCodex() {
+  try {
+    await codex.setProjectRoot(projectRoot());
+  } catch (error) {
+    codex.events.publish("codex/connection", { status: "error", error: error.message });
+  }
+}
+
 function requireText(value, name, limit = 20_000) {
   const text = String(value ?? "").trim();
   if (!text) throw new Error(`${name} is required.`);
@@ -97,8 +143,9 @@ function requireText(value, name, limit = 20_000) {
 function requireTurnPrompt(payload) {
   const text = String(payload.prompt ?? "");
   const annotations = Array.isArray(payload.contextEnvelope?.annotations) ? payload.contextEnvelope.annotations : [];
-  if (!canSendTurn(text, annotations)) throw new Error("Prompt text or at least one annotation is required.");
-  return text.trim() ? requireText(text, "Prompt") : "Use the attached editor annotations as the request for this turn.";
+  const attachments = Array.isArray(payload.attachments) ? payload.attachments : [];
+  if (!canSendTurn(text, annotations) && attachments.length === 0) throw new Error("Prompt text, an annotation, or an attachment is required.");
+  return text.trim() ? requireText(text, "Prompt") : annotations.length > 0 ? "Use the attached editor annotations as the request for this turn." : "Read the attached files and act on them.";
 }
 
 function activeProjectTurn() {
@@ -119,29 +166,34 @@ async function startEditorTurn(payload, { variation = false } = {}) {
   const prompt = requireTurnPrompt(payload);
   let branch = null;
   if (variation) branch = createVariationBranch();
-  const deck = await writeProject(payload.deck);
-  const thread = await codex.startThread({
-    approvalPolicy: payload.approvalPolicy ?? "never",
-    model: payload.model,
-  });
-  const context = `${variation ? "Create a meaningfully different, polished direction. " : ""}User request: ${prompt}
+  try {
+    const deck = await writeProject(payload.deck);
+    const thread = await codex.startThread({
+      approvalPolicy: payload.approvalPolicy ?? "never",
+      model: payload.model,
+    });
+    const context = `${variation ? "Create a meaningfully different, polished direction. " : ""}User request: ${prompt}
 
 The latest editor state has been written to slides/*.html.
 Inspect the current project and edit the slides/*.html files directly. Do not edit styles/deck.css.
 Do not commit; Weave will commit after this turn.${serializeEditorContext(payload)}`;
-  const result = await codex.startTurn({
-    threadId: thread.id,
-    prompt: context,
-    clientUserMessageId: payload.clientUserMessageId,
-    model: payload.model,
-    effort: payload.effort,
-    approvalPolicy: payload.approvalPolicy ?? "never",
-  });
-  pendingTurns.set(thread.id, { prompt, branch, variation, deckTitle: deck.title });
-  return { thread, turn: result.turn, branch };
+    const result = await codex.startTurn({
+      threadId: thread.id,
+      prompt: context,
+      clientUserMessageId: payload.clientUserMessageId,
+      model: payload.model,
+      effort: payload.effort,
+      approvalPolicy: payload.approvalPolicy ?? "never",
+    });
+    pendingTurns.set(thread.id, { prompt, branch, variation, deckTitle: deck.title });
+    return { thread, turn: result.turn, branch };
+  } catch (error) {
+    if (variation && branch) discardVariation(branch);
+    throw error;
+  }
 }
 
-codex.client.on("notification", (message) => {
+codex.on("notification", (message) => {
   if (message.method !== "turn/completed") return;
   const threadId = message.params?.threadId;
   const pending = pendingTurns.get(threadId);
@@ -188,6 +240,23 @@ const server = createServer(async (request, response) => {
       return response.end();
     }
     const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
+    const routeMethods = [
+      [/^\/healthz$/, "GET"],
+      [/^\/api\/(?:state|projects|codex\/events|codex\/threads)$/, "GET"],
+      [/^\/api\/folders$/, "GET"],
+      [/^\/api\/(?:assets|projects\/[^/]+\/assets)\//, "GET"],
+      [/^\/api\/projects$/, "POST"],
+      [/^\/api\/projects\/current$/, "POST"],
+      [/^\/api\/projects\/[^/]+$/, "PATCH"],
+      [/^\/api\/projects\/[^/]+\/(?:duplicate|archive)$/, "POST"],
+      [/^\/api\/(?:assets|references|references\/remove|references\/folder|references\/folder\/sync|save|history\/checkout|history\/main|variations\/(?:checkout|generate|accept|archive))$/, "POST"],
+      [/^\/api\/codex\/(?:thread\/(?:start|read|resume|fork|action)|turn\/(?:start|steer|interrupt)|request\/(?:resolve|reject)|catalog\/refresh|skill\/config|account\/(?:login|logout)|mcp\/(?:oauth|resource\/read|tool\/call))$/, "POST"],
+    ];
+    const routeMethod = routeMethods.find(([pattern]) => pattern.test(url.pathname))?.[1];
+    if (routeMethod && request.method !== routeMethod) {
+      response.setHeader("allow", routeMethod);
+      return sendJson(request, response, 405, { error: `Method ${request.method} is not allowed.` });
+    }
 
     if (request.method === "GET" && url.pathname === "/healthz") {
       return sendJson(request, response, 200, { ok: true, codex: codex.ready });
@@ -195,14 +264,24 @@ const server = createServer(async (request, response) => {
     if (request.method === "GET" && url.pathname === "/api/state") {
       return sendJson(request, response, 200, await statePayload());
     }
+    if (request.method === "GET" && url.pathname === "/api/projects") {
+      return sendJson(request, response, 200, { projects: await listProjects() });
+    }
+    if (request.method === "GET" && url.pathname === "/api/folders") {
+      return sendJson(request, response, 200, await listFolders(url.searchParams.get("path") || undefined));
+    }
     if (request.method === "GET" && url.pathname.startsWith("/api/assets/")) {
       const filename = url.pathname.slice("/api/assets/".length);
-      if (!/^[0-9a-f]{64}\.(?:png|jpg|webp|svg|gif)$/.test(filename)) return sendJson(request, response, 404, { error: "Asset not found." });
-      const extension = filename.split(".").pop();
-      const types = { png: "image/png", jpg: "image/jpeg", webp: "image/webp", svg: "image/svg+xml", gif: "image/gif" };
-      const bytes = await readFile(join(projectRoot, "assets", filename));
-      response.writeHead(200, { ...corsHeaders(request), "content-type": types[extension], "cache-control": "public, max-age=31536000, immutable" });
-      return response.end(bytes);
+      let assetPath;
+      try { assertAssetFilename(filename); assetPath = join(projectRoot(), "assets", filename); } catch { return sendJson(request, response, 404, { error: "Asset not found." }); }
+      return sendAsset(request, response, filename, assetPath);
+    }
+    const projectAssetMatch = request.method === "GET" && url.pathname.match(/^\/api\/projects\/([^/]+)\/assets\/([^/]+)$/);
+    if (projectAssetMatch) {
+      const [, slug, filename] = projectAssetMatch;
+      let assetPath;
+      try { assertAssetFilename(filename); assetPath = projectAssetPath(slug, filename); } catch { return sendJson(request, response, 404, { error: "Asset not found." }); }
+      return sendAsset(request, response, filename, assetPath);
     }
     if (request.method === "GET" && url.pathname === "/api/codex/events") {
       const sequence = Number(url.searchParams.get("after") ?? 0);
@@ -223,11 +302,55 @@ const server = createServer(async (request, response) => {
       }));
     }
 
-    if (request.method !== "POST") return sendJson(request, response, 404, { error: "Not found." });
-    const payload = await readJson(request, url.pathname === "/api/assets" ? 14_000_000 : 1_500_000);
+    if (request.method !== "GET" && request.method !== "POST" && request.method !== "PATCH") return sendJson(request, response, 404, { error: "Not found." });
+    const payload = await readJson(request, url.pathname === "/api/assets" ? 14_000_000 : url.pathname === "/api/references" ? 36_000_000 : 1_500_000);
+
+    if (request.method === "POST" && url.pathname === "/api/projects") {
+      await assertSwitchable();
+      const slug = await createProject({ title: requireText(payload.title, "Title"), template: payload.template });
+      await switchProject(slug);
+      await ensureProject();
+      await retargetCodex();
+      codex.events.publish("weave/project", { status: "switched", ...projectState() });
+      return sendJson(request, response, 201, { ...(await statePayload()), slug });
+    }
+    if (request.method === "POST" && url.pathname === "/api/projects/current") {
+      if (activeProjectTurn() && payload.interrupt !== true) throw Object.assign(new Error("An Agent turn is running."), { code: "WEAVE_TURN_RUNNING" });
+      if (payload.interrupt === true) await Promise.all([...codex.activeTurns.keys()].map((threadId) => codex.interruptTurn(threadId)));
+      await switchProject(requireText(payload.slug, "Project id"));
+      await ensureProject();
+      await retargetCodex();
+      codex.events.publish("weave/project", { status: "switched", ...projectState() });
+      return sendJson(request, response, 200, await statePayload());
+    }
+    const projectMatch = url.pathname.match(/^\/api\/projects\/([^/]+)(?:\/(duplicate|archive))?$/);
+    if (projectMatch && request.method === "PATCH") {
+      await renameProject(projectMatch[1], requireText(payload.title, "Title"));
+      return sendJson(request, response, 200, { projects: await listProjects() });
+    }
+    if (projectMatch && request.method === "POST" && projectMatch[2] === "duplicate") {
+      const slug = await duplicateProject(projectMatch[1]);
+      return sendJson(request, response, 201, { slug, projects: await listProjects() });
+    }
+    if (projectMatch && request.method === "POST" && projectMatch[2] === "archive") {
+      await archiveProject(projectMatch[1]);
+      return sendJson(request, response, 200, { projects: await listProjects() });
+    }
 
     if (url.pathname === "/api/assets") {
       return sendJson(request, response, 201, await importImageAsset(payload));
+    }
+    if (url.pathname === "/api/references") {
+      return sendJson(request, response, 201, await importReference(payload));
+    }
+    if (url.pathname === "/api/references/folder") {
+      return sendJson(request, response, 201, await importReferenceFolder(payload));
+    }
+    if (url.pathname === "/api/references/folder/sync") {
+      return sendJson(request, response, 200, await syncReferenceFolder(payload.path));
+    }
+    if (url.pathname === "/api/references/remove") {
+      return sendJson(request, response, 200, { references: await removeReference(payload.path) });
     }
 
     if (url.pathname === "/api/save") {
@@ -236,9 +359,11 @@ const server = createServer(async (request, response) => {
       if (idempotencyKey && completedSaves.has(idempotencyKey)) {
         return sendJson(request, response, 200, completedSaves.get(idempotencyKey));
       }
-      const deck = await writeProject(payload.deck, payload.expectedRevision);
-      await assertCommittable();
-      const commit = commitIfChanged(`Save: ${String(payload.message ?? deck.title).slice(0, 120)}`);
+      const { commit } = await saveProject(
+        payload.deck,
+        payload.expectedRevision,
+        `Save: ${String(payload.message ?? payload.deck?.title ?? "Deck").slice(0, 120)}`,
+      );
       const result = { ...(await statePayload()), commit };
       if (idempotencyKey) {
         completedSaves.set(idempotencyKey, result);
@@ -291,6 +416,7 @@ const server = createServer(async (request, response) => {
       return sendJson(request, response, 200, await codex.threadAction(payload.action, payload.params ?? {}));
     }
     if (url.pathname === "/api/codex/turn/start") {
+      if (activeProjectTurn()) return sendJson(request, response, 409, { error: "Another Agent turn is already running in this project." });
       const prompt = requireTurnPrompt(payload);
       if (payload.deck) await writeProject(payload.deck);
       const result = await codex.startTurn({ ...payload, prompt: `${prompt}${serializeEditorContext(payload)}` });
@@ -350,9 +476,12 @@ const server = createServer(async (request, response) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const status = error?.code === "WEAVE_REVISION_CONFLICT" ? 409
+      : error?.code === "WEAVE_REQUEST_TOO_LARGE" ? 413
+      : error?.code === "WEAVE_INVALID_JSON" ? 400
       : ["WEAVE_QUALITY_FAILED", "WEAVE_CONTENT_POLICY"].includes(error?.code) ? 422
-      : /required|invalid|unknown|not offered/i.test(message) ? 400
-      : /owned|running|save/i.test(message) ? 409 : 500;
+      : ["WEAVE_PROJECT_DIRTY", "WEAVE_PROJECT_BLOCKED", "WEAVE_TURN_RUNNING"].includes(error?.code) ? 409
+      : /required|invalid|unknown|not offered|exceeds|already exists/i.test(message) ? 400
+      : /owned|running|save|proposal branch|cannot be archived/i.test(message) ? 409 : 500;
     return sendJson(request, response, status, { error: message, code: error?.code, diagnostics: error?.diagnostics });
   }
 });

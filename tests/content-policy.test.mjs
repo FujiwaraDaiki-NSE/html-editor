@@ -51,6 +51,33 @@ test("HTML scripts, event handlers, external URLs, and encoded javascript are re
   assert.ok(result.diagnostics.every((item) => item.source === "html" && item.length > 0));
 });
 
+test("embedded documents, document styles, and srcdoc are rejected", () => {
+  const result = auditHtmlSafety(`
+    <iframe srcdoc="&lt;script&gt;alert(1)&lt;/script&gt;"></iframe>
+    <object data="assets/file.svg"></object>
+    <embed src="assets/file.svg">
+    <style>.editor { display: none }</style>
+    <div style="position: fixed">overlay</div>
+  `);
+  assert.equal(result.ok, false);
+  assert.ok(result.diagnostics.filter((item) => item.code === "html.unsafe-element").length >= 4);
+  assert.ok(result.diagnostics.some((item) => item.code === "html.unsafe-attribute"));
+});
+
+test("malformed numeric entities are handled without throwing", () => {
+  assert.doesNotThrow(() => auditHtmlSafety('<a href="&#99999999;javascript:alert(1)">open</a>'));
+});
+
+test("CSS comments cannot split unsafe tokens", () => {
+  const result = auditCssSafety(`
+    @im/**/port "theme.css";
+    .one { background: url(/**/https://cdn.example/image.png) }
+  `);
+  assert.equal(result.ok, false);
+  assert.ok(result.diagnostics.some((item) => item.code === "css.import"));
+  assert.ok(result.diagnostics.some((item) => item.code === "css.external-url"));
+});
+
 test("relative and embedded resources do not count as external URLs", () => {
   const result = auditHtmlSafety(`
     <img src="./images/chart.png">
@@ -67,6 +94,7 @@ test("Tailwind slide utilities pass while inline, arbitrary, and unknown styles 
 
   const invalid = auditContentPolicy({ html: '<main class="weave-slide mystery" style="padding: 19px"><h1 data-weave-id="title" class="text-[61px]">Title</h1></main>' });
   assert.deepEqual(new Set(invalid.diagnostics.map((item) => item.code)), new Set([
+    "html.unsafe-attribute",
     "design.inline-style",
     "design.unknown-class",
     "design.arbitrary-class",

@@ -5,6 +5,8 @@
 import { DragEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import { actionFromStreamEvent } from "./codex/actions";
 import { defaultDeckCss, designHeight, designWidth, escapeHtml, renderDeckDocument } from "../shared/slide-design.mjs";
+import { assetPathsInHtml, isAssetPath, replaceAssetReferences, rewriteAssetUrls } from "../shared/asset-path.mjs";
+import { projectSlug } from "../shared/project-slug.mjs";
 import { auditContentPolicy } from "../shared/content-policy.mjs";
 import { applyTemplateToSlideHtml, contentSlotSelector, titleFromSlideHtml, titleSlotSelector } from "../shared/slide-slots.mjs";
 import { advancedControlKeys, allControlKeys, applyBlockPosition, applySize, applyUtilityClass, blockPositionOptions, containerControlKeys, decorationControlKeys, defaultSlideClasses, imageControlKeys, listControlKeys, migrateSlideHtmlToTailwind, ratioOptions, readBlockPosition, readSize, readUtilityClass, sizeIntents, slideControlGroups, textControlKeys } from "../shared/tailwind-slide.mjs";
@@ -25,18 +27,22 @@ import { selectThreadRunning, selectThreadTurns, selectTurnItems } from "./codex
    modelled as tokens any more (concept 2.10). */
 type SlideDoc = { id: string; title: string; notes: string; html: string };
 type TemplateDoc = { id: string; name: string; html: string };
+type ReferenceAttachment = { path: string; name: string; mimeType?: string; size: number; kind?: "file" | "folder"; files?: number };
+type ReferenceShelfEntry = ReferenceAttachment & { hash?: string; addedAt?: string; source?: string; sourceMissing?: boolean; missing: boolean; kind: "file" | "folder" };
+type FolderBrowser = { path: string; parent: string | null; breadcrumbs: Array<{ name: string; path: string }>; folders: Array<{ name: string; path: string }>; folderCount: number; fileCount: number };
 
 type SlideNav = "filmstrip" | "rail";
 type ActivityView = "agent" | "history" | "shortcuts" | "settings";
-type OpenPopover = "project" | "delivery" | "threads" | "addBlock" | "layouts" | "newSlide" | "quality" | null;
+type OpenPopover = "delivery" | "threads" | "addBlock" | "layouts" | "newSlide" | "quality" | "agentModel" | "references" | null;
 
 type ServerState = {
   deck: { title: string; slides: SlideDoc[] };
   css: string;
   templates: TemplateDoc[];
+  references: ReferenceShelfEntry[];
   history: HistoryEntry[];
   variations: Array<{ branch: string; label: string; commit: string; message: string; status: "ready" | "generating" }>;
-  project: { root: string; branch: string; commit: string; revision?: string; clean: boolean };
+  project: { root: string; slug?: string; branch: string; commit: string; revision?: string; clean: boolean };
   codex: {
     ready: boolean;
     connection: string;
@@ -49,6 +55,8 @@ type ServerState = {
 };
 
 type HistoryEntry = { id: string; shortId: string; message: string; date: string };
+type ProjectSummary = { slug: string; title: string; slideCount: number; updatedAt: string | null; current: boolean; blocked: boolean; blockedCount: number; thumbnailHtml: string; css: string };
+type GalleryDialog = { kind: "rename"; slug: string; title: string } | { kind: "archive"; slug: string; title: string } | { kind: "dirty"; slug: string; title: string } | { kind: "create"; title: string } | { kind: "turn"; slug: string; title: string };
 
 const apiBase = "http://127.0.0.1:4317/api";
 const defaultCanvasZoom = 1;
@@ -83,7 +91,27 @@ const sidebarWidthStore = {
   write(value: number) { window.localStorage.setItem(sidebarWidthKey, String(clampSidebarWidth(value))); sidebarWidthListeners.forEach((listener) => listener()); },
 };
 
+type AgentModel = { model: string; effort: string };
+const agentModelKeys = { model: "weave.agent.model", effort: "weave.agent.effort" };
+const agentModelListeners = new Set<() => void>();
+let agentModelSnapshot: AgentModel = { model: "", effort: "medium" };
+const serverAgentModel: AgentModel = { model: "", effort: "medium" };
+let agentModelRead = false;
+const agentModelStore = {
+  subscribe(listener: () => void) { agentModelListeners.add(listener); return () => { agentModelListeners.delete(listener); }; },
+  read: (): AgentModel => {
+    if (!agentModelRead) {
+      agentModelSnapshot = { model: window.localStorage.getItem(agentModelKeys.model) ?? "", effort: window.localStorage.getItem(agentModelKeys.effort) ?? "medium" };
+      agentModelRead = true;
+    }
+    return agentModelSnapshot;
+  },
+  serverRead: (): AgentModel => serverAgentModel,
+  write(value: AgentModel) { agentModelSnapshot = value; agentModelRead = true; window.localStorage.setItem(agentModelKeys.model, value.model); window.localStorage.setItem(agentModelKeys.effort, value.effort); agentModelListeners.forEach((listener) => listener()); },
+};
+
 const createMessageId = () => `weave-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+const formatBytes = (bytes: number) => bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 const retryDelay = (attempt: number) => Math.min(10_000, 400 * (2 ** Math.min(attempt, 5))) + Math.random() * 250;
 const displayThreadName = (name: string | null | undefined) => name?.replace(/^Weave · /, "") || null;
 const cssEscape = (value: string) => (typeof CSS !== "undefined" && CSS.escape ? CSS.escape(value) : value.replace(/[^\w-]/g, "\\$&"));
@@ -121,7 +149,8 @@ const relayoutForParent = (node: Element, intent: string, fromLayout: string): s
 };
 
 type Control = { key: string; label: string; options: Array<{ label: string; className: string }> };
-const controlsFor = (keys: string[]): Control[] => keys.map((key) => ({ key, label: slideControlGroups[key].label, options: slideControlGroups[key].options }));
+const controlGroups = slideControlGroups as Record<string, { label: string; options: Array<{ label: string; className: string }> }>;
+const controlsFor = (keys: string[]): Control[] => keys.map((key) => ({ key, label: controlGroups[key].label, options: controlGroups[key].options }));
 const textSchema = controlsFor(textControlKeys);
 const containerSchema = controlsFor(containerControlKeys);
 const advancedSchema = controlsFor(advancedControlKeys);
@@ -153,7 +182,7 @@ type OutlineItem = { id: string; label: string; kind: string; depth: number; con
 /* Where a tree row drop lands: beside the target, or as the last child when the target is a container. */
 type TreeDrop = { id: string | null; position: "before" | "after" | "inside" };
 
-type Snapshot = { title: string; slides: SlideDoc[]; activeSlide: number; selectedId: string | null };
+type Snapshot = { title: string; slides: SlideDoc[]; activeSlide: number; selectedId: string | null; annotations: Annotation[] };
 type BlockDragSession = {
   id: string;
   node: HTMLElement;
@@ -213,8 +242,37 @@ const serializeEditorNode = (node: HTMLElement): string => {
     item.setAttribute("src", path);
     item.removeAttribute("data-asset-path");
   });
+  cloneMatches(clone, "image[data-asset-path]").forEach((item) => {
+    const path = item.getAttribute("data-asset-path") ?? "";
+    if (item.dataset.assetAttribute === "xlink:href") item.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", path);
+    else item.setAttribute("href", path);
+    delete item.dataset.assetPath;
+    delete item.dataset.assetAttribute;
+  });
   return clone.outerHTML;
 };
+
+const sanitizePreviewHtml = (input: string): string => {
+  if (typeof DOMParser === "undefined") return input;
+  const document = new DOMParser().parseFromString(`<body>${input}</body>`, "text/html");
+  document.body.querySelectorAll("script, iframe, object, embed, style, link, base, meta, form").forEach((node) => node.remove());
+  document.body.querySelectorAll("*").forEach((node) => {
+    for (const attribute of [...node.attributes]) {
+      const name = attribute.name.toLowerCase();
+      if (name === "style" || name === "srcdoc" || name.startsWith("on")) {
+        node.removeAttribute(attribute.name);
+        continue;
+      }
+      if (["href", "src", "action", "formaction", "poster", "xlink:href"].includes(name)) {
+        const value = attribute.value.replace(/[\u0000-\u0020\u007f]+/g, "").toLowerCase();
+        if (value.startsWith("javascript:") || /^(?:https?:)?\/\//.test(value)) node.removeAttribute(attribute.name);
+      }
+    }
+  });
+  return document.body.innerHTML;
+};
+
+const displayAssetHtml = (input: string): string => rewriteAssetUrls(sanitizePreviewHtml(input), apiBase);
 
 const kindOfNode = (node: HTMLElement): string => blockKinds.find((cls) => node.classList.contains(cls)) ?? node.tagName.toLowerCase();
 const refreshSlideAnnotations = (annotations: Annotation[], slideId: string, boxes: AnnotationBox[]) => {
@@ -261,8 +319,9 @@ export default function Home() {
   const [threadSearch, setThreadSearch] = useState("");
   const [showArchivedThreads, setShowArchivedThreads] = useState(false);
   const [activityView, setActivityView] = useState<ActivityView>("agent");
-  const [selectedModel, setSelectedModel] = useState("");
-  const [reasoningEffort, setReasoningEffort] = useState("medium");
+  const agentModel = useSyncExternalStore(agentModelStore.subscribe, agentModelStore.read, agentModelStore.serverRead);
+  const selectedModel = agentModel.model;
+  const reasoningEffort = agentModel.effort;
   const [approvalPolicy, setApprovalPolicy] = useState("never");
   const [apiKeyDraft, setApiKeyDraft] = useState("");
   const [mcpResult, setMcpResult] = useState("");
@@ -273,6 +332,19 @@ export default function Home() {
   const [history, setHistory] = useState<HistoryEntry[]>([]);
   const [project, setProject] = useState<ServerState["project"] | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
+  const [galleryOpen, setGalleryOpen] = useState(false);
+  const [galleryView, setGalleryView] = useState<"list" | "new">("list");
+  const [galleryProjects, setGalleryProjects] = useState<ProjectSummary[]>([]);
+  const [galleryLoading, setGalleryLoading] = useState(false);
+  const [galleryNow, setGalleryNow] = useState(0);
+  const [gallerySwitching, setGallerySwitching] = useState<string | null>(null);
+  const [galleryMenu, setGalleryMenu] = useState<string | null>(null);
+  const [galleryTip, setGalleryTip] = useState<string | null>(null);
+  const [galleryDialog, setGalleryDialog] = useState<GalleryDialog | null>(null);
+  const [renameDraft, setRenameDraft] = useState("");
+  const [newProjectTitle, setNewProjectTitle] = useState("");
+  const [newProjectTemplate, setNewProjectTemplate] = useState("orbit");
+  const [newProjectCreating, setNewProjectCreating] = useState(false);
   const [showPresenter, setShowPresenter] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [objectTreeOpen, setObjectTreeOpen] = useState(true);
@@ -298,6 +370,11 @@ export default function Home() {
   const [includeRegionAnnotations, setIncludeRegionAnnotations] = useState(true);
   const [annotationAttachments, setAnnotationAttachments] = useState<SentAnnotationAttachment[]>([]);
   const [activeOverlayAttachmentId, setActiveOverlayAttachmentId] = useState<string | null>(null);
+  const [referenceAttachments, setReferenceAttachments] = useState<ReferenceAttachment[]>([]);
+  const [referenceShelf, setReferenceShelf] = useState<ReferenceShelfEntry[]>([]);
+  const [referenceView, setReferenceView] = useState<"shelf" | "browse">("shelf");
+  const [folderBrowser, setFolderBrowser] = useState<FolderBrowser | null>(null);
+  const [folderImporting, setFolderImporting] = useState(false);
 
   const canvasRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -306,6 +383,7 @@ export default function Home() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
+  const referenceInputRef = useRef<HTMLInputElement>(null);
   const replacingImageRef = useRef(false);
   const messagesRef = useRef<HTMLDivElement>(null);
   const promptRef = useRef<HTMLTextAreaElement>(null);
@@ -315,6 +393,7 @@ export default function Home() {
   const turnInFlightRef = useRef(false);
   const shouldAutoScrollRef = useRef(true);
   const eventSequenceRef = useRef(0);
+  const editGenerationRef = useRef(0);
   const undoRef = useRef<Snapshot[]>([]);
   const deckLoadedRef = useRef(false);
   const redoRef = useRef<Snapshot[]>([]);
@@ -324,15 +403,19 @@ export default function Home() {
   const blockDragRef = useRef<BlockDragSession | null>(null);
   const annotationGestureRef = useRef<AnnotationGesture | null>(null);
   const popoverTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const galleryRef = useRef<HTMLDivElement>(null);
+  const projectSwitcherRef = useRef<HTMLButtonElement>(null);
   // Preview stays outside slide state so save, sync, and undo cannot observe a candidate frame.
   const templatePreviewHtmlRef = useRef<string | null>(null);
   const templatePreviewSourceHtmlRef = useRef<string | null>(null);
+  const markDirty = () => { editGenerationRef.current += 1; setSaved(false); };
 
   const agentReady = codexState.connection.status === "connected";
   const agentRunning = selectThreadRunning(codexState, codexState.activeThreadId);
   const activeTurns = selectThreadTurns(codexState, codexState.activeThreadId);
   const visibleTurns = activeTurns.slice(-100);
-  const slideScale = manualZoom ?? fitScale;
+  const zoomLevel = manualZoom ?? defaultCanvasZoom;
+  const slideScale = fitScale * zoomLevel;
   const activeSlideId = slides[activeSlide - 1]?.id;
   const activeAnnotations = annotations.filter((annotation) => annotation.slideId === activeSlideId);
   const activeRegionAnnotations = activeAnnotations.filter((annotation) => annotation.target.kind === "region");
@@ -384,12 +467,19 @@ export default function Home() {
   const dismissPopover = useCallback((restoreFocus = true) => {
     cancelTemplatePreview();
     setOpenPopover(null);
+    setReferenceView("shelf");
     if (restoreFocus) requestAnimationFrame(() => popoverTriggerRef.current?.focus());
   }, [cancelTemplatePreview]);
   const togglePopover = (value: Exclude<OpenPopover, null>, trigger: HTMLButtonElement) => {
     cancelTemplatePreview();
     popoverTriggerRef.current = trigger;
-    setOpenPopover((current) => current === value ? null : value);
+    setOpenPopover((current) => {
+      if (current === value) {
+        if (value === "references") setReferenceView("shelf");
+        return null;
+      }
+      return value;
+    });
   };
   const slideRoot = () => canvasRef.current?.querySelector<HTMLElement>(".weave-slide") ?? null;
   const contentSlot = () => canvasRef.current?.querySelector<HTMLElement>(contentSlotSelector) ?? canvasRef.current?.querySelector<HTMLElement>(".hero") ?? null;
@@ -436,9 +526,16 @@ export default function Home() {
     return list.map((slide, index) => (index === activeRef.current - 1 ? { ...slide, title: title ?? slide.title, html } : slide));
   };
 
-  const syncFromDom = () => { setSlidesSynced(captureActive()); setSaved(false); };
+  const syncFromDom = () => {
+    setSlidesSynced(captureActive());
+    markDirty();
+    requestAnimationFrame(() => {
+      const slide = slidesRef.current[activeRef.current - 1];
+      if (slide && viewportRef.current) setAnnotations((current) => refreshSlideAnnotations(current, slide.id, liveAnnotationBoxes()));
+    });
+  };
 
-  const snapshot = (): Snapshot => ({ title: deckTitle, slides: captureActive().map((slide) => ({ ...slide })), activeSlide: activeRef.current, selectedId: selectedRef.current });
+  const snapshot = (): Snapshot => ({ title: deckTitle, slides: captureActive().map((slide) => ({ ...slide })), activeSlide: activeRef.current, selectedId: selectedRef.current, annotations: annotations.map(cloneAnnotation) });
   const restoreSnapshot = (value: Snapshot) => {
     setDeckTitle(value.title);
     setSlidesSynced(value.slides.map((slide) => ({ ...slide })));
@@ -446,7 +543,8 @@ export default function Home() {
     setActiveSlideSynced(value.activeSlide);
     selectedRef.current = value.selectedId;
     setSelectedId(value.selectedId);
-    setSaved(false);
+    setAnnotations(value.annotations.map(cloneAnnotation));
+    markDirty();
     reinject();
   };
   const checkpoint = () => { undoRef.current = [...undoRef.current.slice(-79), snapshot()]; redoRef.current = []; setHistoryState({ undo: undoRef.current.length, redo: 0 }); };
@@ -455,7 +553,7 @@ export default function Home() {
 
   const deckPayload = () => ({ title: deckTitle, slides: captureActive() });
 
-  const contextEnvelope = (annotationContext: Annotation[] = [], overflowing: string[] = []) => editorEnvelope({
+  const contextEnvelope = (annotationContext: Annotation[] = [], overflowing: string[] = [], attachments: ReferenceAttachment[] = []) => editorEnvelope({
     slide: activeSlideId,
     selected: selectedId ? {
       id: selectedId,
@@ -467,6 +565,7 @@ export default function Home() {
     } : undefined,
     annotations: annotationContext,
     overflowing,
+    attachments: attachments.map(({ path, name, size, kind, files }) => ({ path, name, bytes: size, kind, files })),
   });
 
   const quality = useMemo(() => {
@@ -478,6 +577,8 @@ export default function Home() {
   const activeThread = codexState.activeThreadId ? codexState.threads[codexState.activeThreadId] : null;
   const activeThreadName = activeThread ? displayThreadName(activeThread.name) || activeThread.preview || "New conversation" : "No conversation";
   const selectedModelInfo = useMemo(() => codexState.catalog.models.find((model: any) => (model.id ?? model.model) === selectedModel) as any, [codexState.catalog.models, selectedModel]);
+  /* Display-only fallback: a model that declares no supported efforts still gets the three
+     standard choices in the picker, while `applyServerState` leaves such a model's effort alone. */
   const availableEfforts = useMemo(() => selectedModelInfo?.supportedReasoningEfforts?.map((option: any) => option.reasoningEffort) ?? ["low", "medium", "high"], [selectedModelInfo]);
   const agentActivity = !agentReady ? codexState.connection.error ?? "Connecting to Codex…" : agentRunning ? "Codex is working…" : "Ready";
 
@@ -493,22 +594,30 @@ export default function Home() {
       const nextSlides = sourceSlides.map(slideFromHtml);
       slidesRef.current = nextSlides;
       setSlides(nextSlides);
-      setDeckCss(state.css?.includes("weave-tailwind-slide-v1") ? state.css : defaultDeckCss);
+      setDeckCss(defaultDeckCss);
       setTemplates(state.templates ?? []);
-      setHistory(state.history);
-      setVariations(state.variations ?? []);
-      setProject(state.project);
-      setServerRevision(state.project.revision ?? state.project.commit);
-      setActiveVariation(state.project.branch);
       setSaved(state.project.clean);
       reinject();
     }
+    setHistory(state.history);
+    setReferenceShelf(state.references ?? []);
+    setVariations(state.variations ?? []);
+    setProject(state.project);
+    setServerRevision(state.project.revision ?? state.project.commit);
+    setActiveVariation(state.project.branch);
     dispatchCodex({ type: "connection", connection: { status: state.codex.ready ? "connected" : state.codex.version?.compatible === false ? "incompatible" : "connecting", error: state.codex.version?.message ?? null, cliVersion: state.codex.version?.running } });
     dispatchCodex({ type: "catalog", catalog: state.codex.catalog });
     dispatchCodex({ type: "pendingRequests", requests: state.codex.pendingRequests });
     dispatchCodex({ type: "activeTurns", activeTurns: state.codex.activeTurns });
-    setSelectedModel((current) => { if (current) return current; const firstModel = state.codex.catalog.models?.[0]; return firstModel?.id ?? firstModel?.model ?? ""; });
-    setReasoningEffort((current) => { const firstModel = state.codex.catalog.models?.[0]; const supported = firstModel?.supportedReasoningEfforts?.map((option: any) => option.reasoningEffort) ?? []; return supported.length > 0 && !supported.includes(current) ? firstModel.defaultReasoningEffort ?? supported[0] : current; });
+    const models = state.codex.catalog.models ?? [];
+    const firstModel = models[0] as any;
+    const current = agentModelStore.read();
+    const selected = models.find((model: any) => (model.id ?? model.model) === current.model) as any;
+    const nextModel = selected ? current.model : firstModel?.id ?? firstModel?.model ?? "";
+    const selectedModelForEffort = selected ?? firstModel;
+    const supported = selectedModelForEffort?.supportedReasoningEfforts?.map((option: any) => option.reasoningEffort) ?? [];
+    const nextEffort = supported.length > 0 && !supported.includes(current.effort) ? selectedModelForEffort.defaultReasoningEffort ?? supported[0] : current.effort;
+    if (nextModel !== current.model || nextEffort !== current.effort) agentModelStore.write({ model: nextModel, effort: nextEffort });
   }, [reinject]);
 
   useEffect(() => {
@@ -558,9 +667,18 @@ export default function Home() {
             if (!line.trim()) continue;
             const envelope = JSON.parse(line);
             eventSequenceRef.current = Math.max(eventSequenceRef.current, envelope.sequence ?? 0);
-            if (envelope.type === "weave/project") {
+            if (envelope.type === "weave/project" || envelope.type === "codex/gap") {
+              const generation = editGenerationRef.current;
               const stateResponse = await fetch(`${apiBase}/state`);
-              if (stateResponse.ok) applyServerState(await stateResponse.json());
+              if (stateResponse.ok) {
+                const state = await stateResponse.json();
+                const unchanged = generation === editGenerationRef.current;
+                applyServerState(state, unchanged);
+                if (!unchanged) {
+                  markDirty();
+                  setApiError("The project changed on disk while you were editing. Your local edits were kept; save again to reconcile them.");
+                }
+              }
               continue;
             }
             const action = actionFromStreamEvent(envelope);
@@ -609,8 +727,18 @@ export default function Home() {
     setDraggedId(null);
     setEditingId(null);
     const previewHtml = templatePreviewHtmlRef.current;
-    host.innerHTML = previewHtml ?? templatePreviewSourceHtmlRef.current ?? slidesRef.current[activeSlide - 1]?.html ?? "";
-    host.querySelectorAll<HTMLImageElement>('img[src^="assets/"]').forEach((node) => { const path = node.getAttribute("src") ?? ""; node.dataset.assetPath = path; node.src = `${apiBase}/${path}`; });
+    host.innerHTML = sanitizePreviewHtml(previewHtml ?? templatePreviewSourceHtmlRef.current ?? slidesRef.current[activeSlide - 1]?.html ?? "");
+    host.querySelectorAll<HTMLImageElement>('img[src^="assets/"]').forEach((node) => { const path = node.getAttribute("src") ?? ""; if (!isAssetPath(path)) return; node.dataset.assetPath = path; node.src = `${apiBase}/${path}`; });
+    host.querySelectorAll<SVGImageElement>("image").forEach((node) => {
+      const xlinkPath = node.getAttributeNS("http://www.w3.org/1999/xlink", "href");
+      const attribute = isAssetPath(xlinkPath) ? "xlink:href" : "href";
+      const path = (attribute === "xlink:href" ? xlinkPath : node.getAttribute("href")) ?? "";
+      if (!isAssetPath(path)) return;
+      node.dataset.assetPath = path;
+      node.dataset.assetAttribute = attribute;
+      if (attribute === "xlink:href") node.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", `${apiBase}/${path}`);
+      else node.setAttribute("href", `${apiBase}/${path}`);
+    });
     host.querySelectorAll<HTMLElement>("[data-weave-id]").forEach((node) => { node.draggable = !annotationMode && !agentRunning && !isTitleSlot(node); });
     const root = host.querySelector<HTMLElement>(".weave-slide");
     if (root) {
@@ -1091,6 +1219,11 @@ export default function Home() {
 
   const onCanvasDragOver = (event: DragEvent<HTMLDivElement>) => {
     if (annotationMode) { event.preventDefault(); event.stopPropagation(); return; }
+    if (Array.from(event.dataTransfer.items).some((item) => item.kind === "file")) {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      return;
+    }
     const session = blockDragRef.current;
     const host = canvasRef.current;
     if (!session || !host) return;
@@ -1275,21 +1408,83 @@ export default function Home() {
   };
 
   const uploadImage = async (file: File, placement?: { id: string; after: boolean }) => {
+    const targetSlideId = slidesRef.current[activeRef.current - 1]?.id;
+    const replacing = replacingImageRef.current;
+    const targetElementId = selectedRef.current;
     try {
       if (file.size > 10 * 1024 * 1024) throw new Error("Image must be 10 MB or smaller.");
       const dataUrl = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file); });
       const response = await fetch(`${apiBase}/assets`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ mimeType: file.type, data: dataUrl.slice(dataUrl.indexOf(",") + 1) }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Image import failed.");
-      const selected = selectedNode();
-      if (replacingImageRef.current && selected instanceof HTMLImageElement) {
+      if (slidesRef.current[activeRef.current - 1]?.id !== targetSlideId) throw new Error("Image imported, but the target slide changed before upload completed.");
+      const selected = targetElementId ? canvasRef.current?.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(targetElementId)}"]`) ?? null : null;
+      if (replacing && selected instanceof HTMLImageElement && selectedRef.current === targetElementId) {
         checkpoint(); selected.dataset.assetPath = result.path; selected.src = `${apiBase}/${result.path}`; syncFromDom(); setSel(readSelection(selected));
-      } else addBlock("image", result.path, placement);
+      } else if (replacing) throw new Error("Image imported, but the image selected for replacement changed before upload completed.");
+      else addBlock("image", result.path, placement);
       setAnnouncement("Image imported");
       setApiError(null);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
     finally { replacingImageRef.current = false; if (imageInputRef.current) imageInputRef.current.value = ""; }
   };
+
+  const uploadReferences = useCallback(async (files: FileList | File[]) => {
+    for (const file of Array.from(files)) {
+      try {
+        if (file.size > 25 * 1024 * 1024) throw new Error("Reference must be 25 MB or smaller.");
+        const dataUrl = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file); });
+        const response = await fetch(`${apiBase}/references`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: file.name, mimeType: file.type, data: dataUrl.slice(dataUrl.indexOf(",") + 1) }) });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error ?? "Reference import failed.");
+        setReferenceAttachments((current) => current.some((attachment) => attachment.path === result.path) ? current : [...current, result]);
+        setReferenceShelf((current) => current.some((reference) => reference.path === result.path) ? current : [...current, { ...result, missing: false }]);
+        setApiError(null);
+      } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
+    }
+    if (referenceInputRef.current) referenceInputRef.current.value = "";
+  }, []);
+
+  const removeShelfReference = useCallback(async (path: string) => {
+    try {
+      const response = await fetch(`${apiBase}/references/remove`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Reference removal failed.");
+      setReferenceShelf(result.references ?? []);
+      setReferenceAttachments((current) => current.filter((attachment) => attachment.path !== path));
+      setApiError(null);
+    } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
+  }, []);
+
+  const browseFolders = useCallback(async (path?: string) => {
+    try {
+      const response = await fetch(`${apiBase}/folders${path ? `?path=${encodeURIComponent(path)}` : ""}`);
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Folder browsing failed.");
+      setFolderBrowser(result); setReferenceView("browse"); setApiError(null);
+    } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
+  }, []);
+
+  const importFolder = useCallback(async () => {
+    if (!folderBrowser || folderImporting) return;
+    setFolderImporting(true);
+    try {
+      const response = await fetch(`${apiBase}/references/folder`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ source: folderBrowser.path }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Folder import failed.");
+      setReferenceShelf((current) => [...current, { ...result, missing: false, sourceMissing: false }]);
+      setReferenceView("shelf"); setApiError(null);
+    } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
+    finally { setFolderImporting(false); }
+  }, [folderBrowser, folderImporting]);
+
+  const syncFolder = useCallback(async (path: string) => {
+    try {
+      const response = await fetch(`${apiBase}/references/folder/sync`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path }) });
+      const result = await response.json(); if (!response.ok) throw new Error(result.error ?? "Folder update failed.");
+      setReferenceShelf(result.references ?? []); setApiError(null);
+    } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
+  }, []);
 
   const deleteSelected = () => {
     const node = selectedNode();
@@ -1356,7 +1551,7 @@ export default function Home() {
     const template = templates.find((item) => item.id === templateId);
     const index = activeRef.current - 1;
     templatePreviewHtmlRef.current = null;
-    if (templatePreviewSourceHtmlRef.current && canvasRef.current) canvasRef.current.innerHTML = templatePreviewSourceHtmlRef.current;
+    if (templatePreviewSourceHtmlRef.current && canvasRef.current) canvasRef.current.innerHTML = sanitizePreviewHtml(templatePreviewSourceHtmlRef.current);
     const captured = captureActive();
     const slide = captured[index];
     if (!template || !slide) return;
@@ -1369,7 +1564,7 @@ export default function Home() {
     const index = activeRef.current - 1;
     if (!template) return;
     templatePreviewHtmlRef.current = null;
-    if (templatePreviewSourceHtmlRef.current && canvasRef.current) canvasRef.current.innerHTML = templatePreviewSourceHtmlRef.current;
+    if (templatePreviewSourceHtmlRef.current && canvasRef.current) canvasRef.current.innerHTML = sanitizePreviewHtml(templatePreviewSourceHtmlRef.current);
     const captured = captureActive();
     templatePreviewSourceHtmlRef.current = null;
     const slide = captured[index];
@@ -1378,7 +1573,7 @@ export default function Home() {
     const html = applyTemplateToSlideHtml(slide.html, template.html, { position: activeRef.current, total: captured.length, accent });
     const title = titleFromSlideHtml(html);
     setSlidesSynced(captured.map((item, itemIndex) => itemIndex === index ? { ...item, title: title ?? item.title, html } : item));
-    setSaved(false);
+    markDirty();
     dismissPopover(false);
     reinject();
   };
@@ -1433,7 +1628,7 @@ export default function Home() {
   const setSlideNotes = (notes: string) => {
     checkpoint();
     setSlidesSynced(captureActive().map((slide, index) => (index === activeRef.current - 1 ? { ...slide, notes } : slide)));
-    setSaved(false);
+    markDirty();
   };
 
   const addSlide = (templateId?: string) => {
@@ -1442,14 +1637,14 @@ export default function Home() {
     const template = templates.find((item) => item.id === templateId);
     const empty = '<main class="weave-slide"><section data-weave-slot="content"><h1 data-weave-slot="title" data-weave-id="title"></h1></section></main>';
     const framed = template ? applyTemplateToSlideHtml(empty, template.html, { position: captured.length + 1, total: captured.length + 1, accent }) : blankSlideHtml(background, accent);
-    const html = framed.replace(/\bdata-weave-id\s*=\s*(["'])(.*?)\1/gi, (_, quote) => `data-weave-id=${quote}block-${createMessageId().slice(6)}${quote}`);
+    const html = framed.replace(/\bdata-weave-id\s*=\s*(["'])(.*?)\1/gi, (_: string, quote: string) => `data-weave-id=${quote}block-${createMessageId().slice(6)}${quote}`);
     const slide = slideFromHtml({ id: `slide-${createMessageId().slice(6)}`, title: "", notes: "", html });
     const next = [...captured, slide];
     setSlidesSynced(next);
     activeRef.current = next.length;
     setActiveSlideSynced(next.length);
     setSelectedId(null);
-    setSaved(false);
+    markDirty();
     dismissPopover(false);
     reinject();
   };
@@ -1465,7 +1660,7 @@ export default function Home() {
     activeRef.current += 1;
     setActiveSlideSynced(activeRef.current);
     setSelectedId(null);
-    setSaved(false);
+    markDirty();
     reinject();
   };
 
@@ -1481,7 +1676,7 @@ export default function Home() {
     setSelectedId(null);
     setSelectedAnnotationId(null);
     if (deletedSlideId) setAnnotations((current) => current.filter((annotation) => annotation.slideId !== deletedSlideId));
-    setSaved(false);
+    markDirty();
     reinject();
   };
 
@@ -1494,13 +1689,14 @@ export default function Home() {
     setSlidesSynced(next);
     activeRef.current = target + 1;
     setActiveSlideSynced(target + 1);
-    setSaved(false);
+    markDirty();
     reinject();
   };
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
+      if (galleryOpen) return;
       if (pointerPicking && event.key === "Escape") { event.preventDefault(); setPointerPicking(false); setAnnouncement("Element pointing canceled"); return; }
       if (target.matches("input, textarea, [contenteditable=true]")) return;
       if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "a") { event.preventDefault(); toggleAnnotationMode(); }
@@ -1516,34 +1712,189 @@ export default function Home() {
 
   /* --- Persistence, export, agent ------------------------------------------------------ */
 
+  const resetProjectEditor = () => {
+    activeRef.current = 1;
+    setActiveSlide(1);
+    setSelectedId(null);
+    selectedRef.current = null;
+    setSel(null);
+    setAnnotations([]);
+    setSelectedAnnotationId(null);
+    setAnnotationAttachments([]);
+    setActiveOverlayAttachmentId(null);
+    undoRef.current = [];
+    redoRef.current = [];
+    setHistoryState({ undo: 0, redo: 0 });
+    templatePreviewHtmlRef.current = null;
+    templatePreviewSourceHtmlRef.current = null;
+    setActiveVariation("main");
+    dispatchCodex({ type: "activateThread", threadId: null });
+    reinject();
+  };
+
+  const closeGallery = () => {
+    setGalleryOpen(false);
+    setGalleryView("list");
+    setGalleryMenu(null);
+    setGalleryTip(null);
+    setGalleryDialog(null);
+    requestAnimationFrame(() => projectSwitcherRef.current?.focus());
+  };
+
+  const loadGallery = async () => {
+    setGalleryLoading(true);
+    try {
+      const response = await fetch(`${apiBase}/projects`);
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "プロジェクト一覧を読み込めませんでした。");
+      setGalleryProjects(result.projects ?? []);
+      setApiError(null);
+    } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
+    finally { setGalleryLoading(false); }
+  };
+
+  const openGallery = () => {
+    setGalleryOpen(true);
+    setGalleryNow(Date.now());
+    setGalleryView("list");
+    setGalleryMenu(null);
+    setGalleryTip(null);
+    void loadGallery();
+    requestAnimationFrame(() => galleryRef.current?.focus());
+  };
+
+  useEffect(() => {
+    if (!galleryOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      if (galleryDialog) { setGalleryDialog(null); return; }
+      if (galleryMenu) { setGalleryMenu(null); return; }
+      closeGallery();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [galleryOpen, galleryDialog, galleryMenu]);
+
+  const switchProject = async (target: ProjectSummary, interrupt = false, savedLocally = false) => {
+    if (target.current) { closeGallery(); return; }
+    if (target.blocked) { setGalleryTip(target.slug); return; }
+    if (!saved && !savedLocally) { setGalleryDialog({ kind: "dirty", slug: target.slug, title: target.title }); return; }
+    setGalleryTip(null);
+    setGallerySwitching(target.slug);
+    try {
+      const response = await fetch(`${apiBase}/projects/current`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ slug: target.slug, ...(interrupt ? { interrupt: true } : {}) }) });
+      const result = await response.json();
+      if (!response.ok) {
+        if (result.code === "WEAVE_PROJECT_DIRTY") setGalleryDialog({ kind: "dirty", slug: target.slug, title: target.title });
+        else if (result.code === "WEAVE_TURN_RUNNING") setGalleryDialog({ kind: "turn", slug: target.slug, title: target.title });
+        else if (result.code === "WEAVE_PROJECT_BLOCKED") setGalleryTip(target.slug);
+        else throw new Error(result.error ?? "プロジェクトを切り替えられませんでした。");
+        return;
+      }
+      applyServerState(result as ServerState);
+      resetProjectEditor();
+      closeGallery();
+      setApiError(null);
+    } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
+    finally { setGallerySwitching(null); }
+  };
+
+  const galleryMutation = async (slug: string, action: "rename" | "duplicate" | "archive", title = "") => {
+    try {
+      const method = action === "rename" ? "PATCH" : "POST";
+      const response = await fetch(`${apiBase}/projects/${slug}${action === "rename" ? "" : `/${action}`}`, { method, headers: { "content-type": "application/json" }, body: action === "rename" ? JSON.stringify({ title }) : "{}" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "プロジェクトを更新できませんでした。");
+      setGalleryProjects(result.projects ?? []);
+      setGalleryDialog(null);
+      setGalleryMenu(null);
+      setApiError(null);
+    } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
+  };
+
+  const createProject = async (savedLocally = false) => {
+    const title = newProjectTitle.trim();
+    if (!title) return;
+    if (!saved && !savedLocally) { setGalleryDialog({ kind: "create", title }); return; }
+    setNewProjectCreating(true);
+    try {
+      const response = await fetch(`${apiBase}/projects`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title, template: newProjectTemplate }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "プロジェクトを作成できませんでした。");
+      applyServerState(result as ServerState);
+      resetProjectEditor();
+      closeGallery();
+      setNewProjectTitle("");
+    } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
+    finally { setNewProjectCreating(false); }
+  };
+
+  const relativeProjectTime = (value: string | null) => {
+    if (!value) return "保存日時不明";
+    const days = Math.max(0, Math.floor((galleryNow - new Date(value).getTime()) / 86_400_000));
+    const minutes = Math.max(0, Math.floor((galleryNow - new Date(value).getTime()) / 60_000));
+    if (minutes < 1) return "たった今保存";
+    if (minutes < 60) return `${minutes}分前に保存`;
+    if (days === 0) return `${Math.floor(minutes / 60)}時間前に保存`;
+    if (days === 1) return "昨日";
+    if (days < 7) return `${days}日前に保存`;
+    return new Date(value).toLocaleDateString("ja-JP", { year: "numeric", month: "numeric", day: "numeric" });
+  };
+
+  const thumbHtml = (html: string, css: string, title: string) => html ? <iframe className="project-live" sandbox="" title={title} loading="lazy" srcDoc={`<!doctype html><html><head><style>${css}</style><style>html,body{width:${designWidth}px;height:${designHeight}px;margin:0;overflow:hidden;background:#0d1017}body > .weave-slide{width:${designWidth}px;height:${designHeight}px}</style></head><body>${html}</body></html>`} /> : null;
+
   const saveProject = async () => {
     try {
+      const generation = editGenerationRef.current;
       const response = await fetch(`${apiBase}/save`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ deck: deckPayload(), message: saveMessage || deckTitle, expectedRevision: serverRevision, idempotencyKey: createMessageId() }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Save failed.");
-      applyServerState(result as ServerState);
-      setSaved(true);
+      const unchanged = generation === editGenerationRef.current;
+      applyServerState(result as ServerState, unchanged);
+      setSaved(unchanged);
       setSaveMessage("");
-      setAnnouncement("Deck saved to history");
+      setAnnouncement(unchanged ? "Deck saved to history" : "Saved version recorded; newer local edits remain unsaved");
       setApiError(null);
+      return unchanged;
     } catch (error) {
       setApiError(error instanceof Error ? error.message : String(error));
+      return false;
     }
   };
 
   const exportFragments = () => captureActive().map((slide) => slide.html);
 
-  const exportDeck = () => {
+  const exportDeck = async () => {
     if (!quality.ok) { popoverTriggerRef.current = null; setOpenPopover("quality"); setApiError("Resolve quality errors before exporting."); return; }
-    const html = renderDeckDocument(exportFragments(), deckCss, deckTitle);
-    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `${deckTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "weave-deck"}.html`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-    setAnnouncement("Offline presentation downloaded");
+    try {
+      let fragments = exportFragments();
+      const assetPaths = [...new Set(fragments.flatMap((fragment) => assetPathsInHtml(fragment)))];
+      const embeddedAssets = new Map(await Promise.all(assetPaths.map(async (path) => {
+        const response = await fetch(`${apiBase}/${path}`);
+        if (!response.ok) throw new Error(`Could not include ${path} in the offline export.`);
+        const blob = await response.blob();
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result));
+          reader.onerror = () => reject(reader.error);
+          reader.readAsDataURL(blob);
+        });
+        return [path, dataUrl] as const;
+      })));
+      fragments = fragments.map((fragment) => replaceAssetReferences(fragment, (path: string) => embeddedAssets.get(path) ?? path));
+      const html = renderDeckDocument(fragments, deckCss, deckTitle);
+      const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `${deckTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "weave-deck"}.html`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      setAnnouncement("Offline presentation downloaded");
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : String(error));
+    }
   };
 
   const downloadBundle = () => {
@@ -1565,11 +1916,11 @@ export default function Home() {
       checkpoint();
       setDeckTitle(String(bundle.deck.title));
       setSlidesSynced(bundle.deck.slides.map(slideFromHtml));
-      setDeckCss(bundle.css.includes("weave-tailwind-slide-v1") ? bundle.css : defaultDeckCss);
+      setDeckCss(defaultDeckCss);
       activeRef.current = 1;
       setActiveSlideSynced(1);
       setSelectedId(null);
-      setSaved(false);
+      markDirty();
       reinject();
       setAnnouncement("Portable deck imported; save to commit it");
     } catch (error) {
@@ -1700,10 +2051,10 @@ export default function Home() {
     const overflowing = overflowingIds(liveOverflowMeasurements());
     const boxes = viewportRef.current ? liveAnnotationBoxes() : null;
     const turnAnnotations = collectTurnAnnotations(value, boxes);
-    if (!canSendTurn(value, turnAnnotations) || turnInFlightRef.current) return;
+    if (!(canSendTurn(value, turnAnnotations) || referenceAttachments.length > 0) || turnInFlightRef.current) return;
     if (slide && boxes) setAnnotations((current) => refreshSlideAnnotations(current, slide.id, boxes));
     const requestDeck = deckPayload();
-    const requestEnvelope = contextEnvelope(turnAnnotations, overflowing);
+    const requestEnvelope = contextEnvelope(turnAnnotations, overflowing, referenceAttachments);
     turnInFlightRef.current = true;
     setTurnSubmitting(true);
     shouldAutoScrollRef.current = true;
@@ -1721,7 +2072,7 @@ export default function Home() {
       const steering = agentRunning;
       const runningTurnId = codexState.activeTurnId;
       const endpoint = steering ? "codex/turn/steer" : "codex/turn/start";
-      const response = await fetch(`${apiBase}/${endpoint}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId, prompt: value, clientUserMessageId: createMessageId(), selectedId, deck: requestDeck, model: selectedModel || undefined, effort: reasoningEffort, approvalPolicy, contextEnvelope: requestEnvelope }) });
+      const response = await fetch(`${apiBase}/${endpoint}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId, prompt: value, clientUserMessageId: createMessageId(), selectedId, deck: requestDeck, model: selectedModel || undefined, effort: reasoningEffort, approvalPolicy, contextEnvelope: requestEnvelope, attachments: referenceAttachments }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Agent turn failed.");
       if (turnAnnotations.length > 0 && slide) {
@@ -1740,6 +2091,7 @@ export default function Home() {
         setAnnouncement("Annotation attachment sent");
       }
       setPromptDraft("");
+      setReferenceAttachments([]);
       setIncludeRegionAnnotations(true);
     } catch (error) {
       setApiError(error instanceof Error ? error.message : String(error));
@@ -1874,7 +2226,7 @@ export default function Home() {
   /* Switching to Code mode captures the live DOM into `slides` first, so the code view can
      read the fresh HTML straight from state without touching a ref during render. */
   const codeView = mode === "code" ? slides[activeSlide - 1]?.html ?? "" : "";
-  const templatePreview = (template: TemplateDoc) => <span className="template-preview" aria-hidden="true" dangerouslySetInnerHTML={{ __html: template.html }} />;
+  const templatePreview = (template: TemplateDoc) => <span className="template-preview" aria-hidden="true" dangerouslySetInnerHTML={{ __html: displayAssetHtml(template.html) }} />;
   const currentTemplate = templates.find((template) => template.id === currentTemplateId);
 
   const slideNavigator = (
@@ -1902,7 +2254,7 @@ export default function Home() {
                 activeRef.current = index + 1;
                 setActiveSlideSynced(index + 1);
                 setDraggedSlide(null);
-                setSaved(false);
+                markDirty();
                 reinject();
               }}
             >
@@ -1930,7 +2282,7 @@ export default function Home() {
   );
 
   const presenterScale = typeof window === "undefined" ? 1 : Math.min((window.innerWidth - 80) / designWidth, (window.innerHeight - 120) / designHeight);
-  const containerLike = !!sel && (sel.container || sel.kind === "metrics");
+  const containerLike = !!sel && sel.container;
   const propertyRows = (schema: Control[]) => schema.map((ctl) => {
     const current = sel?.read[ctl.key] ?? "";
     return (
@@ -1982,8 +2334,6 @@ export default function Home() {
       <div className="activity-panel-body settings-sidebar">
         <section><h3>Appearance</h3><label><span>Color mode</span><select value={theme} onChange={(event) => setTheme(event.target.value as "dark" | "light")}><option value="dark">Dark</option><option value="light">Light</option></select></label><label><span>Slide navigator</span><select value={slideNav} onChange={(event) => slideNavStore.write(event.target.value as SlideNav)}><option value="filmstrip">Filmstrip</option><option value="rail">Rail</option></select></label></section>
         <section><h3>Agent</h3>
-          <label><span>Model</span><select value={selectedModel} onChange={(event) => { const modelId = event.target.value; setSelectedModel(modelId); const model = codexState.catalog.models.find((item: any) => (item.id ?? item.model) === modelId) as any; if (model?.defaultReasoningEffort) setReasoningEffort(model.defaultReasoningEffort); }}>{codexState.catalog.models.map((model: any) => <option key={model.id ?? model.model} value={model.id ?? model.model}>{model.displayName ?? model.name ?? model.id ?? model.model}</option>)}</select></label>
-          <label><span>Reasoning</span><select value={reasoningEffort} onChange={(event) => setReasoningEffort(event.target.value)}>{availableEfforts.map((effort: string) => <option key={effort}>{effort}</option>)}</select></label>
           <label><span>Approvals</span><select value={approvalPolicy} onChange={(event) => setApprovalPolicy(event.target.value)}><option value="never">Never</option><option value="on-request">Ask when needed</option><option value="untrusted">Untrusted commands</option></select></label>
           {codexState.catalog.modelProvider && <pre className="settings-output">{JSON.stringify(codexState.catalog.modelProvider, null, 2)}</pre>}
         </section>
@@ -2000,13 +2350,13 @@ export default function Home() {
     <main className={`weave-app ${theme}`} style={{ "--accent": accent } as React.CSSProperties}>
       <header className="topbar">
         <div className="traffic-lights" aria-hidden="true"><span /><span /><span /></div>
-        <button className="project-switcher" aria-label="Open project menu" aria-expanded={openPopover === "project"} aria-haspopup="menu" onClick={(event) => togglePopover("project", event.currentTarget)}>
+        <button ref={projectSwitcherRef} className="project-switcher" aria-label="プロジェクト一覧を開く" aria-expanded={galleryOpen} aria-haspopup="dialog" onClick={openGallery}>
           <span className="project-mark">W</span>
           <span><strong>{deckTitle}</strong><small>{project?.root.split("/").pop() ?? "Local project"}</small></span>
           <span className="chevron">⌄</span>
         </button>
         <div className="document-title">
-          <input className={!saved ? "unsaved-dot" : ""} aria-label="Deck title" value={deckTitle} onChange={(event) => { setDeckTitle(event.target.value); setSaved(false); }} />
+          <input className={!saved ? "unsaved-dot" : ""} aria-label="Deck title" value={deckTitle} onChange={(event) => { setDeckTitle(event.target.value); markDirty(); }} />
           <small>Slide {activeSlide} of {slides.length}</small>
         </div>
         <div className="top-actions">
@@ -2016,15 +2366,6 @@ export default function Home() {
         </div>
       </header>
 
-      {openPopover === "project" && (
-        <>
-          <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
-          <div className="topbar-popover project-menu" role="menu" aria-label="Project actions">
-            <header><strong>{deckTitle}</strong><small>{project?.branch ?? "Local project"} · {project?.commit ?? "unsaved"}</small></header>
-            <button role="menuitem" onClick={() => { dismissPopover(false); importRef.current?.click(); }}><span>Import project</span><small>Open a .weave.json bundle</small></button>
-          </div>
-        </>
-      )}
       {openPopover === "delivery" && (
         <>
           <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
@@ -2123,7 +2464,58 @@ export default function Home() {
               ))}
               <div ref={messagesEndRef} className="messages-end" />
             </div>
-            <div className="chat-box">
+            <div className="chat-box"
+              onDragOver={(event) => event.preventDefault()}
+              onDrop={(event) => { event.preventDefault(); void uploadReferences(event.dataTransfer.files); }}
+              onPaste={(event) => { const files = event.clipboardData.files; if (files.length > 0) { event.preventDefault(); void uploadReferences(files); } }}
+            >
+              {openPopover === "references" && <>
+                <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
+                <aside className="reference-popover" aria-label="Reference shelf">
+                  <header><strong>{referenceView === "browse" ? "Add folder" : "Reference shelf"}</strong><button type="button" onClick={() => dismissPopover()}>×</button></header>
+                  {referenceView === "browse" && folderBrowser ? <>
+                    <div className="reference-breadcrumbs">{folderBrowser.breadcrumbs.map((crumb, index) => <span key={crumb.path}>{index > 0 && " / "}<button type="button" onClick={() => void browseFolders(crumb.path)}>{crumb.name}</button></span>)}</div>
+                    <div className="reference-folder-list">{folderBrowser.parent && <button type="button" onClick={() => void browseFolders(folderBrowser.parent ?? undefined)}>↑ Parent folder</button>}{folderBrowser.folders.map((folder) => <button type="button" key={folder.path} onClick={() => void browseFolders(folder.path)}>📁 {folder.name}</button>)}</div>
+                    <footer className="reference-browser-footer"><span>{folderBrowser.folderCount.toLocaleString()} folders · {folderBrowser.fileCount.toLocaleString()} files here</span><button type="button" onClick={() => void importFolder()} disabled={folderImporting}>{folderImporting ? "Importing…" : "Import folder"}</button></footer>
+                  </> : <>
+                  <section className="reference-shelf-section" aria-labelledby="reference-folders-heading">
+                    <h4 id="reference-folders-heading">FOLDERS</h4>
+                    <div className="reference-shelf-list">
+                    {referenceShelf.filter((reference) => reference.kind === "folder").map((reference) => {
+                      const attached = referenceAttachments.some((attachment) => attachment.path === reference.path);
+                      return <div className={`reference-shelf-item${reference.missing ? " missing" : ""}`} key={reference.path}>
+                        <label title={`${reference.path}\nSource: ${reference.source ?? "Unknown"}`}>
+                          <input type="checkbox" checked={attached} disabled={reference.missing} onChange={() => setReferenceAttachments((current) => attached ? current.filter((item) => item.path !== reference.path) : [...current, reference])} />
+                          <span className="reference-shelf-name">{reference.name}</span>
+                          <small>{reference.missing ? "Missing" : `${reference.files ?? 0} files · ${formatBytes(reference.size)}`}</small>
+                        </label>
+                        <button type="button" aria-label={`Update ${reference.name}`} disabled={reference.sourceMissing} onClick={() => void syncFolder(reference.path)}>↻</button>
+                        <button type="button" aria-label={`Remove ${reference.name} from shelf`} onClick={() => void removeShelfReference(reference.path)}>×</button>
+                      </div>;
+                    })}
+                    </div>
+                    <button className="reference-add" type="button" onClick={() => void browseFolders()}>+ Add folder</button>
+                  </section>
+                  <section className="reference-shelf-section" aria-labelledby="reference-files-heading">
+                    <h4 id="reference-files-heading">FILES</h4>
+                    <div className="reference-shelf-list">
+                    {referenceShelf.filter((reference) => reference.kind === "file").map((reference) => {
+                      const attached = referenceAttachments.some((attachment) => attachment.path === reference.path);
+                      return <div className={`reference-shelf-item${reference.missing ? " missing" : ""}`} key={reference.path}>
+                        <label title={reference.path}>
+                          <input type="checkbox" checked={attached} disabled={reference.missing} onChange={() => setReferenceAttachments((current) => attached ? current.filter((item) => item.path !== reference.path) : [...current, reference])} />
+                          <span className="reference-shelf-name">{reference.name}</span>
+                          <small>{reference.missing ? "Missing" : formatBytes(reference.size)}</small>
+                        </label>
+                        <button type="button" aria-label={`Remove ${reference.name} from shelf`} onClick={() => void removeShelfReference(reference.path)}>×</button>
+                      </div>;
+                    })}
+                    </div>
+                    <button className="reference-add" type="button" onClick={() => referenceInputRef.current?.click()}>+ Add files</button>
+                  </section>
+                  </>}
+                </aside>
+              </>}
               <div className="context-chip" role="group" aria-label="Editor context">
                 <span className="context-summary" role="status"><span className="context-icon" aria-hidden="true">◎</span> Slide {activeSlide} in context · {agentActivity}</span>
                 {activeElementAnnotations.length > 0 && <span className="context-annotation-count">{activeElementAnnotations.length} element{activeElementAnnotations.length === 1 ? "" : "s"}</span>}
@@ -2137,11 +2529,35 @@ export default function Home() {
                 >{activeRegionAnnotations.length} region{activeRegionAnnotations.length === 1 ? "" : "s"} · {regionsWillSend ? "Send" : "Held"}</button>}
                 {activeAnnotations.length > 0 && <AnnotationLegend annotations={activeAnnotations} />}
               </div>
+              {referenceAttachments.length > 0 && <div className="reference-attachments" role="list" aria-label="Attached files">
+                {referenceAttachments.map((attachment) => <div className="context-chip reference-attachment" role="listitem" key={attachment.path}>
+                  <span className="context-icon" aria-hidden="true">📎</span>
+                  <span className="reference-attachment-name" title={attachment.name}>{attachment.name}</span>
+                  <span>{formatBytes(attachment.size)}</span>
+                  <button type="button" aria-label={`Remove ${attachment.name}`} onClick={() => setReferenceAttachments((current) => current.filter((item) => item.path !== attachment.path))}>×</button>
+                </div>)}
+              </div>}
               <textarea ref={promptRef} value={promptDraft} onChange={onPromptChange} onCompositionStart={() => { compositionRef.current = true; }} onCompositionEnd={onPromptCompositionEnd} onKeyDown={onPromptKeyDown} placeholder={agentReady ? "Ask Agent to edit this slide…" : "Waiting for local Codex…"} aria-label="Message Agent" maxLength={20000} disabled={!agentReady} />
               <div className="chat-actions">
                 <span>⌘ / Ctrl ↵</span>
+                {codexState.catalog.models.length > 0 && selectedModelInfo && (
+                  <div className="agent-model-control">
+                    <button className="agent-model-button" type="button" onClick={(event) => togglePopover("agentModel", event.currentTarget)} disabled={agentRunning} aria-expanded={openPopover === "agentModel"} aria-haspopup="menu" title="Choose model and reasoning"><span>{selectedModelInfo.displayName ?? selectedModelInfo.name ?? selectedModelInfo.id ?? selectedModelInfo.model} · {reasoningEffort}</span><b aria-hidden="true">⌄</b></button>
+                    {openPopover === "agentModel" && (
+                      <>
+                        <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
+                        <div className="agent-model-popover" role="menu" aria-label="Agent model and reasoning">
+                          <section role="group" aria-label="Model"><strong>Model</strong>{codexState.catalog.models.map((model: any) => { const modelId = model.id ?? model.model; return <button key={modelId} role="menuitemradio" aria-checked={selectedModel === modelId} className={selectedModel === modelId ? "active" : ""} onClick={() => { const nextEffort = model.supportedReasoningEfforts?.map((option: any) => option.reasoningEffort).includes(reasoningEffort) ? reasoningEffort : model.defaultReasoningEffort ?? model.supportedReasoningEfforts?.[0]?.reasoningEffort ?? reasoningEffort; agentModelStore.write({ model: modelId, effort: nextEffort }); dismissPopover(false); }}><span>{model.displayName ?? model.name ?? model.id ?? model.model}</span>{selectedModel === modelId && <b aria-hidden="true">✓</b>}</button>; })}</section>
+                          <section role="group" aria-label="Reasoning"><strong>Reasoning</strong>{availableEfforts.map((effort: string) => <button key={effort} role="menuitemradio" aria-checked={reasoningEffort === effort} className={reasoningEffort === effort ? "active" : ""} onClick={() => { agentModelStore.write({ model: selectedModel, effort }); dismissPopover(false); }}><span>{effort}</span>{reasoningEffort === effort && <b aria-hidden="true">✓</b>}</button>)}</section>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+                <input ref={referenceInputRef} className="sr-only" type="file" multiple onChange={(event) => { if (event.target.files) void uploadReferences(event.target.files); }} />
+                <button className={`attach-button${openPopover === "references" ? " active" : ""}`} type="button" onClick={(event) => togglePopover("references", event.currentTarget)} disabled={!agentReady} aria-expanded={openPopover === "references"} aria-haspopup="dialog" aria-label="Reference shelf" title="Reference shelf">📎</button>
                 {agentRunning && <button className="stop-button" onClick={() => void interruptAgent()} aria-label="Stop Agent" title="Stop Agent">■</button>}
-                <button className="send-button" onClick={() => void sendMessage()} disabled={!agentReady || !canSendTurn(promptDraft, sendableAnnotations) || turnSubmitting} aria-label="Send message">↑</button>
+                <button className="send-button" onClick={() => void sendMessage()} disabled={!agentReady || !(canSendTurn(promptDraft, sendableAnnotations) || referenceAttachments.length > 0) || turnSubmitting} aria-label="Send message">↑</button>
               </div>
             </div>
           </section> : activityView === "history" ? historySidebar : activityView === "shortcuts" ? shortcutsSidebar : settingsSidebar}
@@ -2201,7 +2617,7 @@ export default function Home() {
                 </div>
                 <div
                   className="slide-viewport"
-                  data-zoom-mode={manualZoom == null ? "fit" : "manual"}
+                  data-zoom-mode={zoomLevel <= defaultCanvasZoom ? "fit" : "manual"}
                   data-annotation-mode={annotationMode ? "true" : undefined}
                   data-pointer-picking={pointerPicking ? "true" : undefined}
                   ref={(node) => { viewportRef.current = node; canvasRef.current = node; }}
@@ -2260,10 +2676,10 @@ export default function Home() {
                     <button onClick={deleteSlide} disabled={slides.length <= 1}>Delete</button>
                   </div>
                   <div className="canvas-tool-group zoom-tools" role="group" aria-label="Canvas zoom">
-                    <button aria-label="Zoom out" onClick={() => setManualZoom(Math.max(.25, (manualZoom ?? fitScale) - .1))}>−</button>
-                    <b>{Math.round(slideScale * 100)}%</b>
-                    <button aria-label="Zoom in" onClick={() => setManualZoom(Math.min(4, (manualZoom ?? fitScale) + .1))}>＋</button>
-                    <button aria-label="Actual size" onClick={() => setManualZoom(1)}>100</button>
+                    <button aria-label="Zoom out" onClick={() => setManualZoom(Math.max(.25, zoomLevel - .1))}>−</button>
+                    <b>{Math.round(zoomLevel * 100)}%</b>
+                    <button aria-label="Zoom in" onClick={() => setManualZoom(Math.min(4, zoomLevel + .1))}>＋</button>
+                    <button aria-label="Reset zoom to 100%" onClick={() => setManualZoom(defaultCanvasZoom)}>100</button>
                     <button aria-label="Fit to screen" onClick={() => setManualZoom(null)}>⊡</button>
                     <button
                       className={canvasFocused ? "active" : ""}
@@ -2450,6 +2866,73 @@ export default function Home() {
         </aside> : <button className="open-inspector" onClick={() => setInspectorOpen(true)}>Inspector</button>}
       </div>
 
+      {galleryOpen && (
+        <div ref={galleryRef} className="gallery" role="dialog" aria-modal="true" aria-labelledby="gallery-title" tabIndex={-1} onPointerDown={() => setGalleryMenu(null)}>
+          <header className="gallery-head">
+            {galleryView === "new" ? <button className="back-link" onClick={() => setGalleryView("list")}>← プロジェクト</button> : <h3 id="gallery-title">プロジェクト <span className="count">{galleryLoading ? "読み込み中…" : `${galleryProjects.length}件`}</span></h3>}
+            {galleryView === "new" && <h3 id="gallery-title">新規プロジェクト</h3>}
+            {galleryView === "list" && <button className="ghost-button" onClick={() => importRef.current?.click()}>バンドルを読み込む</button>}
+            {apiError && <span className="gallery-error">{apiError}</span>}
+            <button className="close-x" aria-label="ギャラリーを閉じる" onClick={closeGallery}>×</button>
+          </header>
+          {galleryView === "new" ? (
+            <div className="new-flow">
+              <div className="template-row">
+                {(["orbit", "grid", "plain"] as const).map((id) => {
+                  const template = templates.find((item) => item.id === id) ?? { id, name: id[0].toUpperCase() + id.slice(1), html: blankSlideHtml(id) };
+                  return <div className={`project-card ${newProjectTemplate === id ? "selected" : ""}`} key={id}>
+                    <button className="project-thumb" onClick={() => setNewProjectTemplate(id)} aria-label={`${template.name}テンプレートを選択`}>{thumbHtml(displayAssetHtml(template.html), deckCss, template.name)}</button>
+                    <div className="card-meta"><strong>{template.name}</strong><small>テンプレート</small></div>
+                  </div>;
+                })}
+              </div>
+              <div className="name-row">
+                <label htmlFor="new-project-title">名前</label>
+                <input id="new-project-title" className="name-field" value={newProjectTitle} onChange={(event) => setNewProjectTitle(event.target.value)} autoFocus />
+                <code>workspaces/{projectSlug(newProjectTitle)}</code>
+                <button className="ghost-button" onClick={() => setGalleryView("list")}>キャンセル</button>
+                <button className="primary-button" disabled={!newProjectTitle.trim() || newProjectCreating} onClick={() => void createProject()}>{newProjectCreating ? "作成中…" : "作成して開く"}</button>
+              </div>
+            </div>
+          ) : (
+            <div className="gallery-body" onPointerDown={(event) => { if (event.target === event.currentTarget) setGalleryMenu(null); }}>
+              {galleryLoading ? <p className="gallery-empty">読み込み中…</p> : <>
+                {galleryProjects.length === 0 && <div className="gallery-empty"><strong>プロジェクトがありません</strong><span>新規プロジェクトを作成して始めましょう。</span></div>}
+                <div className="gallery-grid">
+                  <button className="new-project-card" onClick={() => { setGalleryView("new"); setGalleryMenu(null); setGalleryTip(null); }}><b>＋</b><span>新規プロジェクト</span></button>
+                  {galleryProjects.map((item) => <div key={item.slug} className="project-card-wrap">
+                    <button className={`project-card ${item.current ? "current" : ""} ${item.blocked ? "blocked" : ""}`} onClick={() => void switchProject(item)} disabled={!!gallerySwitching} aria-label={`${item.title}を開く`}>
+                      <span className="project-thumb">
+                        {gallerySwitching === item.slug ? <span className="thumb-loading">読み込み中…</span> : thumbHtml(item.thumbnailHtml, item.css, item.title)}
+                        {item.current && <span className="card-pill">開いています</span>}
+                        {item.blocked && <span className="card-pill warn">提案が未決着</span>}
+                      </span>
+                      <span className="card-meta"><strong>{item.title}</strong><small>{item.current && !saved ? "未保存の変更あり" : `${item.slideCount}枚 · ${relativeProjectTime(item.updatedAt)}`}</small></span>
+                    </button>
+                    <button className="kebab" aria-label={`${item.title}のメニュー`} aria-haspopup="menu" aria-expanded={galleryMenu === item.slug} onPointerDown={(event) => event.stopPropagation()} onClick={() => { setGalleryTip(null); setGalleryMenu((current) => current === item.slug ? null : item.slug); }}>⋯</button>
+                    {galleryMenu === item.slug && <div className="card-menu" role="menu" onPointerDown={(event) => event.stopPropagation()}>
+                      <button role="menuitem" onClick={() => { setRenameDraft(item.title); setGalleryDialog({ kind: "rename", slug: item.slug, title: item.title }); setGalleryMenu(null); }}><span>名前を変更</span><small>表示名だけを変更します</small></button>
+                      <button role="menuitem" onClick={() => void galleryMutation(item.slug, "duplicate")}><span>複製</span><small>新しいプロジェクトとして保存</small></button>
+                      {!item.current && <button className="danger" role="menuitem" onClick={() => { setGalleryDialog({ kind: "archive", slug: item.slug, title: item.title }); setGalleryMenu(null); }}><span>アーカイブ</span><small>一覧から移動します</small></button>}
+                    </div>}
+                    {galleryTip === item.slug && <div className="card-tip"><strong>いまは開けません</strong><p>生成した提案が{item.blockedCount}件残っています。採用・history送り・破棄のいずれかで閉じてから切り替えてください。</p></div>}
+                  </div>)}
+                </div>
+              </>}
+            </div>
+          )}
+          {galleryDialog && <><div className="scrim" onClick={() => setGalleryDialog(null)} />
+            <div className="dialog" role="alertdialog" aria-modal="true">
+              {galleryDialog.kind === "rename" && <><div className="dialog-body"><strong>名前を変更</strong><input className="name-field" autoFocus value={renameDraft} onChange={(event) => setRenameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void galleryMutation(galleryDialog.slug, "rename", renameDraft); }} /></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>キャンセル</button><button className="primary-button" onClick={() => void galleryMutation(galleryDialog.slug, "rename", renameDraft)}>保存</button></div></>}
+              {galleryDialog.kind === "archive" && <><div className="dialog-body"><strong>「{galleryDialog.title}」をアーカイブしますか？</strong><p>プロジェクトは削除せず、一覧から移動します。</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>キャンセル</button><button className="primary-button" onClick={() => void galleryMutation(galleryDialog.slug, "archive")}>アーカイブ</button></div></>}
+              {galleryDialog.kind === "dirty" && <><div className="dialog-body"><strong>保存してから切り替えます</strong><p>「{deckTitle}」には未保存の変更があります。進行中の編集とUndo履歴はプロジェクトをまたいで引き継がれません。</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>キャンセル</button><button className="primary-button" onClick={async () => { const target = galleryProjects.find((item) => item.slug === galleryDialog.slug); setGalleryDialog(null); if (await saveProject() && target) void switchProject(target, false, true); }}>保存して「{galleryDialog.title}」を開く</button></div></>}
+              {galleryDialog.kind === "create" && <><div className="dialog-body"><strong>保存してから作成します</strong><p>「{deckTitle}」には未保存の変更があります。保存後に新しいプロジェクトを作成して開きます。</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>キャンセル</button><button className="primary-button" onClick={async () => { setGalleryDialog(null); if (await saveProject()) void createProject(true); }}>保存して作成</button></div></>}
+              {galleryDialog.kind === "turn" && <><div className="dialog-body"><strong>生成を中断して切り替えますか？</strong><p>現在のCodexの生成を中断すると、完了していない変更は保存されません。</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>キャンセル</button><button className="primary-button" onClick={() => { const target = galleryProjects.find((item) => item.slug === galleryDialog.slug); setGalleryDialog(null); if (target) void switchProject(target, true); }}>中断して切り替え</button></div></>}
+            </div>
+          </>}
+        </div>
+      )}
+
       <footer className="statusbar">
         <div>
           <button className={`quality-button ${quality.ok ? "ok" : "error"}`} onClick={(event) => togglePopover("quality", event.currentTarget)} aria-expanded={openPopover === "quality"}>Quality {quality.ok ? (quality.warnings ? `${quality.warnings} warnings` : "✓") : `${quality.errors} errors`}</button>
@@ -2478,7 +2961,7 @@ export default function Home() {
           if (event.key === "Escape") setShowPresenter(false);
         }}>
           <style>{deckCss}</style>
-          <div className="presenter-stage" style={{ "--slide-scale": presenterScale } as React.CSSProperties} dangerouslySetInnerHTML={{ __html: slides[presentSlide - 1]?.html ?? "" }} />
+          <div className="presenter-stage" style={{ "--slide-scale": presenterScale } as React.CSSProperties} dangerouslySetInnerHTML={{ __html: displayAssetHtml(slides[presentSlide - 1]?.html ?? "") }} />
           <footer>
             <button onClick={() => setPresentSlide((value) => Math.max(1, value - 1))}>← Previous</button>
             <span>{presentSlide} / {slides.length}</span>

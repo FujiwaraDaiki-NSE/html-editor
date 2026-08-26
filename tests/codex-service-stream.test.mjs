@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import test from "node:test";
 import { CodexEventStream } from "../server/codex/event-stream.mjs";
-import { CodexService, validateOAuthUrl } from "../server/codex/service.mjs";
+import { CodexService, turnInput, validateOAuthUrl } from "../server/codex/service.mjs";
 
 class FakeClient extends EventEmitter {
   calls = [];
@@ -79,6 +79,37 @@ test("event stream replays missed events and then forwards live events", () => {
   assert.deepEqual(events.map((event) => event.sequence), [1, 2]);
 });
 
+test("event stream reports when requested history has expired", () => {
+  const stream = new CodexEventStream({ limit: 2 });
+  stream.publish("one", {});
+  stream.publish("two", {});
+  stream.publish("three", {});
+  const response = new EventEmitter();
+  Object.assign(response, { destroyed: false, writableEnded: false, output: "" });
+  response.write = (chunk) => { response.output += chunk; return true; };
+  stream.attach(response, 0);
+  response.emit("close");
+  const events = response.output.trim().split("\n").map(JSON.parse);
+  assert.deepEqual(events.map((event) => event.type), ["codex/gap", "two", "three"]);
+  assert.deepEqual(events[0].payload, { requested: 0, oldest: 2, latest: 3 });
+});
+
+test("disconnect finalizes active turns so a retry is not blocked", () => {
+  const client = new FakeClient();
+  const service = new CodexService({ projectRoot: "/workspace", instructions: "test", client });
+  service.activeTurns.set("new", "turn-active");
+  service.interruptingThreads.add("new");
+  const completed = [];
+  service.on("notification", (message) => {
+    if (message.method === "turn/completed") completed.push(message);
+  });
+  client.emit("connection", { status: "disconnected", error: "socket closed" });
+  assert.equal(service.activeTurns.size, 0);
+  assert.equal(service.interruptingThreads.size, 0);
+  assert.equal(completed[0].params.turn.status, "failed");
+  service.router.dispose();
+});
+
 test("deduplicates repeated Stop requests for the same active turn", async () => {
   const client = new FakeClient();
   const service = new CodexService({ projectRoot: "/workspace", instructions: "test", client });
@@ -96,4 +127,24 @@ test("accepts only HTTPS and loopback OAuth destinations", () => {
   assert.equal(validateOAuthUrl("http://127.0.0.1:4389/callback"), "http://127.0.0.1:4389/callback");
   assert.throws(() => validateOAuthUrl("javascript:alert(1)"), /unsafe OAuth URL/);
   assert.throws(() => validateOAuthUrl("http://example.com/login"), /unsafe OAuth URL/);
+});
+
+test("turn input keeps legacy text shape and adds only image attachments", () => {
+  assert.deepEqual(turnInput("hello"), [{ type: "text", text: "hello", text_elements: [] }]);
+  assert.deepEqual(turnInput("hello", [
+    { path: "references/photo.png", name: "photo.png", bytes: 4 },
+    { path: "references/file.pdf", name: "file.pdf", bytes: 4 },
+  ], "/workspace"), [
+    { type: "text", text: "hello", text_elements: [] },
+    { type: "localImage", path: "/workspace/references/photo.png" },
+  ]);
+  assert.deepEqual(turnInput("hello", [
+    { path: "../secret.png", mimeType: "image/png" },
+    { path: "/Users/secret.png", mimeType: "image/png" },
+    { path: "assets/secret.png", mimeType: "image/png" },
+  ], "/workspace"), [{ type: "text", text: "hello", text_elements: [] }]);
+});
+
+test("turn input does not turn folder attachments into local images", () => {
+  assert.deepEqual(turnInput("read this folder", [{ path: "references/docs", name: "docs", kind: "folder", files: 4, bytes: 20 }], "/workspace"), [{ type: "text", text: "read this folder", text_elements: [] }]);
 });

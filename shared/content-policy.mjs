@@ -18,9 +18,16 @@ const collect = (text, expression, build) => {
   return diagnostics;
 };
 
+const decodeCodePoint = (digits, radix) => {
+  const value = Number.parseInt(digits, radix);
+  return Number.isInteger(value) && value >= 0 && value <= 0x10ffff
+    ? String.fromCodePoint(value)
+    : "\ufffd";
+};
+
 const decodeAttributeValue = (value) => value
-  .replace(/&#(\d+);?/g, (_, digits) => String.fromCodePoint(Number(digits)))
-  .replace(/&#x([\da-f]+);?/gi, (_, digits) => String.fromCodePoint(Number.parseInt(digits, 16)))
+  .replace(/&#(\d+);?/g, (_, digits) => decodeCodePoint(digits, 10))
+  .replace(/&#x([\da-f]+);?/gi, (_, digits) => decodeCodePoint(digits, 16))
   .replace(/&colon;?/gi, ":")
   .replace(/[\u0000-\u0020\u007f]+/g, "")
   .toLowerCase();
@@ -29,15 +36,16 @@ const isExternalUrl = (value) => /^(?:https?:)?\/\//i.test(value.trim());
 
 export function auditCssSafety(input) {
   const css = typeof input === "string" ? input : "";
+  const normalizedCss = css.replace(/\/\*[\s\S]*?\*\//g, "");
   const diagnostics = [
-    ...collect(css, /@import\b/gi, (match) => finding(
+    ...collect(normalizedCss, /@import\b/gi, (match) => finding(
       "css.import",
       "CSS @import is not allowed; keep slide styles self-contained.",
       "css",
       match.index,
       match[0].length,
     )),
-    ...collect(css, /javascript\s*:/gi, (match) => finding(
+    ...collect(normalizedCss, /javascript\s*:/gi, (match) => finding(
       "css.javascript-url",
       "javascript: URLs are not allowed in CSS.",
       "css",
@@ -46,7 +54,7 @@ export function auditCssSafety(input) {
     )),
   ];
 
-  for (const match of css.matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)'"\s][^)]*?))\s*\)/gi)) {
+  for (const match of normalizedCss.matchAll(/url\(\s*(?:"([^"]*)"|'([^']*)'|([^)'"\s][^)]*?))\s*\)/gi)) {
     const value = match[1] ?? match[2] ?? match[3] ?? "";
     if (isExternalUrl(value)) {
       diagnostics.push(finding(
@@ -71,6 +79,13 @@ export function auditHtmlSafety(input) {
       match.index,
       match[0].length,
     )),
+    ...collect(html, /<\s*(?:iframe|object|embed|style|link|base|meta)\b/gi, (match) => finding(
+      "html.unsafe-element",
+      "Embedded documents, styles, and document metadata are not allowed in slide HTML.",
+      "html",
+      match.index,
+      match[0].length,
+    )),
   ];
 
   const attributePattern = /\b(?:href|src|action|formaction|poster|xlink:href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/gi;
@@ -78,6 +93,15 @@ export function auditHtmlSafety(input) {
      "document onload= complete" is not mistaken for an event handler. */
   for (const tag of html.matchAll(/<[^>]*>/g)) {
     const tagText = tag[0];
+    for (const match of tagText.matchAll(/\s(srcdoc|style)\s*=/gi)) {
+      diagnostics.push(finding(
+        "html.unsafe-attribute",
+        `The ${match[1]} attribute is not allowed in slide HTML.`,
+        "html",
+        tag.index + match.index,
+        match[0].length,
+      ));
+    }
     for (const match of tagText.matchAll(/\s(on[a-z][\w:-]*)\s*=/gi)) {
       diagnostics.push(finding(
         "html.event-handler",
