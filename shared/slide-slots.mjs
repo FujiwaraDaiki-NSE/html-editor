@@ -110,6 +110,19 @@ const withoutFrameFurniture = (html) => {
       : `${content.slice(0, opening.index)}${content.slice(opening.end)}`;
   }
 };
+const withoutCanonicalMasterFurniture = (html) => {
+  let content = html;
+  for (const className of ["brand", "page-number"]) {
+    const opening = openingTagWithClass(content, className);
+    if (!opening) continue;
+    const element = elementInner(content, opening);
+    if (!element) continue;
+    const text = element.inner.replace(/<[^>]*>/g, "").replace(/\s+/g, "").trim();
+    if (className === "brand" && text !== "WEAVE●") continue;
+    content = `${content.slice(0, opening.index)}${content.slice(element.closing.end)}`;
+  }
+  return content;
+};
 
 const accentClasses = ["text-amber-400", "text-teal-400", "text-violet-400", "text-rose-400", "text-emerald-400"];
 const accentClass = new Map([
@@ -265,6 +278,11 @@ export function composeSlideHtml({ slideHtml, masterHtml, layoutHtml, templateId
   movedContent = removeNestedElement(movedContent, sourceContent.opening, sourceContent, sourceTitle.opening, sourceTitle);
 
   let frame = master;
+  if (/\bdata-weave-replace-master-brand\b/i.test(layout)) {
+    const brand = openingTagWithClass(frame, "brand");
+    const brandClosing = brand && closingTagEnd(frame, brand);
+    if (brand && brandClosing) frame = `${frame.slice(0, brand.index)}${frame.slice(brandClosing.end)}`;
+  }
   const layoutSlot = openingTagWithAttributeName(frame, "data-weave-layout-slot");
   if (!layoutSlot) throw new Error("masterHtml is missing data-weave-layout-slot.");
   const layoutSlotElement = elementInner(frame, layoutSlot);
@@ -336,7 +354,17 @@ export function extractLayoutSnapshotHtml(renderedHtml, { removeMasterFurniture 
   const nextRoot = firstMain(withoutContent);
   const nextRootElement = nextRoot && elementInner(withoutContent, nextRoot);
   if (!nextRoot || !nextRootElement) throw new Error("Layout snapshot has no complete <main> root.");
-  return removeMasterFurniture ? withoutFrameFurniture(nextRootElement.inner) : nextRootElement.inner;
+  const inner = removeMasterFurniture ? withoutCanonicalMasterFurniture(nextRootElement.inner) : nextRootElement.inner;
+  let wrapperOpening = nextRoot.opening.replace(/^<main\b/i, "<div");
+  // Remove the longer metadata name first: removing `data-weave-template`
+  // first would leave a stray `-name="…"` suffix behind.
+  wrapperOpening = removeAttribute(removeAttribute(removeAttribute(wrapperOpening, "data-weave-template-name"), "data-weave-template"), "data-weave-slide");
+  wrapperOpening = wrapperOpening.replace(/\bclass\s*=\s*(["'])(.*?)\1/i, (_attribute, quote, value) => `class=${quote}${value.split(/\s+/).filter((name) => name && name !== "weave-slide").join(" ")}${quote}`);
+  const legacyBrand = openingTagWithClass(rendered, "brand");
+  const legacyBrandElement = legacyBrand && elementInner(rendered, legacyBrand);
+  const legacyBrandText = legacyBrandElement?.inner.replace(/<[^>]*>/g, "").replace(/\s+/g, "").trim();
+  if (legacyBrandText && legacyBrandText !== "WEAVE●") wrapperOpening = withAttribute(wrapperOpening, "data-weave-replace-master-brand", "");
+  return `${wrapperOpening}${inner}</div>`;
 }
 
 /** True when a legacy slide owns frame furniture beyond Master-owned brand/page nodes. */
@@ -350,7 +378,10 @@ export function hasLegacyFurnitureOutsideContent(renderedHtml) {
   const masterFurnitureRanges = ["brand", "page-number"].map((className) => {
     const opening = openingTagWithClass(rendered, className);
     const closing = opening && closingTagEnd(rendered, opening);
-    return opening && closing ? { start: opening.index, end: closing.end } : null;
+    const element = opening && elementInner(rendered, opening);
+    const text = element?.inner.replace(/<[^>]*>/g, "").replace(/\s+/g, "").trim();
+    const canonical = className === "page-number" || text === "WEAVE●";
+    return opening && closing && canonical ? { start: opening.index, end: closing.end } : null;
   }).filter(Boolean);
   const tags = /<([a-z][\w:-]*)\b[^>]*>/gi;
   for (const match of rendered.matchAll(tags)) {

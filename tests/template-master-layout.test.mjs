@@ -140,3 +140,42 @@ test("a malformed manifest is reported instead of being replaced with seed conte
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("legacy canonical frames consolidate while text-distinct custom frames stay separate", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weave-template-compare-"));
+  const previousRoot = process.env.WEAVE_PROJECT_ROOT;
+  process.env.WEAVE_PROJECT_ROOT = root;
+  try {
+    await mkdir(join(root, ".weave"), { recursive: true });
+    await mkdir(join(root, "slides"), { recursive: true });
+    await mkdir(join(root, "templates"), { recursive: true });
+    const frame = (title, furniture = "") => `<main class="weave-slide theme-plain" data-weave-template="year-end-report-cover">${furniture}<section data-weave-slot="content"><h1 data-weave-slot="title" data-weave-id="title">${title}</h1></section></main>`;
+    await writeFile(join(root, "templates/year-end-report-cover.html"), frame(""));
+    const orbitFrame = (brand, rootClass = "") => `<main class="weave-slide theme-orbit ${rootClass}"><div class="brand">${brand}</div><section data-weave-slot="content"><h1 data-weave-slot="title">Orbit</h1></section><div class="page-number">01 / 01</div></main>`;
+    await writeFile(join(root, "templates/orbit.html"), orbitFrame("WEAVE<span>●</span>"));
+    await writeFile(join(root, ".weave/deck.json"), `${JSON.stringify({ title: "Legacy", slides: ["canonical", "tag-1", "tag-2", "brand"].map((id) => ({ id, title: id, notes: "" })) })}\n`);
+    await writeFile(join(root, "slides/canonical.html"), frame("Canonical"));
+    await writeFile(join(root, "slides/tag-1.html"), frame("One", '<aside data-weave-id="tag">TAG-1</aside>'));
+    await writeFile(join(root, "slides/tag-2.html"), frame("Two", '<aside data-weave-id="tag">TAG-2</aside>'));
+    await writeFile(join(root, "slides/brand.html"), orbitFrame("ACME-CUSTOM", "bg-slate-800"));
+    const project = await import(`../server/project.mjs?compare=${Date.now()}`);
+    await project.ensureProject();
+    const deck = await project.readProject();
+    assert.equal(deck.slides[0].layoutId, "cover");
+    assert.match(deck.slides[1].layoutId, /^migrated-/);
+    assert.match(deck.slides[2].layoutId, /^migrated-/);
+    assert.notEqual(deck.slides[1].layoutId, deck.slides[2].layoutId);
+    const report = (await project.readTemplates()).find((template) => template.id === "year-end-report");
+    assert.match(report.layouts.find((layout) => layout.id === deck.slides[1].layoutId).html, /TAG-1/);
+    assert.match(report.layouts.find((layout) => layout.id === deck.slides[2].layoutId).html, /TAG-2/);
+    const orbit = (await project.readTemplates()).find((template) => template.id === "orbit");
+    const branded = orbit.layouts.find((layout) => layout.id === deck.slides[3].layoutId);
+    assert.match(branded.html, /ACME-CUSTOM/);
+    assert.match(branded.html, /bg-slate-800/);
+    assert.match(branded.html, /data-weave-replace-master-brand/);
+  } finally {
+    if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
+    else process.env.WEAVE_PROJECT_ROOT = previousRoot;
+    await rm(root, { recursive: true, force: true });
+  }
+});

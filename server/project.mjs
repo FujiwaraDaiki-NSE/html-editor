@@ -595,6 +595,30 @@ export async function ensureTemplates(root = currentProjectRoot) {
   return touched;
 }
 
+async function writeTemplatePackages(input, root = currentProjectRoot) {
+  if (!Array.isArray(input) || !input.length || input.length > 50) throw new Error("Template packages are required.");
+  for (const item of input) {
+    const id = String(item?.id ?? "");
+    const name = String(item?.name ?? "");
+    const defaultLayoutId = String(item?.defaultLayoutId ?? "");
+    const masterHtml = String(item?.masterHtml ?? "");
+    const layouts = Array.isArray(item?.layouts) ? item.layouts : [];
+    if (!/^[a-z0-9_-]+$/.test(id) || !name || !defaultLayoutId || !masterHtml || !layouts.length) throw new Error("Invalid template package.");
+    if (!layouts.some((layout) => layout?.id === defaultLayoutId)) throw new Error(`Unknown default layout: ${id}/${defaultLayoutId}`);
+    const normalizedLayouts = layouts.map((layout) => ({ id: String(layout?.id ?? ""), name: String(layout?.name ?? ""), html: String(layout?.html ?? "") }));
+    if (normalizedLayouts.some((layout) => !/^[a-z0-9_-]+$/.test(layout.id) || !layout.name || !layout.html)) throw new Error(`Invalid layout package: ${id}`);
+    const policy = auditContentPolicy({ html: [masterHtml, ...normalizedLayouts.map((layout) => layout.html)].join("\n") });
+    if (!policy.ok) throw new Error(`Template package failed content policy: ${id}`);
+    const path = join(templatesRoot(root), id);
+    await mkdir(join(path, "layouts"), { recursive: true });
+    await Promise.all([
+      writeFile(join(path, "template.json"), `${JSON.stringify({ id, name, defaultLayoutId, layouts: normalizedLayouts.map(({ id: layoutId, name: layoutName }) => ({ id: layoutId, name: layoutName })) }, null, 2)}\n`),
+      writeFile(join(path, "master.html"), await formatSlideHtml(masterHtml)),
+      ...normalizedLayouts.map(async (layout) => writeFile(join(path, "layouts", `${layout.id}.html`), await formatSlideHtml(layout.html))),
+    ]);
+  }
+}
+
 const slugify = (value, fallback) =>
   String(value ?? "").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || fallback;
 
@@ -778,9 +802,19 @@ export async function writeProject(input, expectedRevision = null) {
   );
 }
 
-export async function saveProject(input, expectedRevision, message) {
+export async function saveProject(input, expectedRevision, message, templatePackages) {
   const root = currentProjectRoot;
   return await runProjectExclusive(async () => {
+    if (templatePackages !== null) {
+      assertRevision(expectedRevision, root);
+      const incoming = validateProject(input);
+      const catalog = new Map(templatePackages.map((template) => [String(template?.id ?? ""), template]));
+      for (const slide of incoming.slides) {
+        const template = catalog.get(slide.templateId);
+        if (!template || !template.layouts?.some((layout) => layout?.id === slide.layoutId)) throw new Error(`Imported template/layout is missing for slide ${slide.id}.`);
+      }
+      await writeTemplatePackages(templatePackages, root);
+    }
     const deck = await writeProjectUnlocked(input, expectedRevision, root);
     await assertCommittable(root);
     const commit = commitIfChanged(message ?? `Save: ${deck.title}`, root);
@@ -895,11 +929,12 @@ export function checkoutMain() {
   runGit(["checkout", "main"]);
 }
 
-export function checkoutVariation(branch) {
+export async function checkoutVariation(branch) {
   if (managedStatus()) throw new Error("Save current changes before switching directions.");
   const allowed = branch === "main" || getVariations().some((item) => item.branch === branch);
   if (!allowed) throw new Error("Unknown direction.");
   runGit(["checkout", branch]);
+  await ensureProject();
 }
 
 export function createVariationBranch() {
@@ -1026,9 +1061,20 @@ const legacyTemplateMapping = new Map([
 ]);
 
 const rootAttribute = (html, name) => html.match(new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>]+))`, "i"))?.slice(1).find((value) => value !== undefined) ?? "";
-const frameFingerprint = (html) => String(html)
-  .replace(/data-weave-slot\s*=\s*(?:"[^"]*"|'[^']*')/gi, "data-weave-slot")
-  .replace(/>[^<]*</g, "><")
+const layoutFingerprint = (html) => String(html)
+  .replace(/\sdata-weave-id\s*=\s*(?:"[^"]*"|'[^']*')/gi, "")
+  .replace(/<([a-z][\w:-]*)\b[^>]*>/gi, (opening, tagName) => opening.replace(/\bclass\s*=\s*(["'])(.*?)\1/i, (_attribute, quote, value) => {
+    let classes = [...new Set(value.split(/\s+/).filter(Boolean))];
+    // The legacy Tailwind migration materialized these defaults onto rendered
+    // slides. They are not authored Layout changes and must not split one
+    // canonical Layout into a per-slide migrated Layout.
+    if (classes.includes("theme-grid") || classes.includes("theme-plain")) classes = classes.filter((name) => name !== "bg-slate-950");
+    if (classes.includes("theme-plain")) classes = classes.filter((name) => name !== "text-slate-50");
+    if (tagName.toLowerCase() === "h1" && /\bdata-weave-slot\s*=\s*(?:"title"|'title')/i.test(opening)) {
+      classes = classes.filter((name) => name !== "text-slate-50");
+    }
+    return `class=${quote}${classes.sort().join(" ")}${quote}`;
+  }))
   .replace(/\s+/g, " ")
   .trim();
 const migrateLegacyLayoutClasses = (html) => String(html).replace(/\bclass\s*=\s*(["'])(.*?)\1/gi, (_attribute, quote, value) => {
@@ -1045,15 +1091,24 @@ async function migrateLegacySlide(slide, index, templates, accent) {
   const mapping = legacyTemplateMapping.get(legacyId);
   if (!mapping || !templates.has(mapping.templateId)) throw new Error(`Unknown legacy template: ${legacyId}`);
   const source = sourceFromRendered(html, { templateId: mapping.templateId, layoutId: mapping.layoutId, accent: slide.accent ?? accent });
-  const hasUnknownFurniture = hasLegacyFurnitureOutsideContent(html);
+  const removeMasterFurniture = mapping.templateId !== "year-end-report";
+  const layoutSnapshot = migrateLegacyLayoutClasses(extractLayoutSnapshotHtml(html, { removeMasterFurniture }));
+  const legacyTemplatePath = join(templatesRoot(), `${legacyId}.html`);
+  const legacyTemplateHtml = await readFile(legacyTemplatePath, "utf8").catch((error) => {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  });
+  const hasUnknownFurniture = legacyTemplateHtml == null
+    ? hasLegacyFurnitureOutsideContent(html)
+    : layoutFingerprint(layoutSnapshot) !== layoutFingerprint(migrateLegacyLayoutClasses(extractLayoutSnapshotHtml(legacyTemplateHtml, { removeMasterFurniture })));
   let layoutId = mapping.layoutId;
   if (hasUnknownFurniture) {
-    const hash = createHash("sha256").update(frameFingerprint(html)).digest("hex").slice(0, 12);
+    const hash = createHash("sha256").update(layoutFingerprint(layoutSnapshot)).digest("hex").slice(0, 12);
     layoutId = `migrated-${hash}`;
     const templateRoot = join(templatesRoot(), mapping.templateId);
     const layoutPath = join(templateRoot, "layouts", `${layoutId}.html`);
     await mkdir(join(templateRoot, "layouts"), { recursive: true });
-    if (!existsSync(layoutPath)) await writeFile(layoutPath, await formatSlideHtml(migrateLegacyLayoutClasses(extractLayoutSnapshotHtml(html, { removeMasterFurniture: mapping.templateId !== "year-end-report" }))));
+    if (!existsSync(layoutPath)) await writeFile(layoutPath, await formatSlideHtml(layoutSnapshot));
     const manifestPath = join(templateRoot, "template.json");
     const packageManifest = JSON.parse(await readFile(manifestPath, "utf8"));
     const layouts = Array.isArray(packageManifest.layouts) ? packageManifest.layouts : [];

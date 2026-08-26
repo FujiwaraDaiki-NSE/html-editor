@@ -361,8 +361,8 @@ test("concurrent saves with one revision cannot overwrite each other", async () 
     const initial = await project.readProject();
     const revision = project.getRevision();
     const results = await Promise.allSettled([
-      project.saveProject({ ...initial, title: "First save" }, revision, "First save"),
-      project.saveProject({ ...initial, title: "Second save" }, revision, "Second save"),
+      project.saveProject({ ...initial, title: "First save" }, revision, "First save", null),
+      project.saveProject({ ...initial, title: "Second save" }, revision, "Second save", null),
     ]);
     assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
     const rejected = results.find((result) => result.status === "rejected");
@@ -410,10 +410,37 @@ test("restoring a pre-v2 history commit migrates it before the project is read",
     const legacyRevision = git(root, ["rev-parse", "HEAD"]);
     const project = await import(`../server/project.mjs?history-v1=${Date.now()}`);
     await project.ensureProject();
+    git(root, ["branch", "weave/variation/a", legacyRevision]);
+    await project.checkoutVariation("weave/variation/a");
+    assert.equal((await project.readProject()).title, "Legacy");
+    project.checkoutMain();
     await project.checkoutHistory(legacyRevision);
     const restored = await project.readProject();
     assert.equal(restored.title, "Legacy");
     assert.equal(JSON.parse(await readFile(join(root, ".weave/deck.json"), "utf8")).schemaVersion, 2);
+  } finally {
+    if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
+    else process.env.WEAVE_PROJECT_ROOT = previousRoot;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("saving an imported bundle installs its template packages before validating slide references", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weave-template-import-"));
+  const previousRoot = process.env.WEAVE_PROJECT_ROOT;
+  process.env.WEAVE_PROJECT_ROOT = root;
+  try {
+    const project = await import(`../server/project.mjs?template-import=${Date.now()}`);
+    await project.ensureProject();
+    const deck = await project.readProject();
+    const templates = await project.readTemplates();
+    const orbit = templates.find((template) => template.id === "orbit");
+    const importedLayout = { ...orbit.layouts[0], id: "portable", name: "Portable" };
+    const packages = templates.map((template) => template.id === "orbit" ? { ...template, layouts: [...template.layouts, importedLayout] } : template);
+    const importedDeck = { ...deck, slides: deck.slides.map((slide, index) => index === 0 ? { ...slide, layoutId: "portable" } : slide) };
+    await project.saveProject(importedDeck, project.getRevision(), "Import portable templates", packages);
+    assert.equal((await project.readProject()).slides[0].layoutId, "portable");
+    assert.ok((await project.readTemplates()).find((template) => template.id === "orbit").layouts.some((layout) => layout.id === "portable"));
   } finally {
     if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
     else process.env.WEAVE_PROJECT_ROOT = previousRoot;

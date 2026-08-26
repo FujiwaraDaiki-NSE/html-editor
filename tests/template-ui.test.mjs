@@ -22,6 +22,9 @@ test("new project and slide pickers expose one template with nested layouts", ()
   assert.match(page, /body: JSON\.stringify\(\{ title, templateId: newProjectTemplate \}\)/);
   assert.match(page, /const currentTemplate = templates\.find\(\(template\) => template\.id === \(currentSlide\?\.templateId/);
   assert.match(page, /setDefaultTemplateId\(bundle\.deck\.defaultTemplateId\)/);
+  assert.match(page, /templates, css: deckCss/);
+  assert.match(page, /setImportedTemplates\(bundle\.templates\)/);
+  assert.match(page, /type Snapshot = \{ title: string; defaultTemplateId: string; templates: TemplateDoc\[\]/);
 });
 
 test("ordinary canvas interactions ignore inherited furniture outside content", () => {

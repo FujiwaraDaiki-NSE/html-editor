@@ -180,7 +180,7 @@ type OutlineItem = { id: string; label: string; kind: string; depth: number; con
 /* Where a tree row drop lands: beside the target, or as the last child when the target is a container. */
 type TreeDrop = { id: string | null; position: "before" | "after" | "inside" };
 
-type Snapshot = { title: string; slides: SlideDoc[]; activeSlide: number; selectedId: string | null; annotations: Annotation[] };
+type Snapshot = { title: string; defaultTemplateId: string; templates: TemplateDoc[]; importedTemplates: TemplateDoc[] | null; slides: SlideDoc[]; activeSlide: number; selectedId: string | null; annotations: Annotation[] };
 type BlockDragSession = {
   id: string;
   node: HTMLElement;
@@ -349,6 +349,7 @@ export default function Home() {
   const [announcement, setAnnouncement] = useState("Editor ready");
   const [saveMessage, setSaveMessage] = useState("");
   const [defaultTemplateId, setDefaultTemplateId] = useState("");
+  const [importedTemplates, setImportedTemplates] = useState<TemplateDoc[] | null>(null);
   const [presentSlide, setPresentSlide] = useState(1);
   const [serverRevision, setServerRevision] = useState("");
   const [connectionEpoch, setConnectionEpoch] = useState(0);
@@ -572,9 +573,12 @@ export default function Home() {
     });
   };
 
-  const snapshot = (): Snapshot => ({ title: deckTitle, slides: captureActive().map((slide) => ({ ...slide })), activeSlide: activeRef.current, selectedId: selectedRef.current, annotations: annotations.map(cloneAnnotation) });
+  const snapshot = (): Snapshot => ({ title: deckTitle, defaultTemplateId, templates, importedTemplates, slides: captureActive().map((slide) => ({ ...slide })), activeSlide: activeRef.current, selectedId: selectedRef.current, annotations: annotations.map(cloneAnnotation) });
   const restoreSnapshot = (value: Snapshot) => {
     setDeckTitle(value.title);
+    setDefaultTemplateId(value.defaultTemplateId);
+    setTemplates(value.templates);
+    setImportedTemplates(value.importedTemplates);
     setSlidesSynced(value.slides.map((slide) => ({ ...slide })));
     activeRef.current = value.activeSlide;
     setActiveSlideSynced(value.activeSlide);
@@ -635,6 +639,7 @@ export default function Home() {
       setSlides(nextSlides);
       setDeckCss(defaultDeckCss);
       setTemplates(state.templates ?? []);
+      setImportedTemplates(null);
       setSaved(state.project.clean);
       reinject();
     }
@@ -1900,11 +1905,12 @@ export default function Home() {
   const saveProject = async () => {
     try {
       const generation = editGenerationRef.current;
-      const response = await fetch(`${apiBase}/save`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ deck: deckPayload(), message: saveMessage || deckTitle, expectedRevision: serverRevision, idempotencyKey: createMessageId() }) });
+      const response = await fetch(`${apiBase}/save`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ deck: deckPayload(), ...(importedTemplates ? { templates: importedTemplates } : {}), message: saveMessage || deckTitle, expectedRevision: serverRevision, idempotencyKey: createMessageId() }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Save failed.");
       const unchanged = generation === editGenerationRef.current;
       applyServerState(result as ServerState, unchanged);
+      if (unchanged) setImportedTemplates(null);
       setSaved(unchanged);
       setSaveMessage("");
       setAnnouncement(unchanged ? "Deck saved to history" : "Saved version recorded; newer local edits remain unsaved");
@@ -1940,7 +1946,7 @@ export default function Home() {
   };
 
   const downloadBundle = () => {
-    const bundle = JSON.stringify({ format: "weave-deck", version: 2, deck: deckPayload(), css: deckCss }, null, 2);
+    const bundle = JSON.stringify({ format: "weave-deck", version: 2, deck: deckPayload(), templates, css: deckCss }, null, 2);
     const url = URL.createObjectURL(new Blob([bundle], { type: "application/json" }));
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -1953,11 +1959,13 @@ export default function Home() {
     try {
       if (file.size > 4_000_000) throw new Error("Deck bundle must be 4 MB or smaller.");
       const bundle = JSON.parse(await file.text());
-      if (bundle.format !== "weave-deck" || bundle.version !== 2 || !bundle.deck || typeof bundle.deck.defaultTemplateId !== "string" || !bundle.deck.defaultTemplateId || !Array.isArray(bundle.deck.slides) || typeof bundle.css !== "string") throw new Error("Unsupported Weave bundle.");
+      if (bundle.format !== "weave-deck" || bundle.version !== 2 || !bundle.deck || typeof bundle.deck.defaultTemplateId !== "string" || !bundle.deck.defaultTemplateId || !Array.isArray(bundle.deck.slides) || !Array.isArray(bundle.templates) || !bundle.templates.length || typeof bundle.css !== "string") throw new Error("Unsupported Weave bundle.");
       if (!window.confirm(`Replace the editor buffer with “${bundle.deck.title}”? You can Undo this import.`)) return;
       checkpoint();
       setDeckTitle(String(bundle.deck.title));
       setDefaultTemplateId(bundle.deck.defaultTemplateId);
+      setTemplates(bundle.templates);
+      setImportedTemplates(bundle.templates);
       setSlidesSynced(bundle.deck.slides.map(slideFromHtml));
       setDeckCss(defaultDeckCss);
       activeRef.current = 1;

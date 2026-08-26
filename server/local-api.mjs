@@ -367,6 +367,7 @@ const server = createServer(async (request, response) => {
         payload.deck,
         payload.expectedRevision,
         `Save: ${String(payload.message ?? payload.deck?.title ?? "Deck").slice(0, 120)}`,
+        payload.templates ?? null,
       );
       const result = { ...(await statePayload()), commit };
       if (idempotencyKey) {
@@ -387,7 +388,7 @@ const server = createServer(async (request, response) => {
     }
     if (url.pathname === "/api/variations/checkout") {
       if (activeProjectTurn()) return sendJson(request, response, 409, { error: "An Agent turn is running." });
-      checkoutVariation(String(payload.branch ?? ""));
+      await checkoutVariation(String(payload.branch ?? ""));
       return sendJson(request, response, 200, await statePayload());
     }
     if (url.pathname === "/api/variations/generate") {
