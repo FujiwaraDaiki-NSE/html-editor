@@ -394,3 +394,29 @@ test("history restore removes managed directories absent from the target commit"
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("restoring a pre-v2 history commit migrates it before the project is read", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weave-history-v1-"));
+  const previousRoot = process.env.WEAVE_PROJECT_ROOT;
+  process.env.WEAVE_PROJECT_ROOT = root;
+  try {
+    await mkdir(join(root, ".weave"), { recursive: true });
+    await mkdir(join(root, "slides"), { recursive: true });
+    await writeFile(join(root, ".weave/deck.json"), `${JSON.stringify({ title: "Legacy", slides: [{ id: "cover", title: "Legacy", notes: "" }] })}\n`);
+    await writeFile(join(root, "slides/cover.html"), '<main class="weave-slide theme-orbit"><section data-weave-slot="content"><h1 data-weave-slot="title">Legacy</h1></section></main>');
+    git(root, ["init", "-b", "main"]);
+    git(root, ["add", "."]);
+    git(root, ["-c", "user.name=Weave", "-c", "user.email=weave@localhost", "commit", "-m", "Legacy schema"]);
+    const legacyRevision = git(root, ["rev-parse", "HEAD"]);
+    const project = await import(`../server/project.mjs?history-v1=${Date.now()}`);
+    await project.ensureProject();
+    await project.checkoutHistory(legacyRevision);
+    const restored = await project.readProject();
+    assert.equal(restored.title, "Legacy");
+    assert.equal(JSON.parse(await readFile(join(root, ".weave/deck.json"), "utf8")).schemaVersion, 2);
+  } finally {
+    if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
+    else process.env.WEAVE_PROJECT_ROOT = previousRoot;
+    await rm(root, { recursive: true, force: true });
+  }
+});

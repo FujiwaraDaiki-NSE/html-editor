@@ -21,6 +21,7 @@ test("new project and slide pickers expose one template with nested layouts", ()
   assert.match(page, /template\.layouts\.map\(\(layout\)/);
   assert.match(page, /body: JSON\.stringify\(\{ title, templateId: newProjectTemplate \}\)/);
   assert.match(page, /const currentTemplate = templates\.find\(\(template\) => template\.id === \(currentSlide\?\.templateId/);
+  assert.match(page, /setDefaultTemplateId\(bundle\.deck\.defaultTemplateId\)/);
 });
 
 test("ordinary canvas interactions ignore inherited furniture outside content", () => {
@@ -28,4 +29,6 @@ test("ordinary canvas interactions ignore inherited furniture outside content", 
   assert.match(page, /!isEditableSlideNode\(target\)/);
   assert.match(page, /!isEditableSlideNode\(node\)/);
   assert.match(page, /filter\(isEditableSlideNode\)/);
+  assert.match(page, /!isEditableSlideNode\(target\).*target === session\.node/);
+  assert.match(page, /target && isEditableSlideNode\(target\)/);
 });

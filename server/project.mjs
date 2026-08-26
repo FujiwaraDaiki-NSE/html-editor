@@ -13,7 +13,7 @@ import { defaultSlideClasses, migrateSlideHtmlToTailwind } from "../shared/tailw
 import { projectSlug } from "../shared/project-slug.mjs";
 import { isReferencePath } from "../shared/context.mjs";
 import { assetFilenamePattern, replaceAssetReferences } from "../shared/asset-path.mjs";
-import { composeSlideHtml, extractLayoutSnapshotHtml, extractSlideSourceHtml } from "../shared/slide-slots.mjs";
+import { composeSlideHtml, extractLayoutSnapshotHtml, extractSlideSourceHtml, hasLegacyFurnitureOutsideContent } from "../shared/slide-slots.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspacesRoot = process.env.WEAVE_WORKSPACES_ROOT ? resolve(process.env.WEAVE_WORKSPACES_ROOT) : join(repoRoot, "workspaces");
@@ -62,15 +62,14 @@ const contentLayout = ({ titleClass = "text-6xl", sectionClass = "hero flex flex
       <h1 class="heading ${titleClass} font-semibold leading-none tracking-tight" data-weave-slot="title" data-weave-id="title"></h1>
     </section>`;
 
-const templatePackage = ({ id, name, background, text, layouts, masterExtra = "" }) => ({
+const templatePackage = ({ id, name, background, text, layouts, defaultFurniture = true }) => ({
   id,
   name,
   defaultLayoutId: layouts[0].id,
   masterHtml: `<main class="${templateRootClasses({ id: id === "year-end-report" ? "plain" : id, background, text })}" data-weave-slide data-weave-template="${id}" data-weave-template-name="${name}">
-    ${masterExtra}
-    <div class="brand flex items-center gap-2 text-xs font-bold tracking-widest text-slate-400">WEAVE<span class="text-amber-400">●</span></div>
+    ${defaultFurniture ? '<div class="brand flex items-center gap-2 text-xs font-bold tracking-widest text-slate-400">WEAVE<span class="text-amber-400">●</span></div>' : ""}
     <div data-weave-layout-slot></div>
-    <div class="page-number absolute top-0 right-0 p-8 text-xs font-semibold tracking-widest text-slate-400">01 / 01</div>
+    ${defaultFurniture ? '<div class="page-number absolute top-0 right-0 p-8 text-xs font-semibold tracking-widest text-slate-400">01 / 01</div>' : ""}
   </main>`,
   layouts,
 });
@@ -110,7 +109,7 @@ const yearEndReportTemplate = templatePackage({
     { ...reportLayout({ id: "content", name: "本文", titleClass: "text-6xl" }), html: `${reportFrameSvg({ id: "year-end-report", path: reportContentPath, lineStart: 131 })}${contentLayout({ sectionClass: "hero flex flex-1 flex-col items-start justify-center gap-6" })}` },
     { ...reportLayout({ id: "agenda", name: "目次・章区切り", titleClass: "text-6xl" }), html: `${reportFrameSvg({ id: "year-end-report-agenda", path: reportContentPath, lineStart: 186.67 })}${contentLayout({ sectionClass: "hero flex flex-1 flex-col items-start justify-center gap-6" })}` },
   ],
-  masterExtra: "",
+  defaultFurniture: false,
 });
 
 /* These are kept as distinct layout geometry in the package. The report master owns the
@@ -668,15 +667,17 @@ async function readSlideHtml(id, root = currentProjectRoot) {
 async function readManifest(root = currentProjectRoot) {
   try {
     return JSON.parse(await readFile(manifestPath(root), "utf8"));
-  } catch {
-    return null;
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
   }
 }
 
 /** The project as the editor loads it: manifest joined with each slide's HTML fragment. */
 export async function readProject(root = currentProjectRoot) {
   const manifest = await readManifest(root);
-  if (!manifest || !Array.isArray(manifest.slides)) return seedProject();
+  if (!manifest) throw new Error("Project manifest not found.");
+  if (!Array.isArray(manifest.slides)) throw new Error("Project manifest slides are required.");
   if (manifest.schemaVersion !== 2) throw new Error("Unsupported project schema version.");
   const templates = await templateCatalog(root);
   if (!templates.has(String(manifest.defaultTemplateId ?? ""))) throw new Error(`Unknown template: ${String(manifest.defaultTemplateId ?? "")}`);
@@ -823,10 +824,8 @@ function managedStatus(root = currentProjectRoot) {
 }
 
 export function commitIfChanged(message, root = currentProjectRoot) {
-  const pathsToAdd = managedPaths
-    .filter((path) => path !== "assets" && path !== "templates" && path !== "references/index.json")
-    .concat(existsSync(assetsRoot(root)) ? ["assets"] : [], existsSync(templatesRoot(root)) ? ["templates"] : [], existsSync(join(referencesRoot(root), "index.json")) ? ["references/index.json"] : []);
-  runGit(["add", ...pathsToAdd], { cwd: root });
+  const pathsToAdd = managedPaths.filter((path) => existsSync(join(root, path)) || runGit(["ls-files", "--", path], { cwd: root }));
+  runGit(["add", "-A", "--", ...pathsToAdd], { cwd: root });
   if (!runGit(["diff", "--cached", "--name-only"], { cwd: root })) return null;
   runGit(["-c", "user.name=Weave", "-c", "user.email=weave@localhost", "commit", "-m", message.slice(0, 180)], { cwd: root });
   return runGit(["rev-parse", "HEAD"], { cwd: root });
@@ -887,7 +886,8 @@ export async function checkoutHistory(commit) {
     }
   }
   const restored = commitIfChanged(`Restore history ${commit.slice(0, 12)}`);
-  return restored ?? getRevision();
+  if (restored) await ensureProject();
+  return getRevision();
 }
 
 export function checkoutMain() {
@@ -999,10 +999,13 @@ async function migrateLegacyDeck() {
     }));
     sourceSlides = projectFromBlockSlides(raw.title ?? seedTitle, migrationAccent, blockSlides).slides;
   } else {
-    sourceSlides = await Promise.all(raw.slides.map(async (slide, index) => migrateLegacySlide({
-      ...slide,
-      html: slide?.html == null ? await readSlideHtml(slide?.id, currentProjectRoot) : slide.html,
-    }, index, available, migrationAccent)));
+    sourceSlides = [];
+    for (const [index, slide] of raw.slides.entries()) {
+      sourceSlides.push(await migrateLegacySlide({
+        ...slide,
+        html: slide?.html == null ? await readSlideHtml(slide?.id, currentProjectRoot) : slide.html,
+      }, index, available, migrationAccent));
+    }
   }
   if (!sourceSlides.length) throw new Error("Legacy project has no slides.");
   const defaultTemplateId = sourceSlides[0].templateId;
@@ -1042,12 +1045,7 @@ async function migrateLegacySlide(slide, index, templates, accent) {
   const mapping = legacyTemplateMapping.get(legacyId);
   if (!mapping || !templates.has(mapping.templateId)) throw new Error(`Unknown legacy template: ${legacyId}`);
   const source = sourceFromRendered(html, { templateId: mapping.templateId, layoutId: mapping.layoutId, accent: slide.accent ?? accent });
-  const template = templates.get(mapping.templateId);
-  const canonicalLayout = template.layouts.find((layout) => layout.id === mapping.layoutId);
-  const canonicalMarker = canonicalLayout ? frameFingerprint(canonicalLayout.html) : "";
-  const hasUnknownFurniture = /data-weave-id\s*=\s*["'][^"']+(?:logo|tagline|subtitle|meta|background|frame)/i.test(html)
-    || /(?:dtf|logo|tagline|subtitle|fiscal|department)/i.test(html)
-    || !canonicalMarker;
+  const hasUnknownFurniture = hasLegacyFurnitureOutsideContent(html);
   let layoutId = mapping.layoutId;
   if (hasUnknownFurniture) {
     const hash = createHash("sha256").update(frameFingerprint(html)).digest("hex").slice(0, 12);
@@ -1055,7 +1053,7 @@ async function migrateLegacySlide(slide, index, templates, accent) {
     const templateRoot = join(templatesRoot(), mapping.templateId);
     const layoutPath = join(templateRoot, "layouts", `${layoutId}.html`);
     await mkdir(join(templateRoot, "layouts"), { recursive: true });
-    if (!existsSync(layoutPath)) await writeFile(layoutPath, await formatSlideHtml(migrateLegacyLayoutClasses(extractLayoutSnapshotHtml(html))));
+    if (!existsSync(layoutPath)) await writeFile(layoutPath, await formatSlideHtml(migrateLegacyLayoutClasses(extractLayoutSnapshotHtml(html, { removeMasterFurniture: mapping.templateId !== "year-end-report" }))));
     const manifestPath = join(templateRoot, "template.json");
     const packageManifest = JSON.parse(await readFile(manifestPath, "utf8"));
     const layouts = Array.isArray(packageManifest.layouts) ? packageManifest.layouts : [];
@@ -1217,20 +1215,20 @@ async function createProjectUnlocked({ title, templateId }) {
       slug = `${base}-${index}`;
     }
   }
-  await ensureTemplates(root);
-  const selected = await requireTemplate(selectedTemplateId, root);
-  const selectedLayout = selected.layouts.find((layout) => layout.id === selected.defaultLayoutId);
-  if (!selectedLayout) throw new Error(`Unknown layout: ${selected.defaultLayoutId} for template ${selected.id}`);
-  const cover = {
-    id: "cover",
-    title: name,
-    notes: "",
-    templateId: selected.id,
-    layoutId: selected.defaultLayoutId,
-    accent: "#fbbf24",
-    html: `<main data-weave-slide-source data-weave-template="${selected.id}" data-weave-layout="${selected.defaultLayoutId}" data-weave-accent="#fbbf24"><section data-weave-slot="content"><h1 data-weave-slot="title" data-weave-id="title">${escapeHtml(name)}</h1></section></main>`,
-  };
   try {
+    await ensureTemplates(root);
+    const selected = await requireTemplate(selectedTemplateId, root);
+    const selectedLayout = selected.layouts.find((layout) => layout.id === selected.defaultLayoutId);
+    if (!selectedLayout) throw new Error(`Unknown layout: ${selected.defaultLayoutId} for template ${selected.id}`);
+    const cover = {
+      id: "cover",
+      title: name,
+      notes: "",
+      templateId: selected.id,
+      layoutId: selected.defaultLayoutId,
+      accent: "#fbbf24",
+      html: `<main data-weave-slide-source data-weave-template="${selected.id}" data-weave-layout="${selected.defaultLayoutId}" data-weave-accent="#fbbf24"><section data-weave-slot="content"><h1 data-weave-slot="title" data-weave-id="title">${escapeHtml(name)}</h1></section></main>`,
+    };
     gitAt(root, ["init", "-b", "main"]);
     await writeProjectUnlocked({ title: name, defaultTemplateId: selected.id, slides: [cover] }, null, root);
     await ensureProjectScaffolding(root);
@@ -1263,7 +1261,6 @@ export async function listProjects() {
     const root = join(workspacesRoot, entry.name);
     try {
       const manifest = JSON.parse(await readFile(join(root, ".weave", "deck.json"), "utf8"));
-      if (manifest.schemaVersion !== 2 || !manifest.defaultTemplateId) return null;
       const slides = Array.isArray(manifest.slides) ? manifest.slides : [];
       const first = slides[0]?.id;
       let variations = [];
@@ -1272,14 +1269,20 @@ export async function listProjects() {
         variations = gitAt(root, ["for-each-ref", "--format=%(refname:short)", "refs/heads/weave/variation"]).split("\n").filter(Boolean);
         updatedAt = gitAt(root, ["log", "-1", "--pretty=%cI"]) || null;
       } catch {}
-      const templates = await readTemplates(root);
       const firstSlide = slides[0];
-      const firstTemplate = templates.find((template) => template.id === firstSlide?.templateId);
-      const firstLayout = firstTemplate?.layouts.find((layout) => layout.id === firstSlide?.layoutId);
       const source = first ? await readFile(join(root, "slides", `${first}.html`), "utf8").catch(() => "") : "";
-      const thumbnailHtml = firstTemplate && firstLayout && source
-        ? composeSource(source, firstTemplate, firstLayout, { position: 1, total: slides.length, accent: firstSlide.accent, instanceId: firstSlide.id })
-        : "";
+      let thumbnailHtml;
+      if (manifest.schemaVersion === 2) {
+        if (!manifest.defaultTemplateId) throw new Error("defaultTemplateId is required.");
+        const templates = await readTemplates(root);
+        const firstTemplate = templates.find((template) => template.id === firstSlide?.templateId);
+        const firstLayout = firstTemplate?.layouts.find((layout) => layout.id === firstSlide?.layoutId);
+        thumbnailHtml = firstTemplate && firstLayout && source
+          ? composeSource(source, firstTemplate, firstLayout, { position: 1, total: slides.length, accent: firstSlide.accent, instanceId: firstSlide.id })
+          : "";
+      } else {
+        thumbnailHtml = source;
+      }
       return { slug: entry.name, title: String(manifest.title ?? ""), slideCount: slides.length, updatedAt, current: root === currentProjectRoot, blocked: variations.length > 0, blockedCount: variations.length, thumbnailHtml: rewriteThumbnailAssets(thumbnailHtml, entry.name), css: await readFile(join(root, "styles", "deck.css"), "utf8").catch(() => defaultDeckCss) };
     } catch { return null; }
   }));

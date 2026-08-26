@@ -129,6 +129,8 @@ test("hierarchical composition rejects incomplete masters, layouts, and slide so
   const args = { slideHtml: '<main><section data-weave-slot="content"><h1 data-weave-slot="title"></h1></section></main>', masterHtml: '<main><div data-weave-layout-slot></div></main>', layoutHtml: '<section><h1 data-weave-slot="title"></h1></section>', templateId: "template", layoutId: "layout", position: 1, total: 1, accent: "#fbbf24" };
   assert.throws(() => composeSlideHtml({ ...args, layoutHtml: "" }), /layoutHtml is required/);
   assert.throws(() => composeSlideHtml({ ...args, masterHtml: "<main></main>" }), /data-weave-layout-slot/);
-  assert.throws(() => composeSlideHtml({ ...args, slideHtml: "<main></main>" }), /data-weave-slot="content"/);
-  assert.throws(() => composeSlideHtml(args), /master\/layout composition.*data-weave-slot="content"/);
+  assert.throws(() => composeSlideHtml({ ...args, slideHtml: "<main></main>" }), /exactly one content slot/);
+  assert.throws(() => composeSlideHtml(args), /layoutHtml must contain exactly one content slot/);
+  assert.throws(() => composeSlideHtml({ ...args, layoutHtml: '<section data-weave-slot="content"><h1 data-weave-slot="title"></h1><aside>Inherited decoration</aside></section>' }), /may contain only its title slot/);
+  assert.throws(() => composeSlideHtml({ ...args, slideHtml: '<main><section data-weave-slot="content"><h1 data-weave-slot="title"></h1></section><section data-weave-slot="content"></section></main>', layoutHtml: '<section data-weave-slot="content"><h1 data-weave-slot="title"></h1></section>' }), /exactly one content slot/);
 });

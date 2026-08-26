@@ -366,7 +366,7 @@ ${utilities}
   line-height: 1.18;
   letter-spacing: 0;
 }
-.weave-slide[data-weave-template="year-end-report"][data-weave-layout="cover"] .report-logo {
+.weave-slide[data-weave-template="year-end-report"] .report-logo {
   position: absolute;
   z-index: 1;
   top: 22px;

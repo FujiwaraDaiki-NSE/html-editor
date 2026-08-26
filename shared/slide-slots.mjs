@@ -205,6 +205,28 @@ const slotElement = (html, name, sourceName) => {
   if (!element) throw new Error(`${sourceName} has an unclosed ${name} slot.`);
   return { opening, ...element };
 };
+const attributeCount = (html, name, value = null) => {
+  const tags = /<([a-z][\w:-]*)\b[^>]*>/gi;
+  let count = 0;
+  for (const match of String(html).matchAll(tags)) {
+    const expression = value == null
+      ? new RegExp(`\\b${name}\\s*(?:=\\s*(?:(["'])(.*?)\\1|[^\\s>]+))?`, "i")
+      : new RegExp(`\\b${name}\\s*=\\s*(["'])${value}\\1`, "i");
+    if (expression.test(match[0])) count += 1;
+  }
+  return count;
+};
+const validateSlotLayer = (html, sourceName, allowBody) => {
+  if (attributeCount(html, "data-weave-slot", contentSlotName) !== 1) throw new Error(`${sourceName} must contain exactly one content slot.`);
+  if (attributeCount(html, "data-weave-slot", titleSlotName) !== 1) throw new Error(`${sourceName} must contain exactly one title slot.`);
+  const content = slotElement(html, contentSlotName, sourceName);
+  const title = slotElement(html, titleSlotName, sourceName);
+  if (title.opening.index < content.opening.end || title.closing.end > content.closing.start) throw new Error(`${sourceName} title slot must be inside its content slot.`);
+  if (!allowBody && removeNestedElement(content.inner, content.opening, content, title.opening, title).trim()) {
+    throw new Error(`${sourceName} content slot may contain only its title slot.`);
+  }
+  return { content, title };
+};
 
 const removeNestedElement = (html, parentOpening, parentElement, childOpening, childElement) => {
   if (!childOpening || !childElement) return html;
@@ -235,16 +257,19 @@ export function composeSlideHtml({ slideHtml, masterHtml, layoutHtml, templateId
   if (!Number.isFinite(Number(position)) || Number(position) < 1) throw new Error("position must be a positive number.");
   if (!Number.isFinite(Number(total)) || Number(total) < 1) throw new Error("total must be a positive number.");
 
-  const sourceContent = slotElement(slide, contentSlotName, "slideHtml");
-  const sourceTitle = slotElement(slide, titleSlotName, "slideHtml");
+  if (attributeCount(master, "data-weave-layout-slot") !== 1) throw new Error("masterHtml must contain exactly one data-weave-layout-slot.");
+  if (attributeCount(master, "data-weave-slot") !== 0) throw new Error("masterHtml must not contain slide content slots.");
+  const { content: sourceContent, title: sourceTitle } = validateSlotLayer(slide, "slideHtml", true);
+  validateSlotLayer(layout, "layoutHtml", false);
   let movedContent = sourceContent.inner;
   movedContent = removeNestedElement(movedContent, sourceContent.opening, sourceContent, sourceTitle.opening, sourceTitle);
 
   let frame = master;
   const layoutSlot = openingTagWithAttributeName(frame, "data-weave-layout-slot");
   if (!layoutSlot) throw new Error("masterHtml is missing data-weave-layout-slot.");
-  if (!elementInner(frame, layoutSlot)) throw new Error("masterHtml has an unclosed data-weave-layout-slot.");
-  frame = replaceElementInner(frame, layoutSlot, layout);
+  const layoutSlotElement = elementInner(frame, layoutSlot);
+  if (!layoutSlotElement) throw new Error("masterHtml has an unclosed data-weave-layout-slot.");
+  frame = `${frame.slice(0, layoutSlot.index)}${layout}${frame.slice(layoutSlotElement.closing.end)}`;
   frame = withUniqueFragmentIds(applyFrameAccent(frame, selectedAccent), instanceId);
 
   const root = firstMain(frame);
@@ -286,8 +311,7 @@ export function extractSlideSourceHtml(renderedHtml, { templateId, layoutId, acc
   if (!root) throw new Error("renderedHtml must contain a <main> root.");
   const rootElement = elementInner(rendered, root);
   if (!rootElement) throw new Error("renderedHtml has an unclosed <main> root.");
-  const content = slotElement(rendered, contentSlotName, "renderedHtml");
-  const title = slotElement(rendered, titleSlotName, "renderedHtml");
+  const { content, title } = validateSlotLayer(rendered, "renderedHtml", true);
   let body = content.inner;
   body = removeNestedElement(body, content.opening, content, title.opening, title);
   const titleElement = rendered.slice(title.opening.index, title.closing.end);
@@ -298,8 +322,9 @@ export function extractSlideSourceHtml(renderedHtml, { templateId, layoutId, acc
 }
 
 /** Capture a legacy rendered frame as a Layout fragment without slide content. */
-export function extractLayoutSnapshotHtml(renderedHtml) {
+export function extractLayoutSnapshotHtml(renderedHtml, { removeMasterFurniture }) {
   const rendered = requiredString(renderedHtml, "renderedHtml");
+  if (typeof removeMasterFurniture !== "boolean") throw new Error("removeMasterFurniture is required.");
   const root = firstMain(rendered);
   if (!root) throw new Error("renderedHtml must contain a <main> root.");
   const rootElement = elementInner(rendered, root);
@@ -311,7 +336,30 @@ export function extractLayoutSnapshotHtml(renderedHtml) {
   const nextRoot = firstMain(withoutContent);
   const nextRootElement = nextRoot && elementInner(withoutContent, nextRoot);
   if (!nextRoot || !nextRootElement) throw new Error("Layout snapshot has no complete <main> root.");
-  return nextRootElement.inner;
+  return removeMasterFurniture ? withoutFrameFurniture(nextRootElement.inner) : nextRootElement.inner;
+}
+
+/** True when a legacy slide owns frame furniture beyond Master-owned brand/page nodes. */
+export function hasLegacyFurnitureOutsideContent(renderedHtml) {
+  const rendered = requiredString(renderedHtml, "renderedHtml");
+  const root = firstMain(rendered);
+  if (!root) throw new Error("renderedHtml must contain a <main> root.");
+  const rootElement = elementInner(rendered, root);
+  if (!rootElement) throw new Error("renderedHtml has an unclosed <main> root.");
+  const content = slotElement(rendered, contentSlotName, "renderedHtml");
+  const masterFurnitureRanges = ["brand", "page-number"].map((className) => {
+    const opening = openingTagWithClass(rendered, className);
+    const closing = opening && closingTagEnd(rendered, opening);
+    return opening && closing ? { start: opening.index, end: closing.end } : null;
+  }).filter(Boolean);
+  const tags = /<([a-z][\w:-]*)\b[^>]*>/gi;
+  for (const match of rendered.matchAll(tags)) {
+    if (match.index === root.index || match.index < root.end || match.index >= rootElement.closing.start) continue;
+    if (match.index >= content.opening.index && match.index < content.closing.end) continue;
+    if (masterFurnitureRanges.some((range) => match.index >= range.start && match.index < range.end)) continue;
+    return true;
+  }
+  return false;
 }
 
 export function updateSlidePageNumber(input, position, total) {

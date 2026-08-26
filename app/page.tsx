@@ -1282,7 +1282,7 @@ export default function Home() {
     // The dragged block and its whole subtree are pointer-events: none, so a hit is never inside
     // it; the contains() guard only catches the frame before .weave-dragging lands.
     let target = hit?.closest<HTMLElement>("[data-weave-id]") ?? null;
-    if (!target || target === session.node || session.node.contains(target)) return;
+    if (!target || !isEditableSlideNode(target) || target === session.node || session.node.contains(target)) return;
     clearDropMarkers();
 
     // Containers nest: a Row carrying its children can be dropped into another Row, Column or Grid.
@@ -1333,7 +1333,7 @@ export default function Home() {
     if (image) {
       const target = (event.target as HTMLElement).closest<HTMLElement>("[data-weave-id]");
       let placement: { id: string; after: boolean } | undefined;
-      if (target) {
+      if (target && isEditableSlideNode(target)) {
         const rect = target.getBoundingClientRect();
         const horizontal = target.parentElement?.classList.contains("flex-row");
         placement = { id: target.dataset.weaveId ?? "", after: horizontal ? event.clientX > rect.left + rect.width / 2 : event.clientY > rect.top + rect.height / 2 };
@@ -1953,10 +1953,11 @@ export default function Home() {
     try {
       if (file.size > 4_000_000) throw new Error("Deck bundle must be 4 MB or smaller.");
       const bundle = JSON.parse(await file.text());
-      if (bundle.format !== "weave-deck" || bundle.version !== 2 || !bundle.deck || !Array.isArray(bundle.deck.slides) || typeof bundle.css !== "string") throw new Error("Unsupported Weave bundle.");
+      if (bundle.format !== "weave-deck" || bundle.version !== 2 || !bundle.deck || typeof bundle.deck.defaultTemplateId !== "string" || !bundle.deck.defaultTemplateId || !Array.isArray(bundle.deck.slides) || typeof bundle.css !== "string") throw new Error("Unsupported Weave bundle.");
       if (!window.confirm(`Replace the editor buffer with “${bundle.deck.title}”? You can Undo this import.`)) return;
       checkpoint();
       setDeckTitle(String(bundle.deck.title));
+      setDefaultTemplateId(bundle.deck.defaultTemplateId);
       setSlidesSynced(bundle.deck.slides.map(slideFromHtml));
       setDeckCss(defaultDeckCss);
       activeRef.current = 1;
@@ -2915,7 +2916,7 @@ export default function Home() {
               <>
                 <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
                 <div className="template-options layout-options" role="listbox" aria-label="Slide layout">
-                  {(currentTemplate ? [currentTemplate] : templates).map((template) => (
+                  {templates.map((template) => (
                     <div className="template-group" key={template.id}>
                       <strong className="template-group-name">{template.name}</strong>
                       {template.layouts.map((layout) => <button
