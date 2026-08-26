@@ -1,4 +1,4 @@
-const LOOPBACK_HTTP_ORIGIN = /^http:\/\/127\.0\.0\.1(?::\d+)?$/;
+const LOOPBACK_HTTP_ORIGIN = /^http:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?$/;
 
 export function isAllowedWebOrigin(origin, webPort) {
   if (origin === undefined) return true;
