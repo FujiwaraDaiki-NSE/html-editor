@@ -333,7 +333,7 @@ button.project-card { cursor: pointer; }
 .thumb-loading { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 9px; }
 .new-flow { display: flex; flex-direction: column; gap: 18px; padding: 26px; }
 .back-link { border: 0; background: transparent; color: var(--muted); font-size: 11px; padding: 0; cursor: pointer; }
-.template-row { display: grid; grid-template-columns: repeat(3, var(--thumb-width)); gap: 18px; justify-content: start; }
+.template-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(var(--thumb-width), var(--thumb-width))); gap: 18px; justify-content: start; }
 .name-row { display: flex; align-items: center; gap: 10px; border-top: 1px solid var(--line); margin-top: 4px; padding-top: 18px; }
 .name-row label { color: var(--muted); font-size: 10px; }
 .name-field { width: 260px; height: 30px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel-2); color: var(--text); font-size: 11px; }
@@ -681,6 +681,9 @@ button.project-card { cursor: pointer; }
 .template-options button { width: 100%; padding: 4px; display: grid; grid-template-columns: 48px minmax(0, 1fr); align-items: center; gap: 7px; border: 0; border-radius: 4px; background: transparent; color: var(--text); font-size: 8px; text-align: left; cursor: pointer; }
 .template-options button:hover, .template-options button:focus-visible { background: var(--panel-3); outline: none; }
 .template-options button[aria-selected="true"] { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent); }
+.template-group { display: grid; gap: 2px; margin: 2px 0 6px; }
+.template-group + .template-group { border-top: 1px solid var(--line); padding-top: 6px; }
+.template-group-name { display: block; padding: 2px 6px 4px; color: var(--muted); font-size: 8px; letter-spacing: .08em; text-transform: uppercase; }
 .layout-options { position: absolute; left: 10px; top: 82px; }
 .new-slide-options { position: absolute; }
 .filmstrip .new-slide-options { left: 0; bottom: 44px; }

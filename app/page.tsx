@@ -8,8 +8,8 @@ import { defaultDeckCss, designHeight, designWidth, escapeHtml, renderDeckDocume
 import { assetPathsInHtml, isAssetPath, replaceAssetReferences, rewriteAssetUrls } from "../shared/asset-path.mjs";
 import { projectSlug } from "../shared/project-slug.mjs";
 import { auditContentPolicy } from "../shared/content-policy.mjs";
-import { applyTemplateToSlideHtml, contentSlotSelector, titleFromSlideHtml, titleSlotSelector, updateSlidePageNumber, withUniqueFragmentIds } from "../shared/slide-slots.mjs";
-import { advancedControlKeys, allControlKeys, applyBlockPosition, applySize, applyUtilityClass, blockPositionOptions, containerControlKeys, decorationControlKeys, defaultSlideClasses, imageControlKeys, listControlKeys, migrateSlideHtmlToTailwind, ratioOptions, readBlockPosition, readSize, readUtilityClass, sizeIntents, slideControlGroups, textControlKeys } from "../shared/tailwind-slide.mjs";
+import { composeSlideHtml, contentSlotSelector, extractSlideSourceHtml, titleFromSlideHtml, titleSlotSelector, withUniqueFragmentIds } from "../shared/slide-slots.mjs";
+import { advancedControlKeys, allControlKeys, applyBlockPosition, applySize, applyUtilityClass, blockPositionOptions, containerControlKeys, decorationControlKeys, imageControlKeys, listControlKeys, migrateSlideHtmlToTailwind, ratioOptions, readBlockPosition, readSize, readUtilityClass, sizeIntents, slideControlGroups, textControlKeys } from "../shared/tailwind-slide.mjs";
 import { canSendTurn, insertReferenceAt, nextOrder, rectFromClientBox, rectFromPoints, refreshAnnotations, resizeRect, resolveReferences, toSlidePoint, translateRect } from "../shared/annotation.mjs";
 import { editorEnvelope, overflowingIds } from "../shared/context.mjs";
 import { AnnotationAttachment } from "./components/AnnotationAttachment";
@@ -25,8 +25,9 @@ import { selectThreadRunning, selectThreadTurns, selectTurnItems } from "./codex
 /* A slide is now a real HTML file: its `<main class="weave-slide">` fragment is the single
    truth. The editor renders that fragment as live DOM and edits it in place; nothing is
    modelled as tokens any more (concept 2.10). */
-type SlideDoc = { id: string; title: string; notes: string; html: string };
-type TemplateDoc = { id: string; name: string; html: string };
+type SlideDoc = { id: string; title: string; notes: string; templateId: string; layoutId: string; accent: string; html: string };
+type TemplateLayout = { id: string; name: string; html: string };
+type TemplateDoc = { id: string; name: string; defaultLayoutId: string; masterHtml: string; layouts: TemplateLayout[] };
 type ReferenceAttachment = { path: string; name: string; mimeType?: string; size: number; kind?: "file" | "folder"; files?: number };
 type ReferenceShelfEntry = ReferenceAttachment & { hash?: string; addedAt?: string; source?: string; sourceMissing?: boolean; missing: boolean; kind: "file" | "folder" };
 type FolderBrowser = { path: string; parent: string | null; breadcrumbs: Array<{ name: string; path: string }>; folders: Array<{ name: string; path: string }>; folderCount: number; fileCount: number };
@@ -61,14 +62,11 @@ type GalleryDialog = { kind: "rename"; slug: string; title: string } | { kind: "
 const apiBase = "http://127.0.0.1:4317/api";
 const defaultCanvasZoom = 1;
 
-const backgrounds = ["orbit", "grid", "plain"] as const;
-type Background = (typeof backgrounds)[number];
 const accents = [
   { color: "#fbbf24", className: "text-amber-400" }, { color: "#2dd4bf", className: "text-teal-400" },
   { color: "#a78bfa", className: "text-violet-400" }, { color: "#fb7185", className: "text-rose-400" },
   { color: "#34d399", className: "text-emerald-400" },
 ];
-const backgroundClasses: Record<Background, string> = { orbit: "bg-slate-950", grid: "bg-slate-900", plain: "bg-white" };
 
 /* Slide-navigator placement lives in localStorage, read through an external store so the
    server and the first client render agree on the default before the stored value applies. */
@@ -161,31 +159,22 @@ const marginSchema = controlsFor(["marginTop"]);
 
 type SelState = { id: string; kind: string; container: boolean; read: Record<string, string> };
 
-const blankSlideHtml = (background: Background = "orbit", accent = "#f6b84b", title = "A clear, compelling headline.") =>
-  `<main class="${defaultSlideClasses} theme-${background} ${backgroundClasses[background]}" data-weave-slide data-weave-template="${background}">
-    <div class="brand flex items-center gap-2 text-xs font-bold tracking-widest text-slate-400">WEAVE<span class="${accents.find((item) => item.color === accent)?.className ?? "text-amber-400"}">●</span></div>
-    <section class="hero flex flex-1 flex-col items-start justify-center gap-6" data-weave-slot="content">
+const blankSlideHtml = (title = "A clear, compelling headline.") =>
+  `<main class="weave-slide" data-weave-slide>
+    <section class="hero" data-weave-slot="content">
       ${blockTemplates.eyebrow(`eyebrow-${createMessageId().slice(6)}`)}
-      <h1 class="heading text-6xl font-semibold leading-none tracking-tight text-slate-50" data-weave-slot="title" data-weave-id="heading-${createMessageId().slice(6)}">${escapeHtml(title)}</h1>
+      <h1 class="heading" data-weave-slot="title" data-weave-id="heading-${createMessageId().slice(6)}">${escapeHtml(title)}</h1>
       ${blockTemplates.paragraph(`body-${createMessageId().slice(6)}`)}
     </section>
-    <div class="page-number absolute top-0 right-0 p-8 text-xs font-semibold tracking-widest text-slate-400">01 / 01</div>
   </main>`;
 
 const slideFromHtml = (slide: SlideDoc): SlideDoc => {
   const html = migrateSlideHtmlToTailwind(slide.html);
   return { ...slide, title: titleFromSlideHtml(html) ?? slide.title, html };
 };
-const renumberSlides = (slides: SlideDoc[]) => slides.map((slide, index) => ({ ...slide, html: updateSlidePageNumber(slide.html, index + 1, slides.length) }));
-/* The shared JavaScript helper predates the per-instance fragment-id option, so its
-   inferred declaration only accepts null there. Keep the runtime option typed locally
-   until the shared module can publish that wider signature. */
-const applyTemplateWithInstance = applyTemplateToSlideHtml as unknown as (
-  slideInput: string,
-  templateInput: string,
-  options: { position?: number; total?: number; accent?: string; instanceId?: string | null },
-) => string;
-const initialSlides: SlideDoc[] = [slideFromHtml({ id: "opportunity", title: "", notes: "", html: blankSlideHtml("orbit", "#f6b84b", "The opportunity") })];
+/* Slide numbering belongs to the rendered frame. Reordering therefore never mutates source HTML. */
+const renumberSlides = (slides: SlideDoc[]) => slides.map((slide) => ({ ...slide }));
+const initialSlides: SlideDoc[] = [slideFromHtml({ id: "opportunity", title: "", notes: "", templateId: "orbit", layoutId: "content", accent: "#f6b84b", html: blankSlideHtml("The opportunity") })];
 
 type OutlineItem = { id: string; label: string; kind: string; depth: number; container: boolean; locked: boolean };
 /* Where a tree row drop lands: beside the target, or as the last child when the target is a container. */
@@ -308,7 +297,6 @@ export default function Home() {
   const [deckCss, setDeckCss] = useState<string>(defaultDeckCss);
   const [mode, setMode] = useState<"preview" | "code">("preview");
   const [theme, setTheme] = useState<"dark" | "light">("dark");
-  const [background, setBackground] = useState<Background>("orbit");
   const [accent, setAccent] = useState("#f6b84b");
   const [fitScale, setFitScale] = useState(0.68);
   const [manualZoom, setManualZoom] = useState<number | null>(defaultCanvasZoom);
@@ -495,10 +483,39 @@ export default function Home() {
     });
   };
   const slideRoot = () => canvasRef.current?.querySelector<HTMLElement>(".weave-slide") ?? null;
-  const contentSlot = () => canvasRef.current?.querySelector<HTMLElement>(contentSlotSelector) ?? canvasRef.current?.querySelector<HTMLElement>(".hero") ?? null;
+  const contentSlot = () => canvasRef.current?.querySelector<HTMLElement>(contentSlotSelector) ?? null;
+  const isEditableSlideNode = (node: Element | null) => {
+    const content = node?.closest(contentSlotSelector);
+    return !!content && content !== node;
+  };
   const isTitleSlot = (node: Element) => node.matches(titleSlotSelector);
   const destroysTitleSlot = (node: Element) => isTitleSlot(node) || !!node.querySelector(titleSlotSelector);
   const selectedNode = () => (selectedId ? canvasRef.current?.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(selectedId)}"]`) ?? null : null);
+
+  /* A slide file contains only editable slot content. Everything users see in the canvas is
+     derived from its Template master + selected Layout, including frame furniture and numbering. */
+  const layoutFor = (slide: SlideDoc, templateOverride?: TemplateDoc, layoutOverride?: TemplateLayout) => {
+    const template = templateOverride ?? templates.find((item) => item.id === slide.templateId);
+    if (!template) throw new Error(`Template reference is missing: ${slide.templateId}`);
+    const layout = layoutOverride ?? template.layouts.find((item) => item.id === slide.layoutId);
+    if (!layout) throw new Error(`Layout reference is missing: ${slide.templateId}/${slide.layoutId}`);
+    return { template, layout };
+  };
+  const composeFor = (slide: SlideDoc, position: number, total: number, templateOverride?: TemplateDoc, layoutOverride?: TemplateLayout) => {
+    const { template, layout } = layoutFor(slide, templateOverride, layoutOverride);
+    return composeSlideHtml({
+      slideHtml: slide.html,
+      masterHtml: template.masterHtml,
+      layoutHtml: layout.html,
+      templateId: template.id,
+      layoutId: layout.id,
+      position,
+      total,
+      accent: slide.accent,
+      instanceId: slide.id,
+    });
+  };
+  const composedSlides = (source: SlideDoc[]) => source.map((slide, index) => composeFor(slide, index + 1, source.length));
 
   const readSelection = (node: HTMLElement): SelState => {
     const kind = kindOfNode(node);
@@ -530,13 +547,19 @@ export default function Home() {
       const html = templatePreviewSourceHtmlRef.current;
       if (html == null) return list;
       const title = titleFromSlideHtml(html);
-      return list.map((slide, index) => index === activeRef.current - 1 ? { ...slide, title: title ?? slide.title, html } : slide);
+      const current = list[activeRef.current - 1];
+      if (!current) return list;
+      const source = extractSlideSourceHtml(html, { templateId: current.templateId, layoutId: current.layoutId, accent: current.accent });
+      return list.map((slide, index) => index === activeRef.current - 1 ? { ...slide, title: title ?? slide.title, html: source } : slide);
     }
     const html = serializeCanvas();
     if (html == null) return list;
     templatePreviewSourceHtmlRef.current = null;
-    const title = titleFromSlideHtml(html);
-    return list.map((slide, index) => (index === activeRef.current - 1 ? { ...slide, title: title ?? slide.title, html } : slide));
+    const current = list[activeRef.current - 1];
+    if (!current) return list;
+    const source = extractSlideSourceHtml(html, { templateId: current.templateId, layoutId: current.layoutId, accent: current.accent });
+    const title = titleFromSlideHtml(source);
+    return list.map((slide, index) => (index === activeRef.current - 1 ? { ...slide, title: title ?? slide.title, html: source } : slide));
   };
 
   const syncFromDom = () => {
@@ -581,11 +604,12 @@ export default function Home() {
     attachments: attachments.map(({ path, name, size, kind, files }) => ({ path, name, bytes: size, kind, files })),
   });
 
-  const quality = useMemo(() => {
-    const html = slides.map((slide) => slide.html).join("\n");
+  const quality = (() => {
+    let html = "";
+    try { html = composedSlides(slides).join("\n"); } catch (error) { return { ok: false, diagnostics: [{ code: "template-reference", source: "slides", severity: "error", message: error instanceof Error ? error.message : String(error) }], errors: 1, warnings: 0 }; }
     const result = auditContentPolicy({ css: deckCss, html });
     return { ok: result.ok, diagnostics: result.diagnostics, errors: result.summary.errors, warnings: result.summary.warnings };
-  }, [slides, deckCss]);
+  })();
 
   const activeThread = codexState.activeThreadId ? codexState.threads[codexState.activeThreadId] : null;
   const activeThreadName = activeThread ? displayThreadName(activeThread.name) || activeThread.preview || "New conversation" : "No conversation";
@@ -740,7 +764,13 @@ export default function Home() {
     setDraggedId(null);
     setEditingId(null);
     const previewHtml = templatePreviewHtmlRef.current;
-    host.innerHTML = sanitizePreviewHtml(previewHtml ?? templatePreviewSourceHtmlRef.current ?? slidesRef.current[activeSlide - 1]?.html ?? "");
+    const active = slidesRef.current[activeSlide - 1];
+    let rendered = previewHtml;
+    if (rendered == null && active) {
+      try { rendered = composeFor(active, activeSlide, slidesRef.current.length); }
+      catch (error) { rendered = `<main class="weave-slide"><section data-weave-slot="content"><h1 data-weave-slot="title">${escapeHtml(error instanceof Error ? error.message : String(error))}</h1></section></main>`; }
+    }
+    host.innerHTML = sanitizePreviewHtml(rendered ?? "");
     host.querySelectorAll<HTMLImageElement>('img[src^="assets/"]').forEach((node) => { const path = node.getAttribute("src") ?? ""; if (!isAssetPath(path)) return; node.dataset.assetPath = path; node.src = `${apiBase}/${path}`; });
     host.querySelectorAll<SVGImageElement>("image").forEach((node) => {
       const xlinkPath = node.getAttributeNS("http://www.w3.org/1999/xlink", "href");
@@ -752,15 +782,15 @@ export default function Home() {
       if (attribute === "xlink:href") node.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", `${apiBase}/${path}`);
       else node.setAttribute("href", `${apiBase}/${path}`);
     });
-    host.querySelectorAll<HTMLElement>("[data-weave-id]").forEach((node) => { node.draggable = !annotationMode && !agentRunning && !isTitleSlot(node); });
+    host.querySelectorAll<HTMLElement>("[data-weave-id]").forEach((node) => { node.draggable = !annotationMode && !agentRunning && isEditableSlideNode(node) && !isTitleSlot(node); });
     const root = host.querySelector<HTMLElement>(".weave-slide");
     if (root) {
-      setCurrentTemplateId(root.dataset.weaveTemplate ?? "");
-      const bg = backgrounds.find((item) => root.classList.contains(`theme-${item}`)) ?? "orbit";
-      setBackground(bg);
-      const activeAccent = accents.find((item) => root.querySelector(`.${item.className}`));
+      setCurrentTemplateId(active?.templateId ?? "");
+      const activeAccent = accents.find((item) => item.color === active?.accent) ?? accents.find((item) => root.querySelector(`.${item.className}`));
       setAccent(activeAccent?.color ?? accents[0].color);
     }
+  // composeFor is intentionally omitted: injecting on every render would reset the live DOM caret.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSlide, injectKey, mode, agentRunning, annotationMode]);
 
   /* Selection outline + inspector read-out follow the selected node without re-injecting. */
@@ -772,7 +802,7 @@ export default function Home() {
     node?.classList.add("weave-selected");
     setSel(node ? readSelection(node) : null);
     // Rebuild the object tree from the live DOM.
-    const content = host.querySelector(contentSlotSelector) ?? host.querySelector(".hero");
+    const content = host.querySelector(contentSlotSelector);
     const list: OutlineItem[] = [];
     const itemFrom = (child: Element, depth: number): OutlineItem | null => {
       const id = child.getAttribute("data-weave-id");
@@ -852,7 +882,7 @@ export default function Home() {
     if (!viewport) return [];
     const viewportBox = viewport.getBoundingClientRect();
     const scroll = { left: viewport.scrollLeft, top: viewport.scrollTop };
-    return Array.from(viewport.querySelectorAll<HTMLElement>("[data-weave-id]")).flatMap((node) => {
+    return Array.from(viewport.querySelectorAll<HTMLElement>("[data-weave-id]")).filter(isEditableSlideNode).flatMap((node) => {
       const id = node.getAttribute("data-weave-id");
       return id ? [{
         id,
@@ -882,7 +912,7 @@ export default function Home() {
     const slide = slideRoot();
     if (!slide) return [];
     const slideBox = slide.getBoundingClientRect();
-    return Array.from(slide.querySelectorAll<HTMLElement>("[data-weave-id]")).flatMap((node) => {
+    return Array.from(slide.querySelectorAll<HTMLElement>("[data-weave-id]")).filter(isEditableSlideNode).flatMap((node) => {
       const id = node.getAttribute("data-weave-id");
       if (!id) return [];
       const box = node.getBoundingClientRect();
@@ -905,7 +935,7 @@ export default function Home() {
     if (!viewport) return [];
     const viewportBox = viewport.getBoundingClientRect();
     const scroll = { left: viewport.scrollLeft, top: viewport.scrollTop };
-    return Array.from(viewport.querySelectorAll<HTMLElement>("[data-weave-id]")).flatMap((node) => {
+    return Array.from(viewport.querySelectorAll<HTMLElement>("[data-weave-id]")).filter(isEditableSlideNode).flatMap((node) => {
       const id = node.getAttribute("data-weave-id");
       return id ? [{
         id,
@@ -1093,7 +1123,7 @@ export default function Home() {
       return;
     }
     const target = (event.target as HTMLElement).closest<HTMLElement>("[data-weave-id]");
-    if (!target || !canvasRef.current?.contains(target)) { setSelectedId(null); return; }
+    if (!target || !canvasRef.current?.contains(target) || !isEditableSlideNode(target)) { setSelectedId(null); return; }
     if (target.getAttribute("contenteditable") === "true") return;
     setSelectedId(target.getAttribute("data-weave-id"));
   };
@@ -1132,7 +1162,7 @@ export default function Home() {
   };
 
   const beginEdit = (node: HTMLElement) => {
-    if (annotationMode) return;
+    if (annotationMode || !isEditableSlideNode(node)) return;
     if (node instanceof HTMLImageElement || [...node.classList].some((cls) => containerClasses.has(cls))) return;
     checkpoint();
     node.draggable = false;
@@ -1215,7 +1245,7 @@ export default function Home() {
     if (annotationMode) { event.preventDefault(); event.stopPropagation(); return; }
     const target = (event.target as HTMLElement).closest<HTMLElement>("[data-weave-id]");
     const id = target?.getAttribute("data-weave-id");
-    if (!target || !id || isTitleSlot(target) || target.getAttribute("contenteditable") === "true" || !target.parentNode) {
+    if (!target || !id || !isEditableSlideNode(target) || isTitleSlot(target) || target.getAttribute("contenteditable") === "true" || !target.parentNode) {
       event.preventDefault();
       return;
     }
@@ -1501,7 +1531,7 @@ export default function Home() {
 
   const deleteSelected = () => {
     const node = selectedNode();
-    if (!node || destroysTitleSlot(node) || outline.length <= 1) return;
+    if (!node || !isEditableSlideNode(node) || destroysTitleSlot(node) || outline.length <= 1) return;
     checkpoint();
     node.remove();
     setSelectedId(null);
@@ -1560,7 +1590,7 @@ export default function Home() {
   };
   const setBlockPosition = (className: string) => applyClasses((node) => writeClasses(node, applyBlockPosition([...node.classList], className)));
 
-  const previewTemplate = (templateId: string) => {
+  const previewTemplate = (templateId: string, layoutId?: string) => {
     const template = templates.find((item) => item.id === templateId);
     const index = activeRef.current - 1;
     templatePreviewHtmlRef.current = null;
@@ -1569,10 +1599,12 @@ export default function Home() {
     const slide = captured[index];
     if (!template || !slide) return;
     templatePreviewSourceHtmlRef.current = slide.html;
-    templatePreviewHtmlRef.current = applyTemplateWithInstance(slide.html, template.html, { position: activeRef.current, total: slidesRef.current.length, accent, instanceId: slide.id });
+    const layout = template.layouts.find((item) => item.id === (layoutId ?? template.defaultLayoutId));
+    if (!layout) { setApiError(`Layout reference is missing: ${template.id}/${layoutId ?? template.defaultLayoutId}`); return; }
+    templatePreviewHtmlRef.current = composeFor({ ...slide, templateId: template.id, layoutId: layout.id }, activeRef.current, captured.length, template, layout);
     reinject();
   };
-  const applyTemplate = (templateId: string) => {
+  const applyTemplate = (templateId: string, layoutId?: string) => {
     const template = templates.find((item) => item.id === templateId);
     const index = activeRef.current - 1;
     if (!template) return;
@@ -1583,9 +1615,9 @@ export default function Home() {
     const slide = captured[index];
     if (!slide) return;
     checkpoint();
-    const html = applyTemplateWithInstance(slide.html, template.html, { position: activeRef.current, total: captured.length, accent, instanceId: slide.id });
-    const title = titleFromSlideHtml(html);
-    setSlidesSynced(captured.map((item, itemIndex) => itemIndex === index ? { ...item, title: title ?? item.title, html } : item));
+    const selectedLayout = template.layouts.find((item) => item.id === (layoutId ?? template.defaultLayoutId));
+    if (!selectedLayout) { setApiError(`Layout reference is missing: ${template.id}/${layoutId ?? template.defaultLayoutId}`); return; }
+    setSlidesSynced(captured.map((item, itemIndex) => itemIndex === index ? { ...item, templateId: template.id, layoutId: selectedLayout.id } : item));
     markDirty();
     dismissPopover(false);
     reinject();
@@ -1601,7 +1633,9 @@ export default function Home() {
       node.classList.add(next.className);
     });
     setAccent(value);
-    syncFromDom();
+    const captured = captureActive();
+    setSlidesSynced(captured.map((slide, index) => index === activeRef.current - 1 ? { ...slide, accent: value } : slide));
+    markDirty();
   };
 
   /* --- Slide operations ---------------------------------------------------------------- */
@@ -1644,15 +1678,16 @@ export default function Home() {
     markDirty();
   };
 
-  const addSlide = (templateId?: string) => {
+  const addSlide = (templateId?: string, layoutId?: string) => {
     checkpoint();
     const captured = captureActive();
-    const template = templates.find((item) => item.id === templateId);
+    const template = templates.find((item) => item.id === templateId) ?? templates[0];
+    const selectedLayout = template?.layouts.find((item) => item.id === (layoutId ?? template.defaultLayoutId));
+    if (!template || !selectedLayout) { setApiError(`Template or layout reference is missing: ${templateId ?? ""}/${layoutId ?? ""}`); return; }
     const empty = '<main class="weave-slide"><section data-weave-slot="content"><h1 data-weave-slot="title" data-weave-id="title"></h1></section></main>';
     const slideId = `slide-${createMessageId().slice(6)}`;
-    const framed = template ? applyTemplateWithInstance(empty, template.html, { position: captured.length + 1, total: captured.length + 1, accent, instanceId: slideId }) : blankSlideHtml(background, accent);
-    const html = framed.replace(/\bdata-weave-id\s*=\s*(["'])(.*?)\1/gi, (_: string, quote: string) => `data-weave-id=${quote}block-${createMessageId().slice(6)}${quote}`);
-    const slide = slideFromHtml({ id: slideId, title: "", notes: "", html });
+    const html = empty.replace(/\bdata-weave-id\s*=\s*(["'])(.*?)\1/gi, (_: string, quote: string) => `data-weave-id=${quote}block-${createMessageId().slice(6)}${quote}`);
+    const slide = slideFromHtml({ id: slideId, title: "", notes: "", templateId: template.id, layoutId: selectedLayout.id, accent, html });
     const next = [...captured, slide];
     setSlidesSynced(next);
     activeRef.current = next.length;
@@ -1834,7 +1869,7 @@ export default function Home() {
     if (!saved && !savedLocally) { setGalleryDialog({ kind: "create", title }); return; }
     setNewProjectCreating(true);
     try {
-      const response = await fetch(`${apiBase}/projects`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title, template: newProjectTemplate }) });
+      const response = await fetch(`${apiBase}/projects`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title, templateId: newProjectTemplate }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "プロジェクトを作成できませんでした。");
       applyServerState(result as ServerState);
@@ -1878,7 +1913,10 @@ export default function Home() {
     }
   };
 
-  const exportFragments = () => captureActive().map((slide) => slide.html);
+  const exportFragments = () => {
+    const captured = captureActive();
+    return composedSlides(captured);
+  };
 
   const exportDeck = async () => {
     if (!quality.ok) { popoverTriggerRef.current = null; setOpenPopover("quality"); setApiError("Resolve quality errors before exporting."); return; }
@@ -2240,9 +2278,31 @@ export default function Home() {
 
   /* Switching to Code mode captures the live DOM into `slides` first, so the code view can
      read the fresh HTML straight from state without touching a ref during render. */
-  const codeView = mode === "code" ? slides[activeSlide - 1]?.html ?? "" : "";
-  const templatePreview = (template: TemplateDoc, instanceId: string) => <span className="template-preview" aria-hidden="true" dangerouslySetInnerHTML={{ __html: displayAssetHtml(withUniqueFragmentIds(template.html, `${template.id}-${instanceId}`)) }} />;
-  const currentTemplate = templates.find((template) => template.id === currentTemplateId);
+  const codeView = mode === "code" ? (() => {
+    const slide = slides[activeSlide - 1];
+    if (!slide) return "";
+    try { return composeFor(slide, activeSlide, slides.length); } catch (error) { return error instanceof Error ? error.message : String(error); }
+  })() : "";
+  const templatePreview = (template: TemplateDoc, instanceId: string, layoutId = template.defaultLayoutId) => {
+    const source = blankSlideHtml("");
+    const layout = template.layouts.find((item) => item.id === layoutId);
+    if (!layout) return <span className="template-preview template-preview-empty" aria-label={`Layout reference is missing: ${template.id}/${layoutId}`} />;
+    let html = "";
+    try { html = composeSlideHtml({ slideHtml: source, masterHtml: template.masterHtml, layoutHtml: layout.html, templateId: template.id, layoutId: layout.id, position: 1, total: 1, accent: "#f6b84b", instanceId: `${template.id}-${instanceId}` }); }
+    catch { return <span className="template-preview template-preview-empty" />; }
+    return <span className="template-preview" aria-hidden="true" dangerouslySetInnerHTML={{ __html: displayAssetHtml(html) }} />;
+  };
+  const templateThumbnail = (template: TemplateDoc, title: string) => {
+    const layout = template.layouts.find((item) => item.id === template.defaultLayoutId);
+    if (!layout) return null;
+    try {
+      const html = composeSlideHtml({ slideHtml: blankSlideHtml(""), masterHtml: template.masterHtml, layoutHtml: layout.html, templateId: template.id, layoutId: layout.id, position: 1, total: 1, accent: "#f6b84b", instanceId: `${template.id}-${title}` });
+      return thumbHtml(displayAssetHtml(html), deckCss, title);
+    } catch { return null; }
+  };
+  const currentSlide = slides[activeSlide - 1];
+  const currentTemplate = templates.find((template) => template.id === (currentSlide?.templateId ?? currentTemplateId));
+  const currentLayout = currentTemplate?.layouts.find((layout) => layout.id === currentSlide?.layoutId);
 
   const slideNavigator = (
     <>
@@ -2287,7 +2347,10 @@ export default function Home() {
             <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
             <div className="template-options new-slide-options" role="listbox" aria-label="New slide layout">
               {templates.map((template) => (
-                <button key={template.id} role="option" aria-selected="false" onClick={() => addSlide(template.id)}>{templatePreview(template, "new-slide")}<span>{template.name}</span></button>
+                <div className="template-group" key={template.id}>
+                  <strong className="template-group-name">{template.name}</strong>
+                  {template.layouts.map((layout) => <button key={`${template.id}-${layout.id}`} role="option" aria-selected="false" onClick={() => addSlide(template.id, layout.id)}>{templatePreview(template, `new-slide-${layout.id}`, layout.id)}<span>{layout.name}</span></button>)}
+                </div>
               ))}
             </div>
           </>
@@ -2848,25 +2911,28 @@ export default function Home() {
           <section className="property-section layout-section">
             <div className="property-heading"><span>SLIDE LAYOUT</span><span>⌃</span></div>
             <button className="layout-select" onClick={(event) => togglePopover("layouts", event.currentTarget)} aria-expanded={openPopover === "layouts"} aria-haspopup="listbox">
-              {currentTemplate ? templatePreview(currentTemplate, "current-layout") : <span className="template-preview template-preview-empty" />}
-              <span><strong>{currentTemplate?.name ?? "Custom"}</strong><small>{currentTemplate ? "Project template" : "No matching template"}</small></span>
+              {currentTemplate && currentLayout ? templatePreview(currentTemplate, "current-layout", currentLayout.id) : <span className="template-preview template-preview-empty" />}
+              <span><strong>{currentLayout?.name ?? currentTemplate?.name ?? "Custom"}</strong><small>{currentTemplate ? currentTemplate.name : "No matching template"}</small></span>
               <b>⌄</b>
             </button>
             {openPopover === "layouts" && (
               <>
                 <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
                 <div className="template-options layout-options" role="listbox" aria-label="Slide layout">
-                  {templates.map((template) => (
-                    <button
-                      key={template.id}
-                      role="option"
-                      aria-selected={currentTemplateId === template.id}
-                      onPointerEnter={() => previewTemplate(template.id)}
-                      onPointerLeave={cancelTemplatePreview}
-                      onFocus={() => previewTemplate(template.id)}
-                      onBlur={cancelTemplatePreview}
-                      onClick={() => applyTemplate(template.id)}
-                    >{templatePreview(template, "layout-list")}<span>{template.name}</span></button>
+                  {(currentTemplate ? [currentTemplate] : templates).map((template) => (
+                    <div className="template-group" key={template.id}>
+                      <strong className="template-group-name">{template.name}</strong>
+                      {template.layouts.map((layout) => <button
+                        key={`${template.id}-${layout.id}`}
+                        role="option"
+                        aria-selected={currentSlide?.templateId === template.id && currentSlide.layoutId === layout.id}
+                        onPointerEnter={() => previewTemplate(template.id, layout.id)}
+                        onPointerLeave={cancelTemplatePreview}
+                        onFocus={() => previewTemplate(template.id, layout.id)}
+                        onBlur={cancelTemplatePreview}
+                        onClick={() => applyTemplate(template.id, layout.id)}
+                      >{templatePreview(template, `layout-list-${layout.id}`, layout.id)}<span>{layout.name}</span></button>)}
+                    </div>
                   ))}
                 </div>
               </>
@@ -2893,13 +2959,10 @@ export default function Home() {
           {galleryView === "new" ? (
             <div className="new-flow">
               <div className="template-row">
-                {(["orbit", "grid", "plain"] as const).map((id) => {
-                  const template = templates.find((item) => item.id === id) ?? { id, name: id[0].toUpperCase() + id.slice(1), html: blankSlideHtml(id) };
-                  return <div className={`project-card ${newProjectTemplate === id ? "selected" : ""}`} key={id}>
-                    <button className="project-thumb" onClick={() => setNewProjectTemplate(id)} aria-label={`${template.name}テンプレートを選択`}>{thumbHtml(displayAssetHtml(template.html), deckCss, template.name)}</button>
-                    <div className="card-meta"><strong>{template.name}</strong><small>テンプレート</small></div>
-                  </div>;
-                })}
+                {templates.map((template) => <div className={`project-card ${newProjectTemplate === template.id ? "selected" : ""}`} key={template.id}>
+                  <button className="project-thumb" onClick={() => setNewProjectTemplate(template.id)} aria-label={`${template.name}テンプレートを選択`}>{templateThumbnail(template, template.name)}</button>
+                  <div className="card-meta"><strong>{template.name}</strong><small>{template.layouts.length}レイアウト</small></div>
+                </div>)}
               </div>
               <div className="name-row">
                 <label htmlFor="new-project-title">名前</label>
@@ -2976,7 +3039,7 @@ export default function Home() {
           if (event.key === "Escape") setShowPresenter(false);
         }}>
           <style>{deckCss}</style>
-          <div className="presenter-stage" style={{ "--slide-scale": presenterScale } as React.CSSProperties} dangerouslySetInnerHTML={{ __html: displayAssetHtml(slides[presentSlide - 1]?.html ?? "") }} />
+          <div className="presenter-stage" style={{ "--slide-scale": presenterScale } as React.CSSProperties} dangerouslySetInnerHTML={{ __html: displayAssetHtml((() => { const slide = slides[presentSlide - 1]; if (!slide) return ""; try { return composeFor(slide, presentSlide, slides.length); } catch (error) { return error instanceof Error ? error.message : String(error); } })()) }} />
           <footer>
             <button onClick={() => setPresentSlide((value) => Math.max(1, value - 1))}>← Previous</button>
             <span>{presentSlide} / {slides.length}</span>
