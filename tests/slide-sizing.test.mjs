@@ -31,6 +31,8 @@ test("the browser reset precedes utilities and root leading stays unitless", () 
   const defaults = classesOf(defaultSlideClasses);
   assert.ok(defaults.includes("text-lg"));
   assert.ok(defaults.includes("leading-normal"));
+  assert.equal(defaults.includes("w-full"), false);
+  assert.equal(defaults.includes("h-full"), false);
   assert.ok(css.indexOf(".weave-slide.text-lg,") < css.indexOf(".weave-slide.leading-normal,"), "unitless leading must override text-lg's fixed line-height");
 });
 

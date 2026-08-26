@@ -54,8 +54,10 @@ test("policy gates protect commits while turn writes stay available", async () =
   const turnStart = localApi.slice(localApi.indexOf('url.pathname === "/api/codex/turn/start"'), localApi.indexOf('url.pathname === "/api/codex/turn/steer"'));
   const steer = localApi.slice(localApi.indexOf('url.pathname === "/api/codex/turn/steer"'), localApi.indexOf('url.pathname === "/api/codex/turn/interrupt"'));
   const writeBody = project.slice(project.indexOf("export async function writeProject"), project.indexOf("export async function assertCommittable"));
-  assert.ok(save.includes("assertCommittable"));
-  assert.ok(save.indexOf("assertCommittable") < save.indexOf("commitIfChanged"));
+  const atomicSave = project.slice(project.indexOf("export async function saveProject"), project.indexOf("export async function assertCommittable"));
+  assert.ok(save.includes("saveProject"));
+  assert.ok(atomicSave.includes("assertCommittable"));
+  assert.ok(atomicSave.indexOf("assertCommittable") < atomicSave.indexOf("commitIfChanged"));
   assert.match(turnStart, /writeProject\(payload\.deck\)/);
   assert.doesNotMatch(turnStart, /writeProject\(payload\.deck,\s*[^)]/);
   assert.doesNotMatch(steer, /writeProject/);
@@ -111,11 +113,12 @@ test("activity rail destinations render their details in the left sidebar", asyn
 test("the editor context stays with the composer instead of scrolling with the message log", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const messagesStart = page.indexOf('<div ref={messagesRef} className="messages"');
-  const chatStart = page.indexOf('<div className="chat-box">', messagesStart);
+  const chatStart = page.indexOf('<div className="chat-box"', messagesStart);
   assert.notEqual(messagesStart, -1);
   assert.notEqual(chatStart, -1);
   assert.doesNotMatch(page.slice(messagesStart, chatStart), /className="context-chip"/);
-  assert.match(page.slice(chatStart), /<div className="chat-box">\s*<div className="context-chip"/);
+  assert.match(page.slice(chatStart), /onDragOver=\{.*onDrop=\{.*onPaste=\{/s);
+  assert.match(page.slice(chatStart), /<div className="context-chip"/);
 });
 
 test("transient lists share one dismissible popover contract", async () => {
@@ -123,7 +126,8 @@ test("transient lists share one dismissible popover contract", async () => {
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
-  assert.match(page, /type OpenPopover = "project" \| "delivery" \| "threads" \| "addBlock" \| "layouts" \| "newSlide" \| "quality" \| null/);
+  assert.match(page, /type OpenPopover = "delivery" \| "threads" \| "addBlock" \| "layouts" \| "newSlide" \| "quality" \| "agentModel" \| "references" \| null/);
+  assert.doesNotMatch(page, /OpenPopover[^\n]*"project"/);
   assert.match(page, /const \[openPopover, setOpenPopover\]/);
   assert.match(page, /event\.key !== "Escape"/);
   assert.match(page, /onPointerDown=\{\(\) => dismissPopover\(\)\}/);
@@ -142,12 +146,33 @@ test("commands are grouped by editing, project, and delivery intent", async () =
   for (const group of ["history-tools", "content-tools", "slide-tools", "zoom-tools"]) {
     assert.match(page, new RegExp(`className="canvas-tool-group ${group}"`));
   }
-  assert.match(page, /className="topbar-popover project-menu"/);
+  assert.doesNotMatch(page, /className="topbar-popover project-menu"/);
+  assert.match(page, /className="project-switcher"[^>]*aria-haspopup="dialog"/);
+  assert.match(page, /className="gallery" role="dialog"/);
   assert.match(page, /className="topbar-popover delivery-menu"/);
   assert.match(page, /<h3>Appearance<\/h3>/);
   assert.doesNotMatch(page, /className="icon-button"/);
   assert.doesNotMatch(page, /className="share-button"/);
   assert.match(css, /\.canvas-tool-group \+ \.canvas-tool-group/);
+});
+
+test("project changes preserve browser-only edits until they are saved", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const switchProject = page.slice(page.indexOf("const switchProject = async"), page.indexOf("const galleryMutation"));
+  const createProject = page.slice(page.indexOf("const createProject = async"), page.indexOf("const relativeProjectTime"));
+  assert.match(switchProject, /if \(!saved && !savedLocally\)/);
+  assert.match(createProject, /if \(!saved && !savedLocally\)/);
+  assert.match(page, /galleryDialog\.kind === "create"/);
+  assert.match(page, /return unchanged;/);
+});
+
+test("project writes bind to an explicit root across asynchronous work", async () => {
+  const project = await readFile(new URL("../server/project.mjs", import.meta.url), "utf8");
+  const writeProject = project.slice(project.indexOf("export async function writeProject"), project.indexOf("export async function assertCommittable"));
+  const createProject = project.slice(project.indexOf("async function createProjectUnlocked"), project.indexOf("export async function createProject"));
+  assert.match(writeProject, /writeProjectUnlocked\(input, expectedRevision, root\)/);
+  assert.match(createProject, /writeProjectUnlocked\([^;]+, null, root\)/);
+  assert.doesNotMatch(project, /function withProjectRoot/);
 });
 
 test("the content-bearing local slide library is removed", async () => {
@@ -167,12 +192,19 @@ test("the slide canvas opens at 100% zoom", async () => {
   ]);
   assert.match(page, /const defaultCanvasZoom = 1;/);
   assert.match(page, /useState<number \| null>\(defaultCanvasZoom\)/);
+  assert.match(page, /const zoomLevel = manualZoom \?\? defaultCanvasZoom;/);
+  assert.match(page, /const slideScale = fitScale \* zoomLevel;/);
+  assert.match(page, /data-zoom-mode=\{zoomLevel <= defaultCanvasZoom \? "fit" : "manual"\}/);
+  assert.match(page, /Math\.round\(zoomLevel \* 100\)/);
+  assert.match(page, /aria-label="Reset zoom to 100%" onClick=\{\(\) => setManualZoom\(defaultCanvasZoom\)\}/);
   assert.match(page, /aria-label="Fit to screen" onClick=\{\(\) => setManualZoom\(null\)\}/);
   assert.match(page, /const \[inspectorOpen, setInspectorOpen\] = useState\(true\)/);
   assert.match(page, /data-focus=\{canvasFocused \? "canvas" : "workspace"\}/);
   assert.match(page, /aria-label=\{canvasFocused \? "Exit canvas focus" : "Focus canvas"\}/);
   assert.match(css, /\.canvas-area \{[^}]*container-type: size/);
-  assert.match(css, /\.slide-shell \{[^}]*width: min\(calc\(100cqw - 24px\), calc\(160cqh - 19\.2px\), 1280px\)/);
+  assert.match(css, /\.slide-shell \{[^}]*width: min\(calc\(100cqw - 24px\), calc\(177\.7778cqh - 131\.5556px\), 1280px\)/);
+  assert.match(css, /\.canvas-interaction-status \{[^}]*bottom: calc\(95% \+ 1px\)/);
+  assert.match(css, /\.canvas-toolbar \{[^}]*top: calc\(95% \+ 1px\)/);
   assert.match(css, /\.workspace\[data-focus="canvas"\] \{ grid-template-columns: minmax\(540px, 1fr\); \}/);
   assert.match(css, /\.workspace\[data-focus="canvas"\] \.filmstrip \{ display: none; \}/);
   assert.match(css, /\.workspace\[data-slide-nav\]\[data-focus="canvas"\] \.center-stage \{ grid-template-rows: 38px minmax\(0, 1fr\); \}/);
@@ -284,12 +316,45 @@ test("local API constrains origins and exposes reconnectable NDJSON events", asy
   assert.doesNotMatch(source, /response.*close.*interrupt/is);
 });
 
+test("project retarget failures keep Codex connection state consistent", async () => {
+  const source = await readFile(new URL("../server/local-api.mjs", import.meta.url), "utf8");
+  const retarget = source.slice(source.indexOf("async function retargetCodex"), source.indexOf("function requireText"));
+  assert.match(retarget, /codex\.publishIncompatible\(error, "project retarget"\)/);
+  assert.doesNotMatch(retarget, /events\.publish\("codex\/connection"/);
+});
+
+test("project switching serializes root changes through ensure and Codex retargeting", async () => {
+  const source = await readFile(new URL("../server/local-api.mjs", import.meta.url), "utf8");
+  assert.match(source, /let projectSwitchQueue = Promise\.resolve\(\);/);
+  assert.match(source, /const next = projectSwitchQueue\.then\(operation, operation\);/);
+  assert.match(source, /projectSwitchQueue = next\.catch\(\(\) => \{\}\);/);
+  for (const route of [
+    source.slice(source.indexOf('if (request.method === "POST" && url.pathname === "/api/projects")'), source.indexOf('if (request.method === "POST" && url.pathname === "/api/projects/current")')),
+    source.slice(source.indexOf('if (request.method === "POST" && url.pathname === "/api/projects/current")'), source.indexOf('const projectMatch')),
+  ]) {
+    assert.match(route, /await enqueueProjectSwitch\(async \(\) => \{/);
+    assert.ok(route.indexOf("await switchProject") < route.indexOf("await ensureProject"));
+    assert.ok(route.indexOf("await ensureProject") < route.indexOf("await retargetCodex"));
+  }
+});
+
 test("development processes share one strict loopback web port", async () => {
   const source = await readFile(new URL("../scripts/dev.mjs", import.meta.url), "utf8");
   assert.match(source, /resolveWebPort/);
   assert.match(source, /WEAVE_WEB_PORT/);
   assert.match(source, /127\.0\.0\.1/);
   assert.match(source, /--strictPort/);
+});
+
+test("async editor updates preserve newer local edits", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /editGenerationRef/);
+  assert.match(page, /generation === editGenerationRef\.current/);
+  assert.match(page, /applyServerState\(result as ServerState, unchanged\)/);
+  assert.match(page, /targetSlideId/);
+  assert.match(page, /targetElementId/);
+  assert.match(page, /annotations: annotations\.map\(cloneAnnotation\)/);
+  assert.match(page, /embeddedAssets/);
 });
 
 test("production code does not call excluded or experimental app-server APIs", async () => {

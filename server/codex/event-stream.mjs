@@ -21,11 +21,23 @@ export class CodexEventStream extends EventEmitter {
   }
 
   attach(response, sequence = 0) {
+    let lastSent = sequence;
     const send = (event) => {
+      if (event.sequence <= lastSent) return;
+      lastSent = event.sequence;
       if (!response.destroyed && !response.writableEnded) response.write(`${JSON.stringify(event)}\n`);
     };
-    for (const event of this.since(sequence)) send(event);
     this.on("event", send);
+    const oldest = this.events[0]?.sequence ?? this.sequence + 1;
+    if (sequence < oldest - 1) {
+      send({
+        sequence: oldest - 1,
+        type: "codex/gap",
+        payload: { requested: sequence, oldest, latest: this.sequence },
+        emittedAt: Date.now(),
+      });
+    }
+    for (const event of this.since(lastSent)) send(event);
     const heartbeat = setInterval(() => {
       if (!response.destroyed && !response.writableEnded) response.write("\n");
     }, 15_000);

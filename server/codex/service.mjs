@@ -1,15 +1,33 @@
+import { EventEmitter } from "node:events";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CodexAppServerClient } from "./client.mjs";
 import { CodexEventStream } from "./event-stream.mjs";
 import { ServerRequestRouter } from "./request-router.mjs";
 import { checkGeneratedVersion } from "./version.mjs";
+import { referencesRoot } from "../project.mjs";
+import { isReferencePath } from "../../shared/context.mjs";
 
 const WEAVE_THREAD_SOURCE = "weave";
 const WEAVE_NAME_PREFIX = "Weave · ";
 
-function textInput(text) {
-  return [{ type: "text", text, text_elements: [] }];
+export function turnInput(text, attachments, projectRoot) {
+  const input = [{ type: "text", text, text_elements: [] }];
+  if (!Array.isArray(attachments)) return input;
+  for (const attachment of attachments) {
+    if (!attachment || typeof attachment.path !== "string") continue;
+    if (attachment.kind === "folder") continue;
+    if (!isReferencePath(attachment.path)) continue;
+    const referenceRoot = resolve(referencesRoot(projectRoot));
+    const absolutePath = resolve(projectRoot, attachment.path);
+    if (absolutePath !== referenceRoot && !absolutePath.startsWith(`${referenceRoot}/`)) continue;
+    const path = attachment.path.toLowerCase();
+    const mimeType = String(attachment.mimeType ?? "").toLowerCase();
+    if (/\.(png|jpe?g|webp|gif|svg)$/.test(path) || /^image\/(png|jpe?g|webp|gif|svg\+xml)$/.test(mimeType)) {
+      input.push({ type: "localImage", path: absolutePath });
+    }
+  }
+  return input;
 }
 
 function unwrapList(result) {
@@ -27,13 +45,14 @@ export function validateOAuthUrl(value) {
   return url.toString();
 }
 
-export class CodexService {
+export class CodexService extends EventEmitter {
   constructor({ projectRoot, instructions, client, eventStream, checkVersion = checkGeneratedVersion } = {}) {
+    super();
     this.projectRoot = projectRoot;
     this.instructions = instructions;
     this.client = client ?? new CodexAppServerClient({ cwd: projectRoot });
     this.events = eventStream ?? new CodexEventStream();
-    this.router = new ServerRequestRouter(this.client);
+    this.router = null;
     this.ready = false;
     this.initializing = null;
     this.version = null;
@@ -49,12 +68,24 @@ export class CodexService {
     };
     this.activeTurns = new Map();
     this.interruptingThreads = new Set();
+    this.retargeting = false;
     this.sentMessages = new Map();
     this.weaveThreadIds = new Set();
 
+    this.attachClient(this.client);
+  }
+
+  attachClient(client) {
+    this.client = client;
+    this.router = new ServerRequestRouter(this.client);
     this.client.on("notification", (message) => this.handleNotification(message));
     this.client.on("connection", (connection) => {
       this.ready = false;
+      if (connection.status === "disconnected") {
+        this.completeActiveTurns(connection.error ?? "Codex disconnected.");
+        this.publishConnection({ ...connection, error: connection.error ?? null });
+        return;
+      }
       if (connection.status === "connected") {
         // The child process is reachable, but it is not ready until the official
         // initialize -> initialized handshake succeeds.
@@ -210,10 +241,27 @@ export class CodexService {
     if (method === "mcpServer/oauthLogin/completed") void this.refreshCatalog();
     if (method === "mcpServer/startupStatus/updated") void this.refreshCatalog();
     this.events.publish("codex/notification", message);
+    this.emit("notification", message);
+  }
+
+  completeActiveTurns(error) {
+    for (const [threadId, turnId] of this.activeTurns) {
+      this.handleNotification({
+        method: "turn/completed",
+        params: {
+          threadId,
+          turn: { id: turnId, status: "failed", error },
+        },
+      });
+    }
   }
 
   assertReady() {
     if (!this.ready) throw new Error("Codex app-server is not ready.");
+  }
+
+  assertNotRetargeting() {
+    if (this.retargeting) throw new Error("Codex project root is changing.");
   }
 
   isWeaveThread(thread) {
@@ -273,6 +321,7 @@ export class CodexService {
   }
 
   async startThread(options = {}) {
+    this.assertNotRetargeting();
     this.assertReady();
     const result = await this.client.request("thread/start", {
       cwd: this.projectRoot,
@@ -300,6 +349,7 @@ export class CodexService {
   }
 
   async resumeThread(threadId) {
+    this.assertNotRetargeting();
     await this.assertWeaveThread(threadId);
     const result = await this.client.request("thread/resume", {
       threadId,
@@ -310,6 +360,7 @@ export class CodexService {
   }
 
   async forkThread(threadId, lastTurnId = null) {
+    this.assertNotRetargeting();
     await this.assertWeaveThread(threadId);
     const result = await this.client.request("thread/fork", {
       threadId,
@@ -328,6 +379,7 @@ export class CodexService {
   }
 
   async threadAction(action, params) {
+    this.assertNotRetargeting();
     const methodByAction = {
       name: "thread/name/set",
       goalSet: "thread/goal/set",
@@ -347,7 +399,8 @@ export class CodexService {
     return await this.client.request(method, safeParams);
   }
 
-  async startTurn({ threadId, prompt, clientUserMessageId, model, effort, approvalPolicy = "never" }) {
+  async startTurn({ threadId, prompt, clientUserMessageId, model, effort, approvalPolicy = "never", attachments }) {
+    this.assertNotRetargeting();
     await this.assertWeaveThread(threadId);
     if (this.activeTurns.has(threadId)) throw new Error("This thread already has a running turn.");
     if (!clientUserMessageId) throw new Error("clientUserMessageId is required.");
@@ -356,14 +409,14 @@ export class CodexService {
     const request = this.client.request("turn/start", {
       threadId,
       clientUserMessageId,
-      input: textInput(prompt),
+      input: turnInput(prompt, attachments, this.projectRoot),
       cwd: this.projectRoot,
       approvalPolicy,
       approvalsReviewer: approvalPolicy === "never" ? null : "user",
       sandboxPolicy: {
         type: "workspaceWrite",
         writableRoots: [this.projectRoot],
-        networkAccess: false,
+        networkAccess: true,
         excludeTmpdirEnvVar: false,
         excludeSlashTmp: false,
       },
@@ -381,7 +434,8 @@ export class CodexService {
     }
   }
 
-  async steerTurn({ threadId, prompt, clientUserMessageId }) {
+  async steerTurn({ threadId, prompt, clientUserMessageId, attachments }) {
+    this.assertNotRetargeting();
     await this.assertWeaveThread(threadId);
     const expectedTurnId = this.activeTurns.get(threadId);
     if (!expectedTurnId) throw new Error("This thread has no running turn.");
@@ -389,7 +443,7 @@ export class CodexService {
       threadId,
       expectedTurnId,
       clientUserMessageId,
-      input: textInput(prompt),
+      input: turnInput(prompt, attachments, this.projectRoot),
     });
   }
 
@@ -445,5 +499,39 @@ export class CodexService {
   async stop() {
     this.router.dispose();
     await this.client.stop();
+  }
+
+  async setProjectRoot(root) {
+    if (this.retargeting) throw new Error("Codex project root is already changing.");
+    if (root === this.projectRoot) return;
+    this.retargeting = true;
+    try {
+      const pendingTurns = [...this.activeTurns.entries()];
+      await Promise.all(pendingTurns.map(([threadId]) => this.interruptTurn(threadId).catch(() => {})));
+      for (const [threadId, turnId] of pendingTurns) {
+        if (this.activeTurns.get(threadId) === turnId) {
+          this.handleNotification({
+            method: "turn/completed",
+            params: {
+              threadId,
+              turn: { id: turnId, status: "failed", error: "Codex project root changed." },
+            },
+          });
+        }
+      }
+      this.interruptingThreads.clear();
+      this.sentMessages.clear();
+      await this.stop();
+      this.projectRoot = root;
+      this.ready = false;
+      this.weaveThreadIds.clear();
+      this.catalog = { models: [], skills: [], hooks: [], mcpServers: [], account: null, modelProvider: null };
+      this.client = new CodexAppServerClient({ cwd: root });
+      this.attachClient(this.client);
+      this.events.publish("codex/connection", { status: "connecting", error: null });
+      await this.start();
+    } finally {
+      this.retargeting = false;
+    }
   }
 }

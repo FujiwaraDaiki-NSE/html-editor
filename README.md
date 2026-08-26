@@ -46,7 +46,7 @@ npm run dev
 - version付き`.weave.json`バンドルでデッキとCSSを安全に持ち運ぶ
 - リビジョン競合を検知し、デッキと生成HTMLをトランザクション保存する
 
-編集対象は `workspaces/northstar/` に自動作成されます。`.weave/deck.json` が正規のエディタ状態で、`slides/` 以下にスライドごとのHTMLが生成されます。各プロジェクトは独立したgitリポジトリとして管理されます。
+編集対象のプロジェクトは `workspaces/<slug>/` に自動作成されます。`.weave/deck.json` が正規のエディタ状態で、`slides/` 以下にスライドごとのHTMLが生成されます。各プロジェクトは独立したgitリポジトリとして管理されます。
 
 Codex app-serverとの通信は公式のJSON-RPCライフサイクル（初期化、thread、turn、通知ストリーム）に沿ってローカルAPIが担当します。ブラウザからapp-serverや資格情報へ直接アクセスしません。
 

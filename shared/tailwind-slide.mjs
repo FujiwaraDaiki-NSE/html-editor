@@ -232,7 +232,7 @@ export const allowedSlideClasses = new Set([...structuralSlideClasses, ...utilit
 
 /* text-lg carries a fixed 1.75rem line-height; leading-normal is emitted after size utilities so
    inherited line-height stays unitless and each descendant recomputes it at its own font size. */
-export const defaultSlideClasses = "weave-slide relative flex h-full w-full flex-col overflow-hidden bg-slate-950 p-16 text-slate-50 text-lg leading-normal";
+export const defaultSlideClasses = "weave-slide relative flex flex-col overflow-hidden bg-slate-950 p-16 text-slate-50 text-lg leading-normal";
 
 const escapeClass = (name) => name.replaceAll("/", "\\/");
 export function buildTailwindSlideCss() {
@@ -565,6 +565,7 @@ export function migrateSlideHtmlToTailwind(input) {
     let classes = value.split(/\s+/).filter(Boolean);
     const add = [];
     if (classes.includes("weave-slide")) {
+      classes = classes.filter((className) => className !== "w-full" && className !== "h-full");
       const theme = classes.includes("theme-plain") || classes.includes("plain") ? "plain" : classes.includes("theme-grid") || classes.includes("grid") ? "grid" : "orbit";
       classes = classes.filter((className) => !["orbit", "grid", "plain"].includes(className));
       add.push(...defaultSlideClasses.split(" "));
