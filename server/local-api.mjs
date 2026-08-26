@@ -301,7 +301,7 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method !== "GET" && request.method !== "POST" && request.method !== "PATCH") return sendJson(request, response, 404, { error: "Not found." });
-    const payload = await readJson(request, url.pathname === "/api/assets" ? 14_000_000 : url.pathname === "/api/references" ? 36_000_000 : 1_500_000);
+    const payload = await readJson(request, url.pathname === "/api/assets" ? 14_000_000 : url.pathname === "/api/references" ? 36_000_000 : url.pathname === "/api/save" ? 5_000_000 : 1_500_000);
 
     if (request.method === "POST" && url.pathname === "/api/projects") {
       const result = await enqueueProjectSwitch(async () => {

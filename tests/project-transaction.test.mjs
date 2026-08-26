@@ -447,3 +447,27 @@ test("saving an imported bundle installs its template packages before validating
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("a rejected imported template package leaves both templates and deck untouched", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weave-template-import-rollback-"));
+  const previousRoot = process.env.WEAVE_PROJECT_ROOT;
+  process.env.WEAVE_PROJECT_ROOT = root;
+  try {
+    const project = await import(`../server/project.mjs?template-import-rollback=${Date.now()}`);
+    await project.ensureProject();
+    const deck = await project.readProject();
+    const templates = await project.readTemplates();
+    const masterPath = join(root, "templates/orbit/master.html");
+    const originalMaster = await readFile(masterPath, "utf8");
+    const originalManifest = await readFile(join(root, ".weave/deck.json"), "utf8");
+    const packages = templates.map((template) => template.id === "orbit" ? { ...template, masterHtml: template.masterHtml.replace("data-weave-layout-slot", "data-invalid-layout-slot") } : template);
+    await assert.rejects(project.saveProject(deck, project.getRevision(), "Reject invalid template", packages), /data-weave-layout-slot/);
+    assert.equal(await readFile(masterPath, "utf8"), originalMaster);
+    assert.equal(await readFile(join(root, ".weave/deck.json"), "utf8"), originalManifest);
+    assert.equal(git(root, ["status", "--porcelain"]), "");
+  } finally {
+    if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
+    else process.env.WEAVE_PROJECT_ROOT = previousRoot;
+    await rm(root, { recursive: true, force: true });
+  }
+});

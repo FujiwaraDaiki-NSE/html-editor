@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { composeSlideHtml } from "../shared/slide-slots.mjs";
 
 test("template catalog stores one package with named layouts", async () => {
   const root = await mkdtemp(join(tmpdir(), "weave-template-package-"));
@@ -150,15 +151,20 @@ test("legacy canonical frames consolidate while text-distinct custom frames stay
     await mkdir(join(root, "slides"), { recursive: true });
     await mkdir(join(root, "templates"), { recursive: true });
     const frame = (title, furniture = "") => `<main class="weave-slide theme-plain" data-weave-template="year-end-report-cover">${furniture}<section data-weave-slot="content"><h1 data-weave-slot="title" data-weave-id="title">${title}</h1></section></main>`;
-    await writeFile(join(root, "templates/year-end-report-cover.html"), frame(""));
+    const project = await import(`../server/project.mjs?compare=${Date.now()}`);
+    await project.ensureTemplates();
+    const seededReport = (await project.readTemplates()).find((template) => template.id === "year-end-report");
+    const cover = seededReport.layouts.find((layout) => layout.id === "cover");
+    const source = (title) => `<main data-weave-slide-source data-weave-template="year-end-report" data-weave-layout="cover" data-weave-accent="#f6b84b"><section data-weave-slot="content"><h1 data-weave-slot="title" data-weave-id="title">${title}</h1></section></main>`;
+    const canonicalFrame = (title) => composeSlideHtml({ slideHtml: source(title), masterHtml: seededReport.masterHtml, layoutHtml: cover.html, templateId: "year-end-report", layoutId: "cover", position: 1, total: 1, accent: "#f6b84b", instanceId: null }).replace('data-weave-template="year-end-report"', 'data-weave-template="year-end-report-cover"');
+    await writeFile(join(root, "templates/year-end-report-cover.html"), canonicalFrame(""));
     const orbitFrame = (brand, rootClass = "") => `<main class="weave-slide theme-orbit ${rootClass}"><div class="brand">${brand}</div><section data-weave-slot="content"><h1 data-weave-slot="title">Orbit</h1></section><div class="page-number">01 / 01</div></main>`;
     await writeFile(join(root, "templates/orbit.html"), orbitFrame("WEAVE<span>●</span>"));
     await writeFile(join(root, ".weave/deck.json"), `${JSON.stringify({ title: "Legacy", slides: ["canonical", "tag-1", "tag-2", "brand"].map((id) => ({ id, title: id, notes: "" })) })}\n`);
-    await writeFile(join(root, "slides/canonical.html"), frame("Canonical"));
+    await writeFile(join(root, "slides/canonical.html"), canonicalFrame("Canonical"));
     await writeFile(join(root, "slides/tag-1.html"), frame("One", '<aside data-weave-id="tag">TAG-1</aside>'));
     await writeFile(join(root, "slides/tag-2.html"), frame("Two", '<aside data-weave-id="tag">TAG-2</aside>'));
     await writeFile(join(root, "slides/brand.html"), orbitFrame("ACME-CUSTOM", "bg-slate-800"));
-    const project = await import(`../server/project.mjs?compare=${Date.now()}`);
     await project.ensureProject();
     const deck = await project.readProject();
     assert.equal(deck.slides[0].layoutId, "cover");
@@ -166,7 +172,11 @@ test("legacy canonical frames consolidate while text-distinct custom frames stay
     assert.match(deck.slides[2].layoutId, /^migrated-/);
     assert.notEqual(deck.slides[1].layoutId, deck.slides[2].layoutId);
     const report = (await project.readTemplates()).find((template) => template.id === "year-end-report");
-    assert.match(report.layouts.find((layout) => layout.id === deck.slides[1].layoutId).html, /TAG-1/);
+    const tagLayout = report.layouts.find((layout) => layout.id === deck.slides[1].layoutId).html;
+    assert.match(tagLayout, /TAG-1/);
+    assert.match(tagLayout, /class="[^"]*weave-slide[^"]*absolute[^"]*inset-0/);
+    assert.match(tagLayout, /data-weave-template="year-end-report"/);
+    assert.match(tagLayout, /data-weave-layout="cover"/);
     assert.match(report.layouts.find((layout) => layout.id === deck.slides[2].layoutId).html, /TAG-2/);
     const orbit = (await project.readTemplates()).find((template) => template.id === "orbit");
     const branded = orbit.layouts.find((layout) => layout.id === deck.slides[3].layoutId);

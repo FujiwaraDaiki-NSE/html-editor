@@ -28,6 +28,7 @@ import { selectThreadRunning, selectThreadTurns, selectTurnItems } from "./codex
 type SlideDoc = { id: string; title: string; notes: string; templateId: string; layoutId: string; accent: string; html: string };
 type TemplateLayout = { id: string; name: string; html: string };
 type TemplateDoc = { id: string; name: string; defaultLayoutId: string; masterHtml: string; layouts: TemplateLayout[] };
+type PortableBundle = { format: "weave-deck"; version: 2; deck: { title: string; defaultTemplateId: string; slides: SlideDoc[] }; templates: TemplateDoc[]; css: string };
 type ReferenceAttachment = { path: string; name: string; mimeType?: string; size: number; kind?: "file" | "folder"; files?: number };
 type ReferenceShelfEntry = ReferenceAttachment & { hash?: string; addedAt?: string; source?: string; sourceMissing?: boolean; missing: boolean; kind: "file" | "folder" };
 type FolderBrowser = { path: string; parent: string | null; breadcrumbs: Array<{ name: string; path: string }>; folders: Array<{ name: string; path: string }>; folderCount: number; fileCount: number };
@@ -67,6 +68,37 @@ const accents = [
   { color: "#a78bfa", className: "text-violet-400" }, { color: "#fb7185", className: "text-rose-400" },
   { color: "#34d399", className: "text-emerald-400" },
 ];
+
+const parsePortableBundle = (value: unknown): PortableBundle => {
+  const bundle = value as Partial<PortableBundle>;
+  if (bundle?.format !== "weave-deck" || bundle.version !== 2 || typeof bundle.css !== "string" || !bundle.deck || typeof bundle.deck.title !== "string" || typeof bundle.deck.defaultTemplateId !== "string" || !bundle.deck.defaultTemplateId || !Array.isArray(bundle.deck.slides) || !bundle.deck.slides.length || !Array.isArray(bundle.templates) || !bundle.templates.length) throw new Error("Unsupported Weave bundle.");
+  const ids = new Set<string>();
+  const templates = bundle.templates.map((template) => {
+    if (!template || typeof template.id !== "string" || !/^[a-z0-9_-]+$/.test(template.id) || ids.has(template.id) || typeof template.name !== "string" || !template.name || typeof template.defaultLayoutId !== "string" || !template.defaultLayoutId || typeof template.masterHtml !== "string" || !template.masterHtml || !Array.isArray(template.layouts) || !template.layouts.length) throw new Error("Unsupported Weave template package.");
+    ids.add(template.id);
+    const layoutIds = new Set<string>();
+    const layouts = template.layouts.map((layout) => {
+      if (!layout || typeof layout.id !== "string" || !/^[a-z0-9_-]+$/.test(layout.id) || layoutIds.has(layout.id) || typeof layout.name !== "string" || !layout.name || typeof layout.html !== "string" || !layout.html) throw new Error(`Unsupported layout package: ${template.id}`);
+      layoutIds.add(layout.id);
+      return { id: layout.id, name: layout.name, html: layout.html };
+    });
+    if (!layoutIds.has(template.defaultLayoutId)) throw new Error(`Unknown default layout: ${template.id}/${template.defaultLayoutId}`);
+    return { id: template.id, name: template.name, defaultLayoutId: template.defaultLayoutId, masterHtml: template.masterHtml, layouts };
+  });
+  const catalog = new Map(templates.map((template) => [template.id, template]));
+  if (!catalog.has(bundle.deck.defaultTemplateId)) throw new Error(`Unknown default template: ${bundle.deck.defaultTemplateId}`);
+  const slideIds = new Set<string>();
+  const slides = bundle.deck.slides.map((slide, index) => {
+    if (!slide || typeof slide.id !== "string" || !slide.id || slideIds.has(slide.id) || typeof slide.title !== "string" || typeof slide.notes !== "string" || typeof slide.templateId !== "string" || typeof slide.layoutId !== "string" || typeof slide.accent !== "string" || !slide.accent || typeof slide.html !== "string" || !slide.html) throw new Error("Unsupported slide package.");
+    slideIds.add(slide.id);
+    const template = catalog.get(slide.templateId);
+    const layout = template?.layouts.find((item) => item.id === slide.layoutId);
+    if (!template || !layout) throw new Error(`Unknown template/layout for slide ${slide.id}.`);
+    composeSlideHtml({ slideHtml: slide.html, masterHtml: template.masterHtml, layoutHtml: layout.html, templateId: slide.templateId, layoutId: slide.layoutId, position: index + 1, total: bundle.deck!.slides.length, accent: slide.accent, instanceId: slide.id });
+    return { id: slide.id, title: slide.title, notes: slide.notes, templateId: slide.templateId, layoutId: slide.layoutId, accent: slide.accent, html: slide.html };
+  });
+  return { format: "weave-deck", version: 2, deck: { title: bundle.deck.title, defaultTemplateId: bundle.deck.defaultTemplateId, slides }, templates, css: bundle.css };
+};
 
 /* Slide-navigator placement lives in localStorage, read through an external store so the
    server and the first client render agree on the default before the stored value applies. */
@@ -1958,8 +1990,7 @@ export default function Home() {
   const importBundle = async (file: File) => {
     try {
       if (file.size > 4_000_000) throw new Error("Deck bundle must be 4 MB or smaller.");
-      const bundle = JSON.parse(await file.text());
-      if (bundle.format !== "weave-deck" || bundle.version !== 2 || !bundle.deck || typeof bundle.deck.defaultTemplateId !== "string" || !bundle.deck.defaultTemplateId || !Array.isArray(bundle.deck.slides) || !Array.isArray(bundle.templates) || !bundle.templates.length || typeof bundle.css !== "string") throw new Error("Unsupported Weave bundle.");
+      const bundle = parsePortableBundle(JSON.parse(await file.text()));
       if (!window.confirm(`Replace the editor buffer with “${bundle.deck.title}”? You can Undo this import.`)) return;
       checkpoint();
       setDeckTitle(String(bundle.deck.title));

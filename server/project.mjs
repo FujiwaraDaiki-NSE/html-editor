@@ -595,8 +595,9 @@ export async function ensureTemplates(root = currentProjectRoot) {
   return touched;
 }
 
-async function writeTemplatePackages(input, root = currentProjectRoot) {
+async function normalizeTemplatePackages(input) {
   if (!Array.isArray(input) || !input.length || input.length > 50) throw new Error("Template packages are required.");
+  const normalized = [];
   for (const item of input) {
     const id = String(item?.id ?? "");
     const name = String(item?.name ?? "");
@@ -609,12 +610,25 @@ async function writeTemplatePackages(input, root = currentProjectRoot) {
     if (normalizedLayouts.some((layout) => !/^[a-z0-9_-]+$/.test(layout.id) || !layout.name || !layout.html)) throw new Error(`Invalid layout package: ${id}`);
     const policy = auditContentPolicy({ html: [masterHtml, ...normalizedLayouts.map((layout) => layout.html)].join("\n") });
     if (!policy.ok) throw new Error(`Template package failed content policy: ${id}`);
+    const formattedMaster = await formatSlideHtml(masterHtml);
+    const formattedLayouts = await Promise.all(normalizedLayouts.map(async (layout) => ({ ...layout, html: await formatSlideHtml(layout.html) })));
+    for (const layout of formattedLayouts) {
+      const source = `<main data-weave-slide-source data-weave-template="${id}" data-weave-layout="${layout.id}" data-weave-accent="#fbbf24"><section data-weave-slot="content"><h1 data-weave-slot="title" data-weave-id="title"></h1></section></main>`;
+      composeSlideHtml({ slideHtml: source, masterHtml: formattedMaster, layoutHtml: layout.html, templateId: id, layoutId: layout.id, position: 1, total: 1, accent: "#fbbf24", instanceId: null });
+    }
+    normalized.push({ id, name, defaultLayoutId, masterHtml: formattedMaster, layouts: formattedLayouts });
+  }
+  return normalized;
+}
+
+async function writeTemplatePackages(input, root = currentProjectRoot) {
+  for (const { id, name, defaultLayoutId, masterHtml, layouts } of input) {
     const path = join(templatesRoot(root), id);
     await mkdir(join(path, "layouts"), { recursive: true });
     await Promise.all([
-      writeFile(join(path, "template.json"), `${JSON.stringify({ id, name, defaultLayoutId, layouts: normalizedLayouts.map(({ id: layoutId, name: layoutName }) => ({ id: layoutId, name: layoutName })) }, null, 2)}\n`),
-      writeFile(join(path, "master.html"), await formatSlideHtml(masterHtml)),
-      ...normalizedLayouts.map(async (layout) => writeFile(join(path, "layouts", `${layout.id}.html`), await formatSlideHtml(layout.html))),
+      writeFile(join(path, "template.json"), `${JSON.stringify({ id, name, defaultLayoutId, layouts: layouts.map(({ id: layoutId, name: layoutName }) => ({ id: layoutId, name: layoutName })) }, null, 2)}\n`),
+      writeFile(join(path, "master.html"), masterHtml),
+      ...layouts.map(async (layout) => writeFile(join(path, "layouts", `${layout.id}.html`), layout.html)),
     ]);
   }
 }
@@ -805,20 +819,47 @@ export async function writeProject(input, expectedRevision = null) {
 export async function saveProject(input, expectedRevision, message, templatePackages) {
   const root = currentProjectRoot;
   return await runProjectExclusive(async () => {
+    let normalizedPackages = null;
+    let previousDeck = null;
+    let templateBackupRoot = null;
     if (templatePackages !== null) {
       assertRevision(expectedRevision, root);
       const incoming = validateProject(input);
-      const catalog = new Map(templatePackages.map((template) => [String(template?.id ?? ""), template]));
+      normalizedPackages = await normalizeTemplatePackages(templatePackages);
+      const catalog = new Map(normalizedPackages.map((template) => [template.id, template]));
       for (const slide of incoming.slides) {
         const template = catalog.get(slide.templateId);
         if (!template || !template.layouts?.some((layout) => layout?.id === slide.layoutId)) throw new Error(`Imported template/layout is missing for slide ${slide.id}.`);
       }
-      await writeTemplatePackages(templatePackages, root);
+      if (!catalog.has(incoming.defaultTemplateId)) throw new Error(`Imported default template is missing: ${incoming.defaultTemplateId}`);
+      previousDeck = await readProject(root);
+      templateBackupRoot = join(root, `.templates-${randomUUID()}.previous`);
+      await mkdir(templateBackupRoot, { recursive: true });
+      for (const template of normalizedPackages) {
+        const current = join(templatesRoot(root), template.id);
+        if (existsSync(current)) await cp(current, join(templateBackupRoot, template.id), { recursive: true });
+      }
     }
-    const deck = await writeProjectUnlocked(input, expectedRevision, root);
-    await assertCommittable(root);
-    const commit = commitIfChanged(message ?? `Save: ${deck.title}`, root);
-    return { deck, commit };
+    try {
+      if (normalizedPackages) await writeTemplatePackages(normalizedPackages, root);
+      const deck = await writeProjectUnlocked(input, expectedRevision, root);
+      await assertCommittable(root);
+      const commit = commitIfChanged(message ?? `Save: ${deck.title}`, root);
+      return { deck, commit };
+    } catch (error) {
+      if (normalizedPackages) {
+        for (const template of normalizedPackages) {
+          const current = join(templatesRoot(root), template.id);
+          const backup = join(templateBackupRoot, template.id);
+          await rm(current, { recursive: true, force: true });
+          if (existsSync(backup)) await cp(backup, current, { recursive: true });
+        }
+        if (previousDeck) await writeProjectUnlocked(previousDeck, null, root);
+      }
+      throw error;
+    } finally {
+      if (templateBackupRoot) await rm(templateBackupRoot, { recursive: true, force: true });
+    }
   }, root);
 }
 
@@ -1098,9 +1139,17 @@ async function migrateLegacySlide(slide, index, templates, accent) {
     if (error?.code === "ENOENT") return null;
     throw error;
   });
+  const targetTemplate = templates.get(mapping.templateId);
+  const targetLayout = targetTemplate?.layouts.find((layout) => layout.id === mapping.layoutId);
+  if (!targetTemplate || !targetLayout) throw new Error(`Unknown migration target: ${mapping.templateId}/${mapping.layoutId}`);
+  const emptySource = `<main data-weave-slide-source data-weave-template="${mapping.templateId}" data-weave-layout="${mapping.layoutId}" data-weave-accent="${slide.accent ?? accent}"><section data-weave-slot="content"><h1 data-weave-slot="title" data-weave-id="title"></h1></section></main>`;
+  const canonicalRendered = composeSlideHtml({ slideHtml: emptySource, masterHtml: targetTemplate.masterHtml, layoutHtml: targetLayout.html, templateId: mapping.templateId, layoutId: mapping.layoutId, position: 1, total: 1, accent: slide.accent ?? accent, instanceId: null });
+  const canonicalSnapshot = migrateLegacyLayoutClasses(extractLayoutSnapshotHtml(canonicalRendered, { removeMasterFurniture }));
+  const legacyTemplateSnapshot = legacyTemplateHtml == null ? null : migrateLegacyLayoutClasses(extractLayoutSnapshotHtml(legacyTemplateHtml, { removeMasterFurniture }));
   const hasUnknownFurniture = legacyTemplateHtml == null
     ? hasLegacyFurnitureOutsideContent(html)
-    : layoutFingerprint(layoutSnapshot) !== layoutFingerprint(migrateLegacyLayoutClasses(extractLayoutSnapshotHtml(legacyTemplateHtml, { removeMasterFurniture })));
+    : layoutFingerprint(legacyTemplateSnapshot) !== layoutFingerprint(canonicalSnapshot)
+      || layoutFingerprint(layoutSnapshot) !== layoutFingerprint(legacyTemplateSnapshot);
   let layoutId = mapping.layoutId;
   if (hasUnknownFurniture) {
     const hash = createHash("sha256").update(layoutFingerprint(layoutSnapshot)).digest("hex").slice(0, 12);
@@ -1108,7 +1157,8 @@ async function migrateLegacySlide(slide, index, templates, accent) {
     const templateRoot = join(templatesRoot(), mapping.templateId);
     const layoutPath = join(templateRoot, "layouts", `${layoutId}.html`);
     await mkdir(join(templateRoot, "layouts"), { recursive: true });
-    if (!existsSync(layoutPath)) await writeFile(layoutPath, await formatSlideHtml(layoutSnapshot));
+    const migratedLayout = layoutSnapshot.replace(/^<div\b/i, `<div data-weave-template="${mapping.templateId}" data-weave-layout="${mapping.layoutId}"`);
+    if (!existsSync(layoutPath)) await writeFile(layoutPath, await formatSlideHtml(migratedLayout));
     const manifestPath = join(templateRoot, "template.json");
     const packageManifest = JSON.parse(await readFile(manifestPath, "utf8"));
     const layouts = Array.isArray(packageManifest.layouts) ? packageManifest.layouts : [];

@@ -358,8 +358,11 @@ export function extractLayoutSnapshotHtml(renderedHtml, { removeMasterFurniture 
   let wrapperOpening = nextRoot.opening.replace(/^<main\b/i, "<div");
   // Remove the longer metadata name first: removing `data-weave-template`
   // first would leave a stray `-name="…"` suffix behind.
-  wrapperOpening = removeAttribute(removeAttribute(removeAttribute(wrapperOpening, "data-weave-template-name"), "data-weave-template"), "data-weave-slide");
-  wrapperOpening = wrapperOpening.replace(/\bclass\s*=\s*(["'])(.*?)\1/i, (_attribute, quote, value) => `class=${quote}${value.split(/\s+/).filter((name) => name && name !== "weave-slide").join(" ")}${quote}`);
+  wrapperOpening = removeAttribute(removeAttribute(removeAttribute(removeAttribute(removeAttribute(wrapperOpening, "data-weave-template-name"), "data-weave-template"), "data-weave-layout"), "data-weave-accent"), "data-weave-slide");
+  wrapperOpening = wrapperOpening.replace(/\bclass\s*=\s*(["'])(.*?)\1/i, (_attribute, quote, value) => {
+    const classes = [...new Set([...value.split(/\s+/).filter(Boolean), "weave-slide", "absolute", "inset-0", "h-full", "w-full"])];
+    return `class=${quote}${classes.join(" ")}${quote}`;
+  });
   const legacyBrand = openingTagWithClass(rendered, "brand");
   const legacyBrandElement = legacyBrand && elementInner(rendered, legacyBrand);
   const legacyBrandText = legacyBrandElement?.inner.replace(/<[^>]*>/g, "").replace(/\s+/g, "").trim();

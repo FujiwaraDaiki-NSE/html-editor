@@ -25,6 +25,8 @@ test("new project and slide pickers expose one template with nested layouts", ()
   assert.match(page, /templates, css: deckCss/);
   assert.match(page, /setImportedTemplates\(bundle\.templates\)/);
   assert.match(page, /type Snapshot = \{ title: string; defaultTemplateId: string; templates: TemplateDoc\[\]/);
+  assert.match(page, /const parsePortableBundle = \(value: unknown\): PortableBundle/);
+  assert.match(page, /composeSlideHtml\(\{ slideHtml: slide\.html,[\s\S]*masterHtml: template\.masterHtml/);
 });
 
 test("ordinary canvas interactions ignore inherited furniture outside content", () => {
