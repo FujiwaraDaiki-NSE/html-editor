@@ -22,7 +22,7 @@ test("deck saves are revision-guarded, replace slide files, and restore history 
     assert.equal((await readdir(join(root, ".weave"))).includes("current-buffer.json"), false);
 
     const onlySlide = { ...initial.slides[0], id: "renamed-slide", title: "Renamed and saved" };
-    const saved = { title: "Transactional deck", slides: [onlySlide] };
+    const saved = { title: "Transactional deck", defaultTemplateId: initial.defaultTemplateId, slides: [onlySlide] };
     await project.writeProject(saved, initialRevision);
     assert.equal((await readdir(join(root, ".weave"))).includes("current-buffer.json"), false);
     assert.deepEqual(await readdir(join(root, "slides")), ["renamed-slide.html"]);
@@ -78,9 +78,10 @@ test("writes keep policy failures inspectable until the commit gate", async () =
     const initial = await project.readProject();
     const unsafe = {
       ...initial,
+      defaultTemplateId: initial.defaultTemplateId,
       slides: [{
         ...initial.slides[0],
-        html: '<main class="weave-slide" data-weave-slide><script>alert(1)</script></main>',
+        html: initial.slides[0].html.replace("</section>", '<script>alert(1)</script></section>'),
       }],
     };
 

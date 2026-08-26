@@ -18,18 +18,19 @@ test("projects are independent repositories with lifecycle operations", async ()
   try {
     const project = await import(`../server/project.mjs?management=${Date.now()}`);
     await project.ensureProject();
-    const slug = await project.createProject({ title: "A $& <Deck>", template: "grid" });
+    const slug = await project.createProject({ title: "A $& <Deck>", templateId: "grid" });
     assert.equal(project.projectRoot(), startup);
     const rootPath = join(workspaces, slug);
     assert.equal(git(rootPath, ["rev-list", "--count", "HEAD"]), "1");
     assert.equal(JSON.parse(await readFile(join(rootPath, ".weave", "deck.json"), "utf8")).slides.length, 1);
     const coverHtml = await readFile(join(rootPath, "slides", "cover.html"), "utf8");
     assert.equal(coverHtml.includes("A $&amp; &lt;Deck&gt;"), true);
+    assert.match(coverHtml, /data-weave-slide-source/);
     assert.equal(coverHtml.match(/<h1\b/g)?.length, 1);
     await access(join(rootPath, "AGENTS.md"));
     await access(join(rootPath, "styles", "deck.css"));
 
-    const second = await project.createProject({ title: "Second", template: "plain" });
+    const second = await project.createProject({ title: "Second", templateId: "plain" });
     const assetFilename = `${"a".repeat(64)}.png`;
     const jpegAssetFilename = `${"b".repeat(64)}.jpeg`;
     const shortAssetFilename = "60d970719b3607e5.png";
@@ -43,7 +44,8 @@ test("projects are independent repositories with lifecycle operations", async ()
     await writeFile(join(rootPath, "assets", upperJpegAssetFilename), "upper jpeg");
     await writeFile(join(rootPath, "assets", upperPngAssetFilename), "upper png");
     await writeFile(join(rootPath, "assets", svgAssetFilename), "svg asset");
-    await writeFile(join(rootPath, "slides", "cover.html"), `<main><img src="assets/${assetFilename}"><svg><image href="assets/${svgAssetFilename}"><image xlink:href="assets/${jpegAssetFilename}" clip-path="url(#cover-clip)"><image href="#cover-image"><a href="assets/${shortAssetFilename}"></a></svg><img src="assets/${jpegAssetFilename}"><img src="assets/${shortAssetFilename}"><img src="assets/${upperJpegAssetFilename}"><img src="assets/${upperPngAssetFilename}"><img src="assets/example.png"><img src="assets/x.exe"></main>`);
+    const assetMarkup = `<div data-weave-id="asset-probe"><img src="assets/${assetFilename}"><svg><image href="assets/${svgAssetFilename}"><image xlink:href="assets/${jpegAssetFilename}" clip-path="url(#cover-clip)"><image href="#cover-image"><a href="assets/${shortAssetFilename}"></a></svg><img src="assets/${jpegAssetFilename}"><img src="assets/${shortAssetFilename}"><img src="assets/${upperJpegAssetFilename}"><img src="assets/${upperPngAssetFilename}"><img src="assets/example.png"><img src="assets/x.exe"></div>`;
+    await writeFile(join(rootPath, "slides", "cover.html"), coverHtml.replace("</section>", `${assetMarkup}</section>`));
     git(rootPath, ["add", "."]);
     git(rootPath, ["-c", "user.name=Weave", "-c", "user.email=weave@localhost", "commit", "-m", "Add thumbnail asset"]);
     const listed = await project.listProjects();
@@ -117,8 +119,8 @@ test("initializes the persisted project and falls back safely", async () => {
   process.env.WEAVE_WORKSPACES_ROOT = workspaces;
   try {
     const project = await import(`../server/project.mjs?current=${Date.now()}`);
-    const first = await project.createProject({ title: "First" });
-    const second = await project.createProject({ title: "Second" });
+    const first = await project.createProject({ title: "First", templateId: "orbit" });
+    const second = await project.createProject({ title: "Second", templateId: "plain" });
     const currentPath = join(root, ".weave", "current.json");
     await mkdir(join(root, ".weave"), { recursive: true });
     await writeFile(currentPath, JSON.stringify({ slug: first }));
@@ -167,8 +169,8 @@ test("concurrent project creation reserves distinct slugs", async () => {
   try {
     const project = await import(`../server/project.mjs?create-lock=${Date.now()}`);
     const slugs = await Promise.all([
-      project.createProject({ title: "Same title" }),
-      project.createProject({ title: "Same title" }),
+      project.createProject({ title: "Same title", templateId: "orbit" }),
+      project.createProject({ title: "Same title", templateId: "orbit" }),
     ]);
     assert.equal(new Set(slugs).size, 2);
     assert.deepEqual(new Set(slugs), new Set(["same-title", "same-title-2"]));
