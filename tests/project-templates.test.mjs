@@ -42,12 +42,24 @@ test("built-in templates are valid empty frames with the title first inside cont
     if (template.id.startsWith("year-end-report")) {
       assert.match(template.html, /viewBox="0 0 1280 720"/);
       assert.match(template.html, /<linearGradient id="year-end-report(?:-cover|-agenda)?-gradient"/);
-      assert.match(template.html, /data-weave-id="year-end-report(?:-cover|-agenda)?-organization"/);
-      assert.match(template.html, /data-weave-id="year-end-report(?:-cover|-agenda)?-copyright"/);
       assert.match(template.html, /class="report-frame /);
-      assert.match(template.html, /class="report-organization /);
-      assert.match(template.html, /class="report-copyright /);
-      assert.match(template.html, /class="page-number [^"]*" data-weave-id="year-end-report(?:-cover|-agenda)?-page-number"/);
+      for (const dummy of [
+        "Organization Name",
+        "© Organization Name",
+        "BRAND",
+        "TAGLINE",
+        "SUBTITLE",
+        "YYYY.MM.DD",
+        "Department",
+        "Contact",
+        "report-organization",
+        "report-copyright",
+        "report-brand-placeholder",
+        "report-tagline",
+        "report-subtitle",
+        "report-meta",
+        "page-number",
+      ]) assert.doesNotMatch(template.html, new RegExp(dummy), `${template.id}: ${dummy}`);
       if (template.id === "year-end-report") {
         assert.match(template.html, /d="M0 0 L1280 0 C797\.33 24 402\.67 118 165\.33 285 C76 348 24 392 0 416 Z"/);
         assert.match(template.html, /x1="131" y1="69" x2="1280" y2="69" stroke="#e00000" stroke-width="2"/);
@@ -57,13 +69,6 @@ test("built-in templates are valid empty frames with the title first inside cont
         assert.match(template.html, /d="M0 396 C232 150 757\.33 22 1280 0 L1280 720 L0 720 Z"/);
         assert.match(template.html, /x1="280" y1="69" x2="1280" y2="69" stroke="#e00000" stroke-width="2"/);
         assert.match(template.html, /x1="280" y1="662" x2="1280" y2="662" stroke="#004dff" stroke-width="2"/);
-        assert.match(template.html, /class="report-brand-placeholder"/);
-        assert.match(template.html, /class="report-tagline"/);
-        assert.match(template.html, /class="report-subtitle"/);
-        assert.match(template.html, /class="report-meta"/);
-        assert.match(template.html, /data-weave-id="year-end-report-cover-meta-date">YYYY\.MM\.DD/);
-        assert.match(template.html, /data-weave-id="year-end-report-cover-meta-department">Department/);
-        assert.match(template.html, /data-weave-id="year-end-report-cover-meta-contact">Contact/);
       }
       if (template.id === "year-end-report-agenda") {
         assert.match(template.html, /d="M0 0 L1280 0 C797\.33 24 402\.67 118 165\.33 285 C76 348 24 392 0 416 Z"/);
@@ -109,14 +114,8 @@ test("year-end report variants expose the source-derived CSS geometry", () => {
   assert.match(css, /data-weave-template="year-end-report-cover"[\s\S]*top: 324px[\s\S]*left: 74\.67px[\s\S]*width: 1040px[\s\S]*bottom: 58px[\s\S]*overflow: hidden/);
   assert.match(css, /data-weave-template="year-end-report-cover"[\s\S]*top: 264px[\s\S]*border-left: 8px solid #e00000/);
   assert.match(css, /data-weave-template="year-end-report-cover"[\s\S]*bottom: 88px[\s\S]*gap: 12px/);
-  assert.match(css, /data-weave-template="year-end-report-cover"[\s\S]*\.report-tagline[\s\S]*color: #1f1f1f[\s\S]*letter-spacing: 0/);
-  assert.match(css, /data-weave-template="year-end-report-cover"[\s\S]*\.report-meta[\s\S]*color: #000/);
   assert.match(css, /data-weave-template="year-end-report-agenda"[\s\S]*padding: 132px 122\.67px 58px/);
   assert.match(css, /data-weave-template="year-end-report-cover"[\s\S]*letter-spacing: normal/);
   assert.match(css, /data-weave-template="year-end-report-agenda"[\s\S]*letter-spacing: normal/);
   assert.match(css, /data-weave-template="year-end-report-agenda"[\s\S]*justify-content: center[\s\S]*overflow: hidden/);
-  assert.match(css, /data-weave-template="year-end-report"[\s\S]*\.page-number[\s\S]*font-weight: 500/);
-  assert.match(css, /data-weave-template="year-end-report-cover"[\s\S]*\.page-number,[\s\S]*data-weave-template="year-end-report-agenda"[\s\S]*\.page-number[\s\S]*font-weight: 500/);
-  assert.match(css, /data-weave-template="year-end-report"[\s\S]*\.report-organization[\s\S]*letter-spacing: 0/);
-  assert.match(css, /data-weave-template="year-end-report-cover"[\s\S]*\.report-copyright,[\s\S]*data-weave-template="year-end-report-agenda"[\s\S]*\.report-copyright[\s\S]*letter-spacing: 0/);
 });

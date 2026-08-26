@@ -83,29 +83,15 @@ const reportFrameSvg = ({ id, path, lineStart }) => `<svg class="report-frame ab
       <line x1="${lineStart}" y1="662" x2="1280" y2="662" stroke="#004dff" stroke-width="2"></line>
     </svg>`;
 
-const reportFurniture = (id) => `
-    <div class="report-organization brand flex items-center gap-2 text-xs font-bold tracking-widest text-slate-400" data-weave-id="${id}-organization">Organization Name</div>
-    <div class="report-copyright brand flex items-center gap-2 text-xs font-bold tracking-widest text-slate-400" data-weave-id="${id}-copyright">© Organization Name</div>
-    <div class="page-number absolute top-0 right-0 p-8 text-xs font-semibold tracking-widest text-slate-400" data-weave-id="${id}-page-number">01 / 01</div>`;
-
-const reportTemplate = ({ id, name, path, lineStart, variant = "content", contentClass = "hero flex flex-1 flex-col items-start justify-center gap-6" }) => ({
+const reportTemplate = ({ id, name, path, lineStart }) => ({
   id,
   name,
   filename: `${id}.html`,
   html: `<main class="${templateRootClasses({ id: "plain", background: "bg-white", text: "text-slate-950" })}" data-weave-slide data-weave-template="${id}" data-weave-template-name="${name}">
     ${reportFrameSvg({ id, path, lineStart })}
-    ${variant === "cover" ? `<div class="report-brand-placeholder" data-weave-id="${id}-brand">BRAND</div>
-    <div class="report-tagline" data-weave-id="${id}-tagline">TAGLINE</div>
-    <div class="report-subtitle" data-weave-id="${id}-subtitle">SUBTITLE</div>
-    <div class="report-meta" data-weave-id="${id}-meta">
-      <p data-weave-id="${id}-meta-date">YYYY.MM.DD</p>
-      <p data-weave-id="${id}-meta-department">Department</p>
-      <p data-weave-id="${id}-meta-contact">Contact</p>
-    </div>` : ""}
-    <section class="${contentClass}" data-weave-slot="content">
+    <section class="hero flex flex-1 flex-col items-start justify-center gap-6" data-weave-slot="content">
       <h1 class="heading text-6xl font-semibold leading-none tracking-tight" data-weave-slot="title" data-weave-id="title"></h1>
     </section>
-    ${reportFurniture(id)}
   </main>`,
 });
 
@@ -122,15 +108,12 @@ const yearEndReportCoverTemplate = reportTemplate({
   name: "年度末報告 / 表紙",
   path: reportTitlePath,
   lineStart: 280,
-  variant: "cover",
-  contentClass: "hero flex flex-1 flex-col items-start justify-center gap-6",
 });
 const yearEndReportAgendaTemplate = reportTemplate({
   id: "year-end-report-agenda",
   name: "年度末報告 / 目次・章区切り",
   path: reportContentPath,
   lineStart: 186.67,
-  contentClass: "hero flex flex-1 flex-col items-start justify-center gap-6",
 });
 
 export const builtInTemplates = [...defaultTemplates, yearEndReportTemplate, yearEndReportCoverTemplate, yearEndReportAgendaTemplate];

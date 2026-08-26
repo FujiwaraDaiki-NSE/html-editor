@@ -48,43 +48,23 @@ test("a slotless slide is appended intact inside the new frame", () => {
   assert.equal(auditContentPolicy({ html: result }).ok, true);
 });
 
-test("the year-end report frame keeps its furniture and updates its page number", () => {
+test("the year-end report frame keeps its SVG and omits placeholder furniture", () => {
   const result = applyTemplateToSlideHtml(source, template("year-end-report"), { position: 4, total: 12, accent: "#fbbf24" });
   assert.match(result, /data-weave-template="year-end-report"/);
-  assert.match(result, /data-weave-id="year-end-report-organization">Organization Name<\/div>/);
-  assert.match(result, /data-weave-id="year-end-report-copyright">© Organization Name<\/div>/);
   assert.match(result, /class="report-frame /);
-  assert.match(result, /class="report-organization /);
-  assert.match(result, /class="report-copyright /);
-  assert.match(result, /data-weave-id="year-end-report-page-number">04 \/ 12<\/div>/);
   assert.match(result, /viewBox="0 0 1280 720"/);
+  for (const dummy of ["Organization Name", "© Organization Name", "BRAND", "TAGLINE", "SUBTITLE", "YYYY.MM.DD", "Department", "Contact", "report-organization", "report-copyright", "report-brand-placeholder", "report-tagline", "report-subtitle", "report-meta", "page-number"]) {
+    assert.doesNotMatch(result, new RegExp(dummy), dummy);
+  }
   assert.equal(auditContentPolicy({ html: result }).ok, true);
 });
 
 test("report layout hooks survive new-slide id remapping", () => {
   const applied = applyTemplateToSlideHtml(source, template("year-end-report"));
   const remapped = applied.replace(/\bdata-weave-id\s*=\s*(["'])(.*?)\1/gi, (_, quote) => `data-weave-id=${quote}block-generated${quote}`);
-  for (const className of ["report-frame", "report-organization", "report-copyright", "page-number"]) {
+  for (const className of ["report-frame"]) {
     assert.match(remapped, new RegExp(`class="[^"]*\\b${className}\\b`));
   }
-});
-
-test("page numbers are recalculated after deck mutations", () => {
-  const first = applyTemplateToSlideHtml(source, template("year-end-report"), { position: 1, total: 1 });
-  const second = applyTemplateToSlideHtml(source, template("year-end-report"), { position: 2, total: 2 });
-  const numbered = [first, second].map((html, index, deck) => updateSlidePageNumber(html, index + 1, deck.length));
-  assert.match(numbered[0], />01 \/ 02<\/div>/);
-  assert.match(numbered[1], />02 \/ 02<\/div>/);
-});
-
-test("page numbering targets the frame footer when content uses the same class", () => {
-  const withContentPage = source.replace('<p class="paragraph" data-weave-id="body-7">Supporting copy</p>', '<p class="page-number" data-weave-id="body-7">Content label</p>');
-  const applied = applyTemplateToSlideHtml(withContentPage, template("year-end-report"), { position: 4, total: 8 });
-  assert.match(applied, /data-weave-id="body-7">Content label<\/p>/);
-  assert.match(applied, /data-weave-id="year-end-report-page-number">04 \/ 08<\/div>/);
-  const renumbered = updateSlidePageNumber(applied, 5, 9);
-  assert.match(renumbered, /data-weave-id="body-7">Content label<\/p>/);
-  assert.match(renumbered, /data-weave-id="year-end-report-page-number">05 \/ 09<\/div>/);
 });
 
 test("page numbering supports a nested frame footer outside content", () => {
@@ -94,7 +74,7 @@ test("page numbering supports a nested frame footer outside content", () => {
   assert.match(updateSlidePageNumber(applied, 4, 7), /<footer><div class="page-number">04 \/ 07<\/div><\/footer>/);
 });
 
-test("template instances receive unique SVG fragment ids", () => {
+test("template instances receive unique report SVG fragment ids", () => {
   const first = applyTemplateToSlideHtml(source, template("year-end-report"), { instanceId: "slide-a" });
   const second = applyTemplateToSlideHtml(source, template("year-end-report"), { instanceId: "slide-b" });
   assert.match(first, /id="year-end-report-gradient-slide-a"/);
