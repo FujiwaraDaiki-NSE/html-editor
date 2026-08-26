@@ -306,7 +306,7 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && url.pathname === "/api/projects") {
       const result = await enqueueProjectSwitch(async () => {
         await assertSwitchable();
-        const slug = await createProject({ title: requireText(payload.title, "Title"), template: payload.template });
+        const slug = await createProject({ title: requireText(payload.title, "Title"), templateId: requireText(payload.templateId, "templateId") });
         await switchProject(slug);
         await ensureProject();
         await retargetCodex();

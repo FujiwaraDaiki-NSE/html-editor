@@ -13,6 +13,7 @@ import { defaultSlideClasses, migrateSlideHtmlToTailwind } from "../shared/tailw
 import { projectSlug } from "../shared/project-slug.mjs";
 import { isReferencePath } from "../shared/context.mjs";
 import { assetFilenamePattern, replaceAssetReferences } from "../shared/asset-path.mjs";
+import { composeSlideHtml, extractSlideSourceHtml } from "../shared/slide-slots.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspacesRoot = process.env.WEAVE_WORKSPACES_ROOT ? resolve(process.env.WEAVE_WORKSPACES_ROOT) : join(repoRoot, "workspaces");
@@ -57,17 +58,28 @@ const templateRootClasses = ({ id, background, text }) => [
   text,
 ].join(" ");
 
-const defaultTemplates = templateThemes.map((theme) => ({
-  id: theme.id,
-  name: theme.name,
-  filename: `${theme.id}.html`,
-  html: `<main class="${templateRootClasses(theme)}" data-weave-slide data-weave-template="${theme.id}" data-weave-template-name="${theme.name}">
+const contentLayout = ({ titleClass = "text-6xl", sectionClass = "hero flex flex-1 flex-col items-start justify-center gap-6" } = {}) => `<section class="${sectionClass}" data-weave-slot="content">
+      <h1 class="heading ${titleClass} font-semibold leading-none tracking-tight" data-weave-slot="title" data-weave-id="title"></h1>
+    </section>`;
+
+const templatePackage = ({ id, name, background, text, layouts, masterExtra = "" }) => ({
+  id,
+  name,
+  defaultLayoutId: layouts[0].id,
+  masterHtml: `<main class="${templateRootClasses({ id: id === "year-end-report" ? "plain" : id, background, text })}" data-weave-slide data-weave-template="${id}" data-weave-template-name="${name}">
+    ${masterExtra}
     <div class="brand flex items-center gap-2 text-xs font-bold tracking-widest text-slate-400">WEAVE<span class="text-amber-400">●</span></div>
-    <section class="hero flex flex-1 flex-col items-start justify-center gap-6" data-weave-slot="content">
-      <h1 class="heading text-6xl font-semibold leading-none tracking-tight" data-weave-slot="title" data-weave-id="title"></h1>
-    </section>
+    <div data-weave-layout-slot></div>
     <div class="page-number absolute top-0 right-0 p-8 text-xs font-semibold tracking-widest text-slate-400">01 / 01</div>
   </main>`,
+  layouts,
+});
+
+const defaultTemplates = templateThemes.map((theme) => templatePackage({
+  id: theme.id,
+  name: theme.name,
+  ...theme,
+  layouts: [{ id: "content", name: "Content", html: contentLayout() }],
 }));
 
 const reportFrameSvg = ({ id, path, lineStart }) => `<svg class="report-frame absolute inset-0 h-full w-full" data-weave-id="${id}-frame" viewBox="0 0 1280 720" preserveAspectRatio="none" aria-hidden="true">
@@ -83,53 +95,44 @@ const reportFrameSvg = ({ id, path, lineStart }) => `<svg class="report-frame ab
       <line x1="${lineStart}" y1="662" x2="1280" y2="662" stroke="#004dff" stroke-width="2"></line>
     </svg>`;
 
-const reportTemplate = ({ id, name, path, lineStart }) => ({
-  id,
-  name,
-  filename: `${id}.html`,
-  html: `<main class="${templateRootClasses({ id: "plain", background: "bg-white", text: "text-slate-950" })}" data-weave-slide data-weave-template="${id}" data-weave-template-name="${name}">
-    ${reportFrameSvg({ id, path, lineStart })}
-    <section class="hero flex flex-1 flex-col items-start justify-center gap-6" data-weave-slot="content">
-      <h1 class="heading text-6xl font-semibold leading-none tracking-tight" data-weave-slot="title" data-weave-id="title"></h1>
-    </section>
-  </main>`,
-});
+const reportLayout = ({ id, name, titleClass = "text-6xl", sectionClass } = {}) => ({ id, name, html: contentLayout({ titleClass, sectionClass }) });
 
 const reportContentPath = "M0 0 L1280 0 C797.33 24 402.67 118 165.33 285 C76 348 24 392 0 416 Z";
 const reportTitlePath = "M0 396 C232 150 757.33 22 1280 0 L1280 720 L0 720 Z";
-const yearEndReportTemplate = reportTemplate({
+const yearEndReportTemplate = templatePackage({
   id: "year-end-report",
-  name: "年度末報告 / 本文",
-  path: reportContentPath,
-  lineStart: 131,
-});
-const yearEndReportCoverTemplate = reportTemplate({
-  id: "year-end-report-cover",
-  name: "年度末報告 / 表紙",
-  path: reportTitlePath,
-  lineStart: 280,
-});
-const yearEndReportAgendaTemplate = reportTemplate({
-  id: "year-end-report-agenda",
-  name: "年度末報告 / 目次・章区切り",
-  path: reportContentPath,
-  lineStart: 186.67,
+  name: "年度末報告",
+  background: "bg-white",
+  text: "text-slate-950",
+  layouts: [
+    { ...reportLayout({ id: "cover", name: "表紙", titleClass: "text-6xl" }), html: `${reportFrameSvg({ id: "year-end-report-cover", path: reportTitlePath, lineStart: 280 })}${contentLayout({ sectionClass: "hero flex flex-1 flex-col items-start justify-end gap-3" })}` },
+    { ...reportLayout({ id: "content", name: "本文", titleClass: "text-6xl" }), html: `${reportFrameSvg({ id: "year-end-report", path: reportContentPath, lineStart: 131 })}${contentLayout({ sectionClass: "hero flex flex-1 flex-col items-start justify-center gap-6" })}` },
+    { ...reportLayout({ id: "agenda", name: "目次・章区切り", titleClass: "text-6xl" }), html: `${reportFrameSvg({ id: "year-end-report-agenda", path: reportContentPath, lineStart: 186.67 })}${contentLayout({ sectionClass: "hero flex flex-1 flex-col items-start justify-center gap-6" })}` },
+  ],
+  masterExtra: "",
 });
 
-export const builtInTemplates = [...defaultTemplates, yearEndReportTemplate, yearEndReportCoverTemplate, yearEndReportAgendaTemplate];
+/* These are kept as distinct layout geometry in the package. The report master owns the
+   common frame and each layout owns only its slot arrangement; all three share one template. */
+export const builtInTemplates = [...defaultTemplates, yearEndReportTemplate];
 
 export const agentInstructions = `You are the editing agent embedded in Weave, a visual HTML slide editor.
-The truth of every slide is its own file: slides/<id>.html holds a <main class="weave-slide"> fragment.
-Edit those HTML files directly. styles/deck.css is generated and read-only. Do not
-generate or hand-maintain any intermediate model; .weave/deck.json is only a manifest of slide order,
-titles, and speaker notes (Weave keeps it in sync — you rarely touch it, except to reorder slides).
-templates/<id>.html holds an empty frame whose root carries data-weave-template and
-data-weave-template-name. Every slide has data-weave-slot="title" and data-weave-slot="content";
-the title slot's text is the slide name, and .weave/deck.json's title is derived from it. Templates
-supply typography by inheritance, so ordinary blocks omit color and font size unless they mean to
-differ. Kind-identity sizes such as eyebrow and note, and accent colors, stay explicit. To change a
-slide's layout, move the title slot's inner content and the remaining content children into the new
-frame's slots; do not edit the shared template frame in place.
+The truth of every slide is its own file: slides/<id>.html holds only the editable source slots.
+Its .weave/deck.json entry carries templateId, layoutId, title, notes, and accent. The rendered
+slide is composed at read time from templates/<template-id>/master.html, the selected
+templates/<template-id>/layouts/<layout-id>.html, and the slide source. Never copy inherited
+master or layout furniture into a slide source. styles/deck.css is generated and read-only. Do not
+generate or hand-maintain any intermediate model; .weave/deck.json is the manifest of slide order,
+template/layout references, titles, notes, and accents (Weave keeps it in sync).
+Every template has template.json, one master.html, and one or more named layouts. A template is
+the reusable design package; a layout is its purpose-specific arrangement (cover, content, agenda).
+Every layout has data-weave-slot="title" and data-weave-slot="content"; the title slot's text is
+the slide name. Master/layout files are shared and must be edited intentionally because their next
+render changes every slide that references them. Ordinary slide edits may change only source
+elements and slot contents. Unknown template or layout identifiers are invalid; do not invent or
+silently substitute another design.
+Templates supply typography by inheritance, so ordinary blocks omit color and font size unless they mean to
+differ. Kind-identity sizes such as eyebrow and note, and accent colors, stay explicit.
 Slide styling is expressed only with the precompiled Tailwind utility classes already used in the
 project. Use standard Tailwind scale values and existing classes; never use inline style attributes,
 arbitrary-value classes such as [...], or edit styles/deck.css — read that file when you need the
@@ -405,8 +408,8 @@ export async function removeReference(path) {
   });
 }
 
-/* Seed content, authored as blocks and stamped into HTML fragments exactly once. After seeding
-   the fragment on disk is the truth; blocks are never consulted again at runtime. */
+/* Seed content, authored as blocks and stamped into source HTML exactly once. After seeding
+   the source on disk is the truth; blocks are never consulted again at runtime. */
 const seedSlides = [
   {
     id: "opportunity", title: "The opportunity", background: "orbit", notes: "",
@@ -452,23 +455,32 @@ const seedSlides = [
 
 const seedTitle = "Q3 Strategy Deck";
 
-/* Build the seed/migration project { title, slides:[{id,title,notes,html}] } from block data. */
+/* Build the seed/migration project with explicit Template/Layout references from block data. */
 function projectFromBlockSlides(title, accent, blockSlides) {
   const total = blockSlides.length;
   return {
     title,
-    slides: blockSlides.map((slide, index) => ({
-      id: slide.id,
-      title: slide.title ?? `Slide ${index + 1}`,
-      notes: slide.notes ?? "",
-      html: slideFragmentFromBlocks({
+    defaultTemplateId: "orbit",
+    slides: blockSlides.map((slide, index) => {
+      const templateId = slide.templateId ?? (slide.background === "grid" ? "grid" : slide.background === "plain" ? "plain" : "orbit");
+      const layoutId = slide.layoutId ?? "content";
+      const slideHtml = slideFragmentFromBlocks({
         blocks: slide.blocks,
         background: slide.background ?? "orbit",
         accent: accent ?? "#f6b84b",
         total,
         position: index + 1,
-      }),
-    })),
+      }).replace(/(<section\b)/i, '$1 data-weave-slot="content"').replace(/(<h1\b)/i, '$1 data-weave-slot="title"');
+      return {
+        id: slide.id,
+        title: slide.title ?? `Slide ${index + 1}`,
+        notes: slide.notes ?? "",
+        templateId,
+        layoutId,
+        accent: accent ?? "#f6b84b",
+        html: sourceFromRendered(slideHtml, { templateId, layoutId, accent: accent ?? "#f6b84b" }),
+      };
+    }),
   };
 }
 
@@ -513,21 +525,34 @@ export async function readDeckCss(root = currentProjectRoot) {
   }
 }
 
-const templateAttribute = (opening, name) => opening.match(new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>]+))`, "i"))?.slice(1).find((value) => value !== undefined)?.trim() ?? "";
-
 export async function readTemplates(root = currentProjectRoot) {
   const entries = await readdir(templatesRoot(root), { withFileTypes: true }).catch(() => []);
   const templates = [];
-  for (const entry of entries.filter((item) => item.isFile() && item.name.endsWith(".html")).sort((a, b) => a.name.localeCompare(b.name))) {
+  for (const entry of entries.filter((item) => item.isDirectory()).sort((a, b) => a.name.localeCompare(b.name))) {
     try {
-      const html = await readFile(join(templatesRoot(root), entry.name), "utf8");
-      const policy = auditContentPolicy({ html });
+      const rootPath = join(templatesRoot(root), entry.name);
+      const manifest = JSON.parse(await readFile(join(rootPath, "template.json"), "utf8"));
+      const id = String(manifest.id ?? "");
+      const name = String(manifest.name ?? "");
+      const defaultLayoutId = String(manifest.defaultLayoutId ?? "");
+      if (!id || !name || !defaultLayoutId || id !== entry.name) continue;
+      const masterHtml = await readFile(join(rootPath, "master.html"), "utf8");
+      const layoutEntries = await readdir(join(rootPath, "layouts"), { withFileTypes: true });
+      const filesById = new Map(layoutEntries.filter((item) => item.isFile() && item.name.endsWith(".html")).map((item) => [item.name.slice(0, -".html".length), item]));
+      const declaredLayouts = Array.isArray(manifest.layouts) ? manifest.layouts : [];
+      const layoutIds = [...declaredLayouts.map((item) => String(item?.id ?? "")).filter(Boolean), ...[...filesById.keys()].filter((id) => !declaredLayouts.some((item) => item?.id === id)).sort()];
+      const layouts = [];
+      for (const layoutId of layoutIds) {
+        const layoutEntry = filesById.get(layoutId);
+        if (!layoutEntry) continue;
+        const layoutHtml = await readFile(join(rootPath, "layouts", layoutEntry.name), "utf8");
+        const layoutName = String(declaredLayouts.find((item) => item?.id === layoutId)?.name ?? layoutId);
+        layouts.push({ id: layoutId, name: layoutName, html: layoutHtml });
+      }
+      if (!layouts.some((layout) => layout.id === defaultLayoutId)) continue;
+      const policy = auditContentPolicy({ html: [masterHtml, ...layouts.map((layout) => layout.html)].join("\n") });
       if (!policy.ok) continue;
-      const opening = html.match(/<main\b[^>]*>/i)?.[0] ?? "";
-      const fallback = entry.name.slice(0, -".html".length);
-      const id = templateAttribute(opening, "data-weave-template") || fallback;
-      const name = templateAttribute(opening, "data-weave-template-name") || id;
-      templates.push({ id, name, html });
+      templates.push({ id, name, defaultLayoutId, masterHtml, layouts });
     } catch {
       // A broken template must not prevent the rest of the project from loading.
     }
@@ -539,14 +564,24 @@ export async function ensureTemplates(root = currentProjectRoot) {
   await mkdir(templatesRoot(root), { recursive: true });
   const canonical = await Promise.all(builtInTemplates.map(async (template) => ({
     ...template,
-    html: await formatSlideHtml(template.html),
+    masterHtml: await formatSlideHtml(template.masterHtml),
+    layouts: await Promise.all(template.layouts.map(async (layout) => ({ ...layout, html: await formatSlideHtml(layout.html) }))),
   })));
   const touched = [];
   for (const template of canonical) {
-    const path = join(templatesRoot(root), template.filename);
-    if (await readFile(path, "utf8").catch(() => "") === template.html) continue;
-    await writeFile(path, template.html);
-    touched.push(`templates/${template.filename}`);
+    const path = join(templatesRoot(root), template.id);
+    await mkdir(join(path, "layouts"), { recursive: true });
+    const manifest = `${JSON.stringify({ id: template.id, name: template.name, defaultLayoutId: template.defaultLayoutId, layouts: template.layouts.map(({ id, name }) => ({ id, name })) }, null, 2)}\n`;
+    const files = [
+      [join(path, "template.json"), manifest],
+      [join(path, "master.html"), template.masterHtml],
+      ...template.layouts.map((layout) => [join(path, "layouts", `${layout.id}.html`), layout.html]),
+    ];
+    for (const [filePath, content] of files) {
+      if (existsSync(filePath)) continue;
+      await writeFile(filePath, content);
+      touched.push(filePath.slice(root.length + 1));
+    }
   }
   return touched;
 }
@@ -554,11 +589,40 @@ export async function ensureTemplates(root = currentProjectRoot) {
 const slugify = (value, fallback) =>
   String(value ?? "").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80) || fallback;
 
-/** Normalize a project payload { title, slides:[{id,title,notes,html}] } coming from a client. */
+async function templateCatalog(root = currentProjectRoot) {
+  const templates = await readTemplates(root);
+  return new Map(templates.map((template) => [template.id, template]));
+}
+
+async function requireTemplate(templateId, root = currentProjectRoot) {
+  const templates = await templateCatalog(root);
+  const template = templates.get(String(templateId ?? ""));
+  if (!template) throw new Error(`Unknown template: ${String(templateId ?? "")}`);
+  return template;
+}
+
+async function requireLayout(templateId, layoutId, root = currentProjectRoot) {
+  const template = await requireTemplate(templateId, root);
+  const layout = template.layouts.find((item) => item.id === String(layoutId ?? ""));
+  if (!layout) throw new Error(`Unknown layout: ${String(layoutId ?? "")} for template ${template.id}`);
+  return { template, layout };
+}
+
+function composeSource(sourceHtml, template, layout, options = {}) {
+  return composeSlideHtml({ slideHtml: sourceHtml, masterHtml: template.masterHtml, layoutHtml: layout.html, templateId: template.id, layoutId: layout.id, accent: options.accent ?? "#fbbf24", position: options.position ?? 1, total: options.total ?? 1, instanceId: options.instanceId ?? null });
+}
+
+function sourceFromRendered(renderedHtml, { templateId = "orbit", layoutId = "content", accent = "#fbbf24" } = {}) {
+  return extractSlideSourceHtml(renderedHtml, { templateId, layoutId, accent });
+}
+
+/** Normalize a project payload using source-only slides and explicit template/layout references. */
 export function validateProject(input) {
   if (!input || typeof input !== "object") throw new Error("Project payload is required.");
   const sourceSlides = Array.isArray(input.slides) && input.slides.length ? input.slides.slice(0, 100) : [];
   if (!sourceSlides.length) throw new Error("A deck needs at least one slide.");
+  const defaultTemplateId = String(input.defaultTemplateId ?? "");
+  if (!defaultTemplateId) throw new Error("defaultTemplateId is required.");
   const seen = new Set();
   const slides = sourceSlides.map((slide, index) => {
     let id = slugify(slide?.id, `slide-${index + 1}`);
@@ -567,14 +631,20 @@ export function validateProject(input) {
     const html = String(slide?.html ?? "");
     if (!html.trim()) throw new Error(`Slide ${index + 1} has empty HTML.`);
     if (html.length > 200_000) throw new Error(`Slide ${index + 1} HTML is too large.`);
+    if (!String(slide?.templateId ?? "").trim()) throw new Error(`Slide ${index + 1} templateId is required.`);
+    if (!String(slide?.layoutId ?? "").trim()) throw new Error(`Slide ${index + 1} layoutId is required.`);
+    if (!String(slide?.accent ?? "").trim()) throw new Error(`Slide ${index + 1} accent is required.`);
     return {
       id,
       title: String(slide?.title ?? `Slide ${index + 1}`).slice(0, 200),
       notes: String(slide?.notes ?? "").slice(0, 20_000),
+      templateId: String(slide?.templateId ?? ""),
+      layoutId: String(slide?.layoutId ?? ""),
+      accent: String(slide?.accent ?? ""),
       html,
     };
   });
-  return { title: String(input.title ?? seedTitle).slice(0, 200), slides };
+  return { title: String(input.title ?? seedTitle).slice(0, 200), defaultTemplateId, slides };
 }
 
 async function readSlideHtml(id, root = currentProjectRoot) {
@@ -597,23 +667,36 @@ async function readManifest(root = currentProjectRoot) {
 export async function readProject(root = currentProjectRoot) {
   const manifest = await readManifest(root);
   if (!manifest || !Array.isArray(manifest.slides)) return seedProject();
+  if (manifest.schemaVersion !== 2) throw new Error("Unsupported project schema version.");
+  const templates = await templateCatalog(root);
+  if (!templates.has(String(manifest.defaultTemplateId ?? ""))) throw new Error(`Unknown template: ${String(manifest.defaultTemplateId ?? "")}`);
   const slides = await Promise.all(manifest.slides.map(async (slide, index) => ({
     id: slide.id,
     title: String(slide.title ?? `Slide ${index + 1}`),
     notes: String(slide.notes ?? ""),
+    templateId: String(slide.templateId ?? ""),
+    layoutId: String(slide.layoutId ?? ""),
+    accent: String(slide.accent ?? "#fbbf24"),
     html: await readSlideHtml(slide.id, root),
   })));
-  return { title: String(manifest.title ?? seedTitle), slides };
+  for (const slide of slides) {
+    const template = templates.get(slide.templateId);
+    if (!template) throw new Error(`Unknown template: ${slide.templateId}`);
+    if (!template.layouts.some((layout) => layout.id === slide.layoutId)) throw new Error(`Unknown layout: ${slide.layoutId} for template ${slide.templateId}`);
+    if (!slide.html.trim()) throw new Error(`Slide ${slide.id} has empty HTML.`);
+  }
+  return { title: String(manifest.title ?? seedTitle), defaultTemplateId: String(manifest.defaultTemplateId), slides };
 }
 
 /** Write the project: every slide file (formatted) plus the manifest, transactionally. */
 async function writeProjectUnlocked(input, expectedRevision = null, root = currentProjectRoot) {
   const project = validateProject(input);
+  for (const slide of project.slides) await requireLayout(slide.templateId, slide.layoutId, root);
   const slides = await Promise.all(project.slides.map(async (slide) => ({
     ...slide,
     html: await formatSlideHtml(slide.html),
   })));
-  const manifest = { title: project.title, slides: slides.map(({ id, title, notes }) => ({ id, title, notes })) };
+  const manifest = { schemaVersion: 2, title: project.title, defaultTemplateId: project.defaultTemplateId, slides: slides.map(({ id, title, notes, templateId, layoutId, accent }) => ({ id, title, notes, templateId, layoutId, accent })) };
   const manifestJson = `${JSON.stringify(manifest, null, 2)}\n`;
 
   await mkdir(join(root, ".weave"), { recursive: true });
@@ -702,7 +785,15 @@ export async function assertCommittable(root = currentProjectRoot) {
     throw error;
   }
   const project = await readProject(root);
-  const policy = auditContentPolicy({ css, html: project.slides.map((slide) => slide.html).join("\n") });
+  const templates = await readTemplates(root);
+  const templateHtml = templates.flatMap((template) => [template.masterHtml, ...template.layouts.map((layout) => layout.html)]).join("\n");
+  const composedHtml = await Promise.all(project.slides.map(async (slide) => {
+    const template = templates.find((item) => item.id === slide.templateId);
+    const layout = template?.layouts.find((item) => item.id === slide.layoutId);
+    if (!template || !layout) throw new Error(`Unknown template/layout for slide ${slide.id}.`);
+    return composeSource(slide.html, template, layout, { position: project.slides.indexOf(slide) + 1, total: project.slides.length, accent: slide.accent, instanceId: slide.id });
+  }));
+  const policy = auditContentPolicy({ css, html: [templateHtml, project.slides.map((slide) => slide.html).join("\n"), composedHtml.join("\n")].join("\n") });
   if (!policy.ok) {
     const error = new Error(`Content policy gate failed: ${policy.summary.errors} error(s).`);
     error.code = "WEAVE_CONTENT_POLICY";
@@ -880,8 +971,10 @@ async function recoverInterruptedTransactions() {
    literal newlines become <br>) and slim deck.json to a manifest. */
 async function migrateLegacyDeck() {
   const raw = await readManifest();
-  const isLegacy = raw && (raw.blocks !== undefined || (Array.isArray(raw.slides) && raw.slides.some((slide) => slide?.blocks !== undefined)));
+  const isLegacy = raw && raw.schemaVersion !== 2 && (raw.blocks !== undefined || Array.isArray(raw.slides));
   if (!isLegacy) return false;
+  await ensureTemplates();
+  const available = await templateCatalog();
   const blockSlides = (raw.slides ?? []).map((slide, index) => ({
     id: slide.id ?? `slide-${index + 1}`,
     title: slide.title ?? `Slide ${index + 1}`,
@@ -889,9 +982,83 @@ async function migrateLegacyDeck() {
     background: slide.background ?? "orbit",
     blocks: slide.blocks ?? [],
   }));
-  const project = projectFromBlockSlides(raw.title ?? seedTitle, raw.accent ?? "#f6b84b", blockSlides);
+  const sourceSlides = Array.isArray(raw.slides) && raw.slides.some((slide) => slide?.html)
+    ? await Promise.all(raw.slides.map(async (slide, index) => migrateLegacySlide(slide, index, available, raw.accent ?? "#f6b84b")))
+    : projectFromBlockSlides(raw.title ?? seedTitle, raw.accent ?? "#f6b84b", blockSlides).slides;
+  const defaultTemplateId = sourceSlides[0]?.templateId ?? "orbit";
+  const project = { title: raw.title ?? seedTitle, defaultTemplateId, slides: sourceSlides };
   await writeProject(project);
   return true;
+}
+
+const legacyTemplateMapping = new Map([
+  ["year-end-report-cover", { templateId: "year-end-report", layoutId: "cover" }],
+  ["year-end-report", { templateId: "year-end-report", layoutId: "content" }],
+  ["year-end-report-agenda", { templateId: "year-end-report", layoutId: "agenda" }],
+  ["orbit", { templateId: "orbit", layoutId: "content" }],
+  ["northstar", { templateId: "orbit", layoutId: "content" }],
+  ["theme-northstar", { templateId: "orbit", layoutId: "content" }],
+  ["grid", { templateId: "grid", layoutId: "content" }],
+  ["plain", { templateId: "plain", layoutId: "content" }],
+]);
+
+const rootAttribute = (html, name) => html.match(new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>]+))`, "i"))?.slice(1).find((value) => value !== undefined) ?? "";
+const emptyLegacyLayout = (html) => {
+  let snapshot = String(html);
+  for (const slot of ["title", "content"]) {
+    const opening = snapshot.match(new RegExp(`<([a-z][\\w:-]*)\\b[^>]*data-weave-slot\\s*=\\s*["']${slot}["'][^>]*>`, "i"));
+    if (!opening) continue;
+    const start = opening.index + opening[0].length;
+    const close = new RegExp(`</${opening[1]}>`, "i").exec(snapshot.slice(start));
+    if (!close) continue;
+    snapshot = `${snapshot.slice(0, start)}${snapshot.slice(start + close.index)}`;
+  }
+  return snapshot;
+};
+const frameFingerprint = (html) => String(html)
+  .replace(/data-weave-slot\s*=\s*(?:"[^"]*"|'[^']*')/gi, "data-weave-slot")
+  .replace(/>[^<]*</g, "><")
+  .replace(/\s+/g, " ")
+  .trim();
+
+async function migrateLegacySlide(slide, index, templates, accent) {
+  const html = String(slide?.html ?? "");
+  if (!html.trim()) throw new Error(`Slide ${index + 1} has empty HTML.`);
+  const legacyId = rootAttribute(html, "data-weave-template") || String(slide?.background ?? "orbit");
+  const mapping = legacyTemplateMapping.get(legacyId) ?? legacyTemplateMapping.get(String(slide?.background ?? "orbit"));
+  if (!mapping || !templates.has(mapping.templateId)) throw new Error(`Unknown legacy template: ${legacyId}`);
+  const source = sourceFromRendered(html, { templateId: mapping.templateId, layoutId: mapping.layoutId, accent: slide.accent ?? accent });
+  const template = templates.get(mapping.templateId);
+  const canonicalLayout = template.layouts.find((layout) => layout.id === mapping.layoutId);
+  const canonicalMarker = canonicalLayout ? frameFingerprint(canonicalLayout.html) : "";
+  const hasUnknownFurniture = /data-weave-id\s*=\s*["'][^"']+(?:logo|tagline|subtitle|meta|background|frame)/i.test(html)
+    || /(?:dtf|logo|tagline|subtitle|fiscal|department)/i.test(html)
+    || !canonicalMarker;
+  let layoutId = mapping.layoutId;
+  if (hasUnknownFurniture) {
+    const hash = createHash("sha256").update(frameFingerprint(html)).digest("hex").slice(0, 12);
+    layoutId = `migrated-${hash}`;
+    const templateRoot = join(templatesRoot(), mapping.templateId);
+    const layoutPath = join(templateRoot, "layouts", `${layoutId}.html`);
+    await mkdir(join(templateRoot, "layouts"), { recursive: true });
+    if (!existsSync(layoutPath)) await writeFile(layoutPath, await formatSlideHtml(emptyLegacyLayout(html)));
+    const manifestPath = join(templateRoot, "template.json");
+    const packageManifest = JSON.parse(await readFile(manifestPath, "utf8"));
+    const layouts = Array.isArray(packageManifest.layouts) ? packageManifest.layouts : [];
+    if (!layouts.some((item) => item?.id === layoutId)) {
+      layouts.push({ id: layoutId, name: `Migrated ${slide.title ?? index + 1}` });
+      await writeFile(manifestPath, `${JSON.stringify({ ...packageManifest, layouts }, null, 2)}\n`);
+    }
+  }
+  return {
+    id: slide.id ?? `slide-${index + 1}`,
+    title: slide.title ?? `Slide ${index + 1}`,
+    notes: slide.notes ?? "",
+    templateId: mapping.templateId,
+    layoutId,
+    accent: slide.accent ?? accent,
+    html: source,
+  };
 }
 
 async function ensureProjectScaffolding(root = currentProjectRoot) {
@@ -1014,9 +1181,11 @@ export async function assertSwitchable(targetSlug = null) {
   if (runGit(["branch", "--show-current"]) === "") checkoutMain();
 }
 
-async function createProjectUnlocked({ title, template = "orbit" }) {
+async function createProjectUnlocked({ title, templateId }) {
   const name = String(title ?? "").trim();
   if (!name) throw new Error("Title is required.");
+  const selectedTemplateId = String(templateId ?? "");
+  if (!selectedTemplateId) throw new Error("templateId is required.");
   await mkdir(workspacesRoot, { recursive: true });
   const base = generatedSlug(name);
   let slug = base;
@@ -1031,19 +1200,22 @@ async function createProjectUnlocked({ title, template = "orbit" }) {
       slug = `${base}-${index}`;
     }
   }
-  const selected = builtInTemplates.find((item) => item.id === template) ?? builtInTemplates[0];
+  await ensureTemplates(root);
+  const selected = await requireTemplate(selectedTemplateId, root);
+  const selectedLayout = selected.layouts.find((layout) => layout.id === selected.defaultLayoutId);
+  if (!selectedLayout) throw new Error(`Unknown layout: ${selected.defaultLayoutId} for template ${selected.id}`);
   const cover = {
     id: "cover",
     title: name,
     notes: "",
-    html: selected.html.replace(
-      /(<h1\b[^>]*>)[\s\S]*?(<\/h1>)/i,
-      (_match, opening, closing) => `${opening}${escapeHtml(name)}${closing}`,
-    ),
+    templateId: selected.id,
+    layoutId: selected.defaultLayoutId,
+    accent: "#fbbf24",
+    html: `<main data-weave-slide-source data-weave-template="${selected.id}" data-weave-layout="${selected.defaultLayoutId}" data-weave-accent="#fbbf24"><section data-weave-slot="content"><h1 data-weave-slot="title" data-weave-id="title">${escapeHtml(name)}</h1></section></main>`,
   };
   try {
     gitAt(root, ["init", "-b", "main"]);
-    await writeProjectUnlocked({ title: name, slides: [cover] }, null, root);
+    await writeProjectUnlocked({ title: name, defaultTemplateId: selected.id, slides: [cover] }, null, root);
     await ensureProjectScaffolding(root);
     commitIfChanged("Create project", root);
     return slug;
@@ -1074,6 +1246,7 @@ export async function listProjects() {
     const root = join(workspacesRoot, entry.name);
     try {
       const manifest = JSON.parse(await readFile(join(root, ".weave", "deck.json"), "utf8"));
+      if (manifest.schemaVersion !== 2 || !manifest.defaultTemplateId) return null;
       const slides = Array.isArray(manifest.slides) ? manifest.slides : [];
       const first = slides[0]?.id;
       let variations = [];
@@ -1082,7 +1255,14 @@ export async function listProjects() {
         variations = gitAt(root, ["for-each-ref", "--format=%(refname:short)", "refs/heads/weave/variation"]).split("\n").filter(Boolean);
         updatedAt = gitAt(root, ["log", "-1", "--pretty=%cI"]) || null;
       } catch {}
-      const thumbnailHtml = first ? await readFile(join(root, "slides", `${first}.html`), "utf8").catch(() => "") : "";
+      const templates = await readTemplates(root);
+      const firstSlide = slides[0];
+      const firstTemplate = templates.find((template) => template.id === firstSlide?.templateId);
+      const firstLayout = firstTemplate?.layouts.find((layout) => layout.id === firstSlide?.layoutId);
+      const source = first ? await readFile(join(root, "slides", `${first}.html`), "utf8").catch(() => "") : "";
+      const thumbnailHtml = firstTemplate && firstLayout && source
+        ? composeSource(source, firstTemplate, firstLayout, { position: 1, total: slides.length, accent: firstSlide.accent ?? "#fbbf24", instanceId: firstSlide.id })
+        : "";
       return { slug: entry.name, title: String(manifest.title ?? ""), slideCount: slides.length, updatedAt, current: root === currentProjectRoot, blocked: variations.length > 0, blockedCount: variations.length, thumbnailHtml: rewriteThumbnailAssets(thumbnailHtml, entry.name), css: await readFile(join(root, "styles", "deck.css"), "utf8").catch(() => defaultDeckCss) };
     } catch { return null; }
   }));
