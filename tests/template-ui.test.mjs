@@ -11,6 +11,7 @@ test("the editor renders and persists the template/layout hierarchy", () => {
   assert.match(page, /defaultLayoutId: string; masterHtml: string; layouts: TemplateLayout\[\]/);
   assert.match(page, /composeSlideHtml\(\{[\s\S]*masterHtml: template\.masterHtml[\s\S]*layoutHtml: layout\.html/);
   assert.match(page, /extractSlideSourceHtml\(html, \{ templateId: current\.templateId, layoutId: current\.layoutId, accent: current\.accent \}\)/);
+  assert.match(page, /defaultTemplateId, slides: captureActive\(\)/);
   assert.doesNotMatch(page, /applyTemplateToSlideHtml/);
   assert.doesNotMatch(page, /updateSlidePageNumber\(/);
 });

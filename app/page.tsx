@@ -37,7 +37,7 @@ type ActivityView = "agent" | "history" | "shortcuts" | "settings";
 type OpenPopover = "delivery" | "threads" | "addBlock" | "layouts" | "newSlide" | "quality" | "agentModel" | "references" | null;
 
 type ServerState = {
-  deck: { title: string; slides: SlideDoc[] };
+  deck: { title: string; defaultTemplateId: string; slides: SlideDoc[] };
   css: string;
   templates: TemplateDoc[];
   references: ReferenceShelfEntry[];
@@ -348,6 +348,7 @@ export default function Home() {
   const [canvasFocused, setCanvasFocused] = useState(false);
   const [announcement, setAnnouncement] = useState("Editor ready");
   const [saveMessage, setSaveMessage] = useState("");
+  const [defaultTemplateId, setDefaultTemplateId] = useState("");
   const [presentSlide, setPresentSlide] = useState(1);
   const [serverRevision, setServerRevision] = useState("");
   const [connectionEpoch, setConnectionEpoch] = useState(0);
@@ -587,7 +588,7 @@ export default function Home() {
   const undo = () => { const value = undoRef.current.pop(); if (!value) return; redoRef.current.push(snapshot()); restoreSnapshot(value); setHistoryState({ undo: undoRef.current.length, redo: redoRef.current.length }); setAnnouncement("Change undone"); };
   const redo = () => { const value = redoRef.current.pop(); if (!value) return; undoRef.current.push(snapshot()); restoreSnapshot(value); setHistoryState({ undo: undoRef.current.length, redo: redoRef.current.length }); setAnnouncement("Change redone"); };
 
-  const deckPayload = () => ({ title: deckTitle, slides: captureActive() });
+  const deckPayload = () => ({ title: deckTitle, defaultTemplateId, slides: captureActive() });
 
   const contextEnvelope = (annotationContext: Annotation[] = [], overflowing: string[] = [], attachments: ReferenceAttachment[] = []) => editorEnvelope({
     slide: activeSlideId,
@@ -627,6 +628,7 @@ export default function Home() {
       templatePreviewHtmlRef.current = null;
       templatePreviewSourceHtmlRef.current = null;
       setDeckTitle(state.deck.title);
+      setDefaultTemplateId(state.deck.defaultTemplateId);
       const sourceSlides = state.deck.slides?.length ? state.deck.slides : initialSlides;
       const nextSlides = renumberSlides(sourceSlides.map(slideFromHtml));
       slidesRef.current = nextSlides;
