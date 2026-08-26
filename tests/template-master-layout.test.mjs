@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -51,6 +51,45 @@ test("project creation persists explicit references and thumbnails compose inher
     else process.env.WEAVE_PROJECT_ROOT = previousRoot;
     if (previousWorkspaces === undefined) delete process.env.WEAVE_WORKSPACES_ROOT;
     else process.env.WEAVE_WORKSPACES_ROOT = previousWorkspaces;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("legacy rendered slides migrate without replacing project content or materializing furniture", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weave-template-legacy-"));
+  const previousRoot = process.env.WEAVE_PROJECT_ROOT;
+  process.env.WEAVE_PROJECT_ROOT = root;
+  try {
+    await mkdir(join(root, ".weave"), { recursive: true });
+    await mkdir(join(root, "slides"), { recursive: true });
+    await writeFile(join(root, ".weave/deck.json"), `${JSON.stringify({ title: "DTF", slides: [{ id: "cover", title: "DB automation", notes: "" }] }, null, 2)}\n`);
+    await writeFile(join(root, "slides/cover.html"), `<main class="weave-slide theme-plain bg-white" data-weave-slide data-weave-template="year-end-report-cover">
+      <img class="report-frame" data-weave-id="cover-background" src="assets/background.png" alt="">
+      <img class="report-brand-placeholder" data-weave-id="report-brand" src="assets/logo.png" alt="Logo">
+      <p class="report-tagline" data-weave-id="tagline">Inherited tagline</p>
+      <section class="content hero" data-weave-slot="content" data-weave-id="content">
+        <h1 class="title heading" data-weave-slot="title" data-weave-id="title">DB automation</h1>
+      </section>
+      <p class="report-organization" data-weave-id="organization">Inherited organization</p>
+    </main>`);
+    const project = await import(`../server/project.mjs?legacy=${Date.now()}`);
+    await project.ensureProject();
+    const deck = await project.readProject();
+    assert.equal(deck.title, "DTF");
+    assert.equal(deck.slides.length, 1);
+    assert.equal(deck.slides[0].templateId, "year-end-report");
+    assert.match(deck.slides[0].layoutId, /^migrated-/);
+    assert.match(deck.slides[0].html, /DB automation/);
+    assert.doesNotMatch(deck.slides[0].html, /Inherited tagline|Inherited organization|report-frame/);
+    const report = (await project.readTemplates()).find((template) => template.id === "year-end-report");
+    const migrated = report.layouts.find((layout) => layout.id === deck.slides[0].layoutId);
+    assert.match(migrated.html, /Inherited tagline/);
+    assert.match(migrated.html, /Inherited organization/);
+    assert.match(migrated.html, /class="report-logo"/);
+    assert.doesNotMatch(migrated.html, />DB automation</);
+  } finally {
+    if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
+    else process.env.WEAVE_PROJECT_ROOT = previousRoot;
     await rm(root, { recursive: true, force: true });
   }
 });

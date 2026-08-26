@@ -297,6 +297,23 @@ export function extractSlideSourceHtml(renderedHtml, { templateId, layoutId, acc
   return `${canonicalRoot}<section data-weave-slot="${contentSlotName}">${canonicalTitle}${body}</section></main>`;
 }
 
+/** Capture a legacy rendered frame as a Layout fragment without slide content. */
+export function extractLayoutSnapshotHtml(renderedHtml) {
+  const rendered = requiredString(renderedHtml, "renderedHtml");
+  const root = firstMain(rendered);
+  if (!root) throw new Error("renderedHtml must contain a <main> root.");
+  const rootElement = elementInner(rendered, root);
+  if (!rootElement) throw new Error("renderedHtml has an unclosed <main> root.");
+  const content = slotElement(rendered, contentSlotName, "renderedHtml");
+  const title = slotElement(rendered, titleSlotName, "renderedHtml");
+  const emptyTitle = `${title.opening.opening}${rendered.slice(title.closing.start, title.closing.end)}`;
+  const withoutContent = replaceElementInner(rendered, content.opening, emptyTitle);
+  const nextRoot = firstMain(withoutContent);
+  const nextRootElement = nextRoot && elementInner(withoutContent, nextRoot);
+  if (!nextRoot || !nextRootElement) throw new Error("Layout snapshot has no complete <main> root.");
+  return nextRootElement.inner;
+}
+
 export function updateSlidePageNumber(input, position, total) {
   const html = String(input);
   const page = framePageNumber(html);

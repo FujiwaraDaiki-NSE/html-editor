@@ -13,7 +13,7 @@ import { defaultSlideClasses, migrateSlideHtmlToTailwind } from "../shared/tailw
 import { projectSlug } from "../shared/project-slug.mjs";
 import { isReferencePath } from "../shared/context.mjs";
 import { assetFilenamePattern, replaceAssetReferences } from "../shared/asset-path.mjs";
-import { composeSlideHtml, extractSlideSourceHtml } from "../shared/slide-slots.mjs";
+import { composeSlideHtml, extractLayoutSnapshotHtml, extractSlideSourceHtml } from "../shared/slide-slots.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspacesRoot = process.env.WEAVE_WORKSPACES_ROOT ? resolve(process.env.WEAVE_WORKSPACES_ROOT) : join(repoRoot, "workspaces");
@@ -618,11 +618,11 @@ async function requireLayout(templateId, layoutId, root = currentProjectRoot) {
   return { template, layout };
 }
 
-function composeSource(sourceHtml, template, layout, options = {}) {
-  return composeSlideHtml({ slideHtml: sourceHtml, masterHtml: template.masterHtml, layoutHtml: layout.html, templateId: template.id, layoutId: layout.id, accent: options.accent ?? "#fbbf24", position: options.position ?? 1, total: options.total ?? 1, instanceId: options.instanceId ?? null });
+function composeSource(sourceHtml, template, layout, { accent, position, total, instanceId }) {
+  return composeSlideHtml({ slideHtml: sourceHtml, masterHtml: template.masterHtml, layoutHtml: layout.html, templateId: template.id, layoutId: layout.id, accent, position, total, instanceId });
 }
 
-function sourceFromRendered(renderedHtml, { templateId = "orbit", layoutId = "content", accent = "#fbbf24" } = {}) {
+function sourceFromRendered(renderedHtml, { templateId, layoutId, accent }) {
   return extractSlideSourceHtml(renderedHtml, { templateId, layoutId, accent });
 }
 
@@ -686,13 +686,14 @@ export async function readProject(root = currentProjectRoot) {
     notes: String(slide.notes ?? ""),
     templateId: String(slide.templateId ?? ""),
     layoutId: String(slide.layoutId ?? ""),
-    accent: String(slide.accent ?? "#fbbf24"),
+    accent: String(slide.accent ?? ""),
     html: await readSlideHtml(slide.id, root),
   })));
   for (const slide of slides) {
     const template = templates.get(slide.templateId);
     if (!template) throw new Error(`Unknown template: ${slide.templateId}`);
     if (!template.layouts.some((layout) => layout.id === slide.layoutId)) throw new Error(`Unknown layout: ${slide.layoutId} for template ${slide.templateId}`);
+    if (!slide.accent) throw new Error(`Slide ${slide.id} accent is required.`);
     if (!slide.html.trim()) throw new Error(`Slide ${slide.id} has empty HTML.`);
   }
   return { title: String(manifest.title ?? seedTitle), defaultTemplateId: String(manifest.defaultTemplateId), slides };
@@ -701,6 +702,7 @@ export async function readProject(root = currentProjectRoot) {
 /** Write the project: every slide file (formatted) plus the manifest, transactionally. */
 async function writeProjectUnlocked(input, expectedRevision = null, root = currentProjectRoot) {
   const project = validateProject(input);
+  await requireTemplate(project.defaultTemplateId, root);
   for (const slide of project.slides) await requireLayout(slide.templateId, slide.layoutId, root);
   const slides = await Promise.all(project.slides.map(async (slide) => ({
     ...slide,
@@ -985,17 +987,25 @@ async function migrateLegacyDeck() {
   if (!isLegacy) return false;
   await ensureTemplates();
   const available = await templateCatalog();
-  const blockSlides = (raw.slides ?? []).map((slide, index) => ({
-    id: slide.id ?? `slide-${index + 1}`,
-    title: slide.title ?? `Slide ${index + 1}`,
-    notes: slide.notes ?? "",
-    background: slide.background ?? "orbit",
-    blocks: slide.blocks ?? [],
-  }));
-  const sourceSlides = Array.isArray(raw.slides) && raw.slides.some((slide) => slide?.html)
-    ? await Promise.all(raw.slides.map(async (slide, index) => migrateLegacySlide(slide, index, available, raw.accent ?? "#f6b84b")))
-    : projectFromBlockSlides(raw.title ?? seedTitle, raw.accent ?? "#f6b84b", blockSlides).slides;
-  const defaultTemplateId = sourceSlides[0]?.templateId ?? "orbit";
+  const migrationAccent = raw.accent == null ? "#f6b84b" : String(raw.accent);
+  let sourceSlides;
+  if (raw.blocks !== undefined) {
+    const blockSlides = (raw.slides ?? []).map((slide, index) => ({
+      id: slide.id ?? `slide-${index + 1}`,
+      title: slide.title ?? `Slide ${index + 1}`,
+      notes: slide.notes ?? "",
+      background: slide.background ?? "orbit",
+      blocks: slide.blocks ?? [],
+    }));
+    sourceSlides = projectFromBlockSlides(raw.title ?? seedTitle, migrationAccent, blockSlides).slides;
+  } else {
+    sourceSlides = await Promise.all(raw.slides.map(async (slide, index) => migrateLegacySlide({
+      ...slide,
+      html: slide?.html == null ? await readSlideHtml(slide?.id, currentProjectRoot) : slide.html,
+    }, index, available, migrationAccent)));
+  }
+  if (!sourceSlides.length) throw new Error("Legacy project has no slides.");
+  const defaultTemplateId = sourceSlides[0].templateId;
   const project = { title: raw.title ?? seedTitle, defaultTemplateId, slides: sourceSlides };
   await writeProject(project);
   return true;
@@ -1013,29 +1023,23 @@ const legacyTemplateMapping = new Map([
 ]);
 
 const rootAttribute = (html, name) => html.match(new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'=<>]+))`, "i"))?.slice(1).find((value) => value !== undefined) ?? "";
-const emptyLegacyLayout = (html) => {
-  let snapshot = String(html);
-  for (const slot of ["title", "content"]) {
-    const opening = snapshot.match(new RegExp(`<([a-z][\\w:-]*)\\b[^>]*data-weave-slot\\s*=\\s*["']${slot}["'][^>]*>`, "i"));
-    if (!opening) continue;
-    const start = opening.index + opening[0].length;
-    const close = new RegExp(`</${opening[1]}>`, "i").exec(snapshot.slice(start));
-    if (!close) continue;
-    snapshot = `${snapshot.slice(0, start)}${snapshot.slice(start + close.index)}`;
-  }
-  return snapshot;
-};
 const frameFingerprint = (html) => String(html)
   .replace(/data-weave-slot\s*=\s*(?:"[^"]*"|'[^']*')/gi, "data-weave-slot")
   .replace(/>[^<]*</g, "><")
   .replace(/\s+/g, " ")
   .trim();
+const migrateLegacyLayoutClasses = (html) => String(html).replace(/\bclass\s*=\s*(["'])(.*?)\1/gi, (_attribute, quote, value) => {
+  const classes = value.split(/\s+/).filter(Boolean).filter((name) => name !== "content" && name !== "title")
+    .map((name) => name === "report-brand-placeholder" ? "report-logo" : name);
+  return `class=${quote}${classes.join(" ")}${quote}`;
+});
 
 async function migrateLegacySlide(slide, index, templates, accent) {
   const html = String(slide?.html ?? "");
   if (!html.trim()) throw new Error(`Slide ${index + 1} has empty HTML.`);
-  const legacyId = rootAttribute(html, "data-weave-template") || String(slide?.background ?? "orbit");
-  const mapping = legacyTemplateMapping.get(legacyId) ?? legacyTemplateMapping.get(String(slide?.background ?? "orbit"));
+  const themeId = html.match(/\bclass\s*=\s*(["'])[^"']*\btheme-(orbit|grid|plain)\b[^"']*\1/i)?.[2] ?? "";
+  const legacyId = rootAttribute(html, "data-weave-template") || String(slide?.background ?? "") || themeId;
+  const mapping = legacyTemplateMapping.get(legacyId);
   if (!mapping || !templates.has(mapping.templateId)) throw new Error(`Unknown legacy template: ${legacyId}`);
   const source = sourceFromRendered(html, { templateId: mapping.templateId, layoutId: mapping.layoutId, accent: slide.accent ?? accent });
   const template = templates.get(mapping.templateId);
@@ -1051,7 +1055,7 @@ async function migrateLegacySlide(slide, index, templates, accent) {
     const templateRoot = join(templatesRoot(), mapping.templateId);
     const layoutPath = join(templateRoot, "layouts", `${layoutId}.html`);
     await mkdir(join(templateRoot, "layouts"), { recursive: true });
-    if (!existsSync(layoutPath)) await writeFile(layoutPath, await formatSlideHtml(emptyLegacyLayout(html)));
+    if (!existsSync(layoutPath)) await writeFile(layoutPath, await formatSlideHtml(migrateLegacyLayoutClasses(extractLayoutSnapshotHtml(html))));
     const manifestPath = join(templateRoot, "template.json");
     const packageManifest = JSON.parse(await readFile(manifestPath, "utf8"));
     const layouts = Array.isArray(packageManifest.layouts) ? packageManifest.layouts : [];
@@ -1102,13 +1106,16 @@ export async function ensureProject() {
   await removeLegacyChatData();
   const migrationPaths = await ensureProjectScaffolding();
   let seededOrMigrated = false;
-  try {
-    await access(manifestPath());
+  const hasManifest = await access(manifestPath()).then(() => true).catch((error) => {
+    if (error?.code === "ENOENT") return false;
+    throw error;
+  });
+  if (hasManifest) {
     if (await migrateLegacyDeck()) {
       seededOrMigrated = true;
       migrationPaths.push(".weave/deck.json", "slides");
     }
-  } catch {
+  } else {
     await writeProject(seedProject());
     seededOrMigrated = true;
     migrationPaths.push(".weave/deck.json", "slides");
@@ -1271,7 +1278,7 @@ export async function listProjects() {
       const firstLayout = firstTemplate?.layouts.find((layout) => layout.id === firstSlide?.layoutId);
       const source = first ? await readFile(join(root, "slides", `${first}.html`), "utf8").catch(() => "") : "";
       const thumbnailHtml = firstTemplate && firstLayout && source
-        ? composeSource(source, firstTemplate, firstLayout, { position: 1, total: slides.length, accent: firstSlide.accent ?? "#fbbf24", instanceId: firstSlide.id })
+        ? composeSource(source, firstTemplate, firstLayout, { position: 1, total: slides.length, accent: firstSlide.accent, instanceId: firstSlide.id })
         : "";
       return { slug: entry.name, title: String(manifest.title ?? ""), slideCount: slides.length, updatedAt, current: root === currentProjectRoot, blocked: variations.length > 0, blockedCount: variations.length, thumbnailHtml: rewriteThumbnailAssets(thumbnailHtml, entry.name), css: await readFile(join(root, "styles", "deck.css"), "utf8").catch(() => defaultDeckCss) };
     } catch { return null; }

@@ -1590,7 +1590,7 @@ export default function Home() {
   };
   const setBlockPosition = (className: string) => applyClasses((node) => writeClasses(node, applyBlockPosition([...node.classList], className)));
 
-  const previewTemplate = (templateId: string, layoutId?: string) => {
+  const previewTemplate = (templateId: string, layoutId: string) => {
     const template = templates.find((item) => item.id === templateId);
     const index = activeRef.current - 1;
     templatePreviewHtmlRef.current = null;
@@ -1599,12 +1599,12 @@ export default function Home() {
     const slide = captured[index];
     if (!template || !slide) return;
     templatePreviewSourceHtmlRef.current = slide.html;
-    const layout = template.layouts.find((item) => item.id === (layoutId ?? template.defaultLayoutId));
-    if (!layout) { setApiError(`Layout reference is missing: ${template.id}/${layoutId ?? template.defaultLayoutId}`); return; }
+    const layout = template.layouts.find((item) => item.id === layoutId);
+    if (!layout) { setApiError(`Layout reference is missing: ${template.id}/${layoutId}`); return; }
     templatePreviewHtmlRef.current = composeFor({ ...slide, templateId: template.id, layoutId: layout.id }, activeRef.current, captured.length, template, layout);
     reinject();
   };
-  const applyTemplate = (templateId: string, layoutId?: string) => {
+  const applyTemplate = (templateId: string, layoutId: string) => {
     const template = templates.find((item) => item.id === templateId);
     const index = activeRef.current - 1;
     if (!template) return;
@@ -1615,8 +1615,8 @@ export default function Home() {
     const slide = captured[index];
     if (!slide) return;
     checkpoint();
-    const selectedLayout = template.layouts.find((item) => item.id === (layoutId ?? template.defaultLayoutId));
-    if (!selectedLayout) { setApiError(`Layout reference is missing: ${template.id}/${layoutId ?? template.defaultLayoutId}`); return; }
+    const selectedLayout = template.layouts.find((item) => item.id === layoutId);
+    if (!selectedLayout) { setApiError(`Layout reference is missing: ${template.id}/${layoutId}`); return; }
     setSlidesSynced(captured.map((item, itemIndex) => itemIndex === index ? { ...item, templateId: template.id, layoutId: selectedLayout.id } : item));
     markDirty();
     dismissPopover(false);
@@ -1626,7 +1626,8 @@ export default function Home() {
     const root = slideRoot();
     if (!root) return;
     checkpoint();
-    const next = accents.find((item) => item.color === value) ?? accents[0];
+    const next = accents.find((item) => item.color === value);
+    if (!next) { setApiError(`Unknown accent: ${value}`); return; }
     const accentClasses = accents.map((item) => item.className);
     root.querySelectorAll<HTMLElement>(accentClasses.map((item) => `.${item}`).join(",")).forEach((node) => {
       node.classList.remove(...accentClasses);
@@ -1678,12 +1679,12 @@ export default function Home() {
     markDirty();
   };
 
-  const addSlide = (templateId?: string, layoutId?: string) => {
+  const addSlide = (templateId: string, layoutId: string) => {
     checkpoint();
     const captured = captureActive();
-    const template = templates.find((item) => item.id === templateId) ?? templates[0];
-    const selectedLayout = template?.layouts.find((item) => item.id === (layoutId ?? template.defaultLayoutId));
-    if (!template || !selectedLayout) { setApiError(`Template or layout reference is missing: ${templateId ?? ""}/${layoutId ?? ""}`); return; }
+    const template = templates.find((item) => item.id === templateId);
+    const selectedLayout = template?.layouts.find((item) => item.id === layoutId);
+    if (!template || !selectedLayout) { setApiError(`Template or layout reference is missing: ${templateId}/${layoutId}`); return; }
     const empty = '<main class="weave-slide"><section data-weave-slot="content"><h1 data-weave-slot="title" data-weave-id="title"></h1></section></main>';
     const slideId = `slide-${createMessageId().slice(6)}`;
     const html = empty.replace(/\bdata-weave-id\s*=\s*(["'])(.*?)\1/gi, (_: string, quote: string) => `data-weave-id=${quote}block-${createMessageId().slice(6)}${quote}`);
@@ -2334,7 +2335,7 @@ export default function Home() {
         );
       })}
       <span className="new-slide-wrap">
-        <button className="new-slide" onClick={(event) => templates.length ? togglePopover("newSlide", event.currentTarget) : addSlide()} disabled={agentRunning} aria-label="New slide" title="New slide">＋</button>
+        <button className="new-slide" onClick={(event) => togglePopover("newSlide", event.currentTarget)} disabled={agentRunning || !templates.length} aria-label="New slide" title="New slide">＋</button>
         {openPopover === "newSlide" && (
           <>
             <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
