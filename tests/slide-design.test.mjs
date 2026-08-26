@@ -105,6 +105,7 @@ test("complete deck export is offline and keyboard-presentable", () => {
   assert.equal((html.match(/class="weave-slide/g) ?? []).length, 2);
   assert.match(html, /ArrowRight/);
   assert.match(html, /requestFullscreen/);
+  assert.match(html, /querySelectorAll\('\.weave-present-stage > \.weave-slide'\)/);
   assert.match(html, /@page\{size:13\.333in 7\.5in/);
   assert.match(html, /page-break-after:always/);
   assert.equal(html.includes("<link"), false);
