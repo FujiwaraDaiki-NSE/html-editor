@@ -83,12 +83,13 @@ const reportFrameSvg = ({ id, path, lineStart }) => `<svg class="report-frame ab
       <line x1="${lineStart}" y1="662" x2="1280" y2="662" stroke="#004dff" stroke-width="2"></line>
     </svg>`;
 
-const reportTemplate = ({ id, name, path, lineStart }) => ({
+const reportTemplate = ({ id, name, path, lineStart, logo }) => ({
   id,
   name,
   filename: `${id}.html`,
   html: `<main class="${templateRootClasses({ id: "plain", background: "bg-white", text: "text-slate-950" })}" data-weave-slide data-weave-template="${id}" data-weave-template-name="${name}">
     ${reportFrameSvg({ id, path, lineStart })}
+    ${logo ? `<img class="report-logo" data-weave-id="year-end-report-cover-logo" src="assets/${reportLogoAssetFilename}" alt="NIPPON STEEL ENGINEERING">` : ""}
     <section class="hero flex flex-1 flex-col items-start justify-center gap-6" data-weave-slot="content">
       <h1 class="heading text-6xl font-semibold leading-none tracking-tight" data-weave-slot="title" data-weave-id="title"></h1>
     </section>
@@ -97,23 +98,27 @@ const reportTemplate = ({ id, name, path, lineStart }) => ({
 
 const reportContentPath = "M0 0 L1280 0 C797.33 24 402.67 118 165.33 285 C76 348 24 392 0 416 Z";
 const reportTitlePath = "M0 396 C232 150 757.33 22 1280 0 L1280 720 L0 720 Z";
+const reportLogoAssetFilename = "9442acd1fa8abd6f7e4eeac678dad653a43d2d63663c45c1c09775bbc0dcf0ee.png";
 const yearEndReportTemplate = reportTemplate({
   id: "year-end-report",
   name: "年度末報告 / 本文",
   path: reportContentPath,
   lineStart: 131,
+  logo: false,
 });
 const yearEndReportCoverTemplate = reportTemplate({
   id: "year-end-report-cover",
   name: "年度末報告 / 表紙",
   path: reportTitlePath,
   lineStart: 280,
+  logo: true,
 });
 const yearEndReportAgendaTemplate = reportTemplate({
   id: "year-end-report-agenda",
   name: "年度末報告 / 目次・章区切り",
   path: reportContentPath,
   lineStart: 186.67,
+  logo: false,
 });
 
 export const builtInTemplates = [...defaultTemplates, yearEndReportTemplate, yearEndReportCoverTemplate, yearEndReportAgendaTemplate];
@@ -547,6 +552,15 @@ export async function ensureTemplates(root = currentProjectRoot) {
     if (await readFile(path, "utf8").catch(() => "") === template.html) continue;
     await writeFile(path, template.html);
     touched.push(`templates/${template.filename}`);
+  }
+  const logoSource = join(repoRoot, "shared", "assets", reportLogoAssetFilename);
+  const logoDestination = join(assetsRoot(root), reportLogoAssetFilename);
+  const logoBytes = await readFile(logoSource);
+  const existingLogo = await readFile(logoDestination).catch(() => null);
+  if (!existingLogo || !existingLogo.equals(logoBytes)) {
+    await mkdir(assetsRoot(root), { recursive: true });
+    await writeFile(logoDestination, logoBytes);
+    touched.push(`assets/${reportLogoAssetFilename}`);
   }
   return touched;
 }

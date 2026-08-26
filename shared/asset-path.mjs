@@ -21,3 +21,21 @@ export function replaceAssetReferences(html, replace) {
 export function rewriteAssetUrls(html, baseUrl) {
   return replaceAssetReferences(html, (path) => `${baseUrl}/${path}`);
 }
+
+const blobToDataUrl = (blob) => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(String(reader.result));
+  reader.onerror = () => reject(reader.error);
+  reader.readAsDataURL(blob);
+});
+
+/** Fetch every local asset referenced by the supplied fragments and inline it for offline output. */
+export async function embedAssetReferences(fragments, baseUrl) {
+  const assetPaths = [...new Set(fragments.flatMap((fragment) => assetPathsInHtml(fragment)))];
+  const embeddedAssets = new Map(await Promise.all(assetPaths.map(async (path) => {
+    const response = await fetch(`${baseUrl}/${path}`);
+    if (!response.ok) throw new Error(`Could not include ${path} in the offline export.`);
+    return [path, await blobToDataUrl(await response.blob())];
+  })));
+  return fragments.map((fragment) => replaceAssetReferences(fragment, (path) => embeddedAssets.get(path) ?? path));
+}

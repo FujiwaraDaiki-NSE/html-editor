@@ -5,7 +5,7 @@
 import { DragEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import { actionFromStreamEvent } from "./codex/actions";
 import { defaultDeckCss, designHeight, designWidth, escapeHtml, renderDeckDocument } from "../shared/slide-design.mjs";
-import { assetPathsInHtml, isAssetPath, replaceAssetReferences, rewriteAssetUrls } from "../shared/asset-path.mjs";
+import { embedAssetReferences, isAssetPath, rewriteAssetUrls } from "../shared/asset-path.mjs";
 import { projectSlug } from "../shared/project-slug.mjs";
 import { auditContentPolicy } from "../shared/content-policy.mjs";
 import { applyTemplateToSlideHtml, contentSlotSelector, titleFromSlideHtml, titleSlotSelector, updateSlidePageNumber, withUniqueFragmentIds } from "../shared/slide-slots.mjs";
@@ -1883,21 +1883,7 @@ export default function Home() {
   const exportDeck = async () => {
     if (!quality.ok) { popoverTriggerRef.current = null; setOpenPopover("quality"); setApiError("Resolve quality errors before exporting."); return; }
     try {
-      let fragments = exportFragments();
-      const assetPaths = [...new Set(fragments.flatMap((fragment) => assetPathsInHtml(fragment)))];
-      const embeddedAssets = new Map(await Promise.all(assetPaths.map(async (path) => {
-        const response = await fetch(`${apiBase}/${path}`);
-        if (!response.ok) throw new Error(`Could not include ${path} in the offline export.`);
-        const blob = await response.blob();
-        const dataUrl = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(String(reader.result));
-          reader.onerror = () => reject(reader.error);
-          reader.readAsDataURL(blob);
-        });
-        return [path, dataUrl] as const;
-      })));
-      fragments = fragments.map((fragment) => replaceAssetReferences(fragment, (path: string) => embeddedAssets.get(path) ?? path));
+      const fragments = await embedAssetReferences(exportFragments(), apiBase);
       const html = renderDeckDocument(fragments, deckCss, deckTitle);
       const blob = new Blob([html], { type: "text/html;charset=utf-8" });
       const url = URL.createObjectURL(blob);
@@ -1947,13 +1933,20 @@ export default function Home() {
 
   const openPresenter = () => { setSlidesSynced(captureActive()); setPresentSlide(activeSlide); setShowPresenter(true); };
 
-  const printDeck = () => {
+  const printDeck = async () => {
     if (!quality.ok) { popoverTriggerRef.current = null; setOpenPopover("quality"); return; }
-    const popup = window.open("", "_blank", "noopener,noreferrer");
+    const popup = window.open("", "_blank");
     if (!popup) { setApiError("Allow pop-ups to print this deck."); return; }
-    popup.document.write(renderDeckDocument(exportFragments(), deckCss, deckTitle));
-    popup.document.close();
-    popup.addEventListener("load", () => popup.print(), { once: true });
+    popup.opener = null;
+    try {
+      const fragments = await embedAssetReferences(exportFragments(), apiBase);
+      popup.document.write(renderDeckDocument(fragments, deckCss, deckTitle));
+      popup.document.close();
+      popup.addEventListener("load", () => popup.print(), { once: true });
+    } catch (error) {
+      popup.close();
+      setApiError(error instanceof Error ? error.message : String(error));
+    }
   };
 
   const restoreHistory = async (commit?: string) => {
