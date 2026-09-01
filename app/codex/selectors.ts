@@ -1,5 +1,7 @@
 import type { CodexUIState, ItemState, ThreadState, TurnState } from "./types";
 
+export const isConversationMessage = (item: ItemState) => item.type === "agentMessage" || item.type === "userMessage";
+
 export const selectActiveThread = (state: CodexUIState): ThreadState | null =>
   state.activeThreadId ? state.threads[state.activeThreadId] ?? null : null;
 

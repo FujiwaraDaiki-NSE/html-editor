@@ -20,7 +20,7 @@ import { textExcerptOfNode } from "./components/editable-text-utils";
 import { ItemCard } from "./codex/components/ItemCard";
 import { ServerRequestCard } from "./codex/components/ServerRequestCard";
 import { codexReducer, initialCodexState } from "./codex/reducer";
-import { selectThreadRunning, selectThreadTurns, selectTurnItems } from "./codex/selectors";
+import { isConversationMessage, selectThreadRunning, selectThreadTurns, selectTurnItems } from "./codex/selectors";
 import { projectEventDecision } from "./project-events";
 
 /* A slide is now a real HTML file: its `<main class="weave-slide">` fragment is the single
@@ -376,6 +376,7 @@ export default function Home() {
   const sidebarWidth = useSyncExternalStore(sidebarWidthStore.subscribe, sidebarWidthStore.read, sidebarWidthStore.serverRead);
   const [threadSearch, setThreadSearch] = useState("");
   const [showArchivedThreads, setShowArchivedThreads] = useState(false);
+  const [threadMenuOpen, setThreadMenuOpen] = useState(false);
   const [activityView, setActivityView] = useState<ActivityView>("agent");
   const agentModel = useSyncExternalStore(agentModelStore.subscribe, agentModelStore.read, agentModelStore.serverRead);
   const selectedModel = agentModel.model;
@@ -487,6 +488,7 @@ export default function Home() {
   const agentRunning = selectThreadRunning(codexState, codexState.activeThreadId);
   const activeTurns = selectThreadTurns(codexState, codexState.activeThreadId);
   const visibleTurns = activeTurns.slice(-100);
+  const pendingServerRequests = Object.values(codexState.pendingRequests);
   const zoomLevel = manualZoom ?? defaultCanvasZoom;
   const slideScale = fitScale * zoomLevel;
   const activeSlideId = slides[activeSlide - 1]?.id;
@@ -506,13 +508,6 @@ export default function Home() {
     ? `${activeOverlayTurnIndex >= 0 ? `ターン ${activeOverlayTurnIndex + 1}` : "送信済みターン"} · ${activeOverlayAttachment.slideLabel}`
     : "";
   const recalledAnnotations = activeOverlayAttachment?.slideId === activeSlideId ? activeOverlayAttachment.annotations : [];
-  const contextSummary = [
-    `スライド ${activeSlide}: ${slides[activeSlide - 1]?.title || "無題"}`,
-    selectedId ? `${blockLabels[sel?.kind ?? ""] ?? "要素"}を選択中` : "要素は未選択",
-    `Agentへの指示 ${sendableAnnotations.length}件`,
-    `参照 ${referenceAttachments.length}件`,
-  ].join(" · ");
-
   const showActivity = (view: ActivityView) => {
     setActivityView(view);
     setLeftPanelOpen(true);
@@ -565,12 +560,14 @@ export default function Home() {
   const dismissPopover = useCallback((restoreFocus = true) => {
     cancelTemplatePreview();
     setOpenPopover(null);
+    setThreadMenuOpen(false);
     setReferenceView("shelf");
     if (restoreFocus) requestAnimationFrame(() => popoverTriggerRef.current?.focus());
   }, [cancelTemplatePreview]);
   const togglePopover = (value: Exclude<OpenPopover, null>, trigger: HTMLButtonElement) => {
     cancelTemplatePreview();
     popoverTriggerRef.current = trigger;
+    setThreadMenuOpen(false);
     setOpenPopover((current) => {
       if (current === value) {
         if (value === "references") setReferenceView("shelf");
@@ -578,6 +575,13 @@ export default function Home() {
       }
       return value;
     });
+  };
+  const toggleThreadMenu = (trigger: HTMLButtonElement) => {
+    cancelTemplatePreview();
+    popoverTriggerRef.current = trigger;
+    setOpenPopover(null);
+    setReferenceView("shelf");
+    setThreadMenuOpen((current) => !current);
   };
   const slideRoot = () => canvasRef.current?.querySelector<HTMLElement>(".weave-slide") ?? null;
   const contentSlot = () => canvasRef.current?.querySelector<HTMLElement>(contentSlotSelector) ?? null;
@@ -726,7 +730,26 @@ export default function Home() {
   /* Display-only fallback: a model that declares no supported efforts still gets the three
      standard choices in the picker, while `applyServerState` leaves such a model's effort alone. */
   const availableEfforts = useMemo(() => selectedModelInfo?.supportedReasoningEfforts?.map((option: any) => option.reasoningEffort) ?? ["low", "medium", "high"], [selectedModelInfo]);
-  const agentActivity = !agentReady ? codexState.connection.error ?? "Codexへ接続中…" : agentRunning ? "Codexが作業中…" : "準備完了";
+  const connectionStatus = codexState.connection.status;
+  const connectionError = codexState.connection.error;
+  const agentHeaderState = useMemo(() => {
+    const connectionLabels: Record<typeof connectionStatus, string> = {
+      connecting: "Codexへ接続中…",
+      connected: "",
+      reconnecting: "Codexへ再接続中…",
+      disconnected: "接続できません",
+      incompatible: "互換性を確認できません",
+    };
+    if (connectionStatus !== "connected") {
+      return {
+        kind: connectionStatus,
+        label: connectionError ?? connectionLabels[connectionStatus],
+      };
+    }
+    if (pendingServerRequests.length > 0) return { kind: "waiting", label: `確認待ち（${pendingServerRequests.length}件）` };
+    if (agentRunning) return { kind: "running", label: "実行中…" };
+    return null;
+  }, [agentRunning, connectionError, connectionStatus, pendingServerRequests.length]);
 
   /* `applyDeck` controls whether the on-disk deck replaces the editor buffer. Status-only polls
      (retrying while Codex connects) pass false so they never clobber unsaved edits — the local
@@ -994,7 +1017,7 @@ export default function Home() {
   useEffect(() => { if (showPresenter) presenterRef.current?.focus(); }, [showPresenter]);
 
   useEffect(() => {
-    if (!openPopover) return;
+    if (!openPopover && !threadMenuOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
@@ -1002,7 +1025,7 @@ export default function Home() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [dismissPopover, openPopover]);
+  }, [dismissPopover, openPopover, threadMenuOpen]);
 
   /* --- Live-DOM editing on the canvas -------------------------------------------------- */
 
@@ -2678,17 +2701,28 @@ export default function Home() {
 
         {leftPanelOpen ? <aside className="left-panel">
           <div className="panel-resizer" role="separator" aria-orientation="vertical" aria-label="サイドバーの幅を変更" aria-valuenow={sidebarWidth} aria-valuemin={280} aria-valuemax={560} tabIndex={0} onPointerDown={startSidebarResize} onKeyDown={(event) => { if (event.key === "ArrowLeft") { event.preventDefault(); adjustSidebarWidth(-16); } if (event.key === "ArrowRight") { event.preventDefault(); adjustSidebarWidth(16); } }} />
-          {activityView === "agent" ? <section className="agent-panel">
+          {activityView === "agent" ? <section className="agent-panel" aria-label="Agentとの会話" aria-busy={agentRunning}>
             <div className="agent-heading">
-              <span><i aria-hidden="true" className={`agent-status ${agentReady ? "" : "offline"}`} /> AGENT</span>
-              <button className="thread-switcher" onClick={(event) => togglePopover("threads", event.currentTarget)} aria-expanded={openPopover === "threads"} aria-haspopup="listbox" title="会話を切り替えます"><span>{activeThreadName}</span><em aria-hidden="true">⌄</em></button>
-              <button onClick={() => void newThread()} aria-label="新しい会話" title="新しい会話を開始します" disabled={agentRunning}>＋</button>
-              <button className="panel-close" onClick={() => setLeftPanelOpen(false)} aria-label="Agentパネルを閉じる" title="Agentパネルを閉じます">×</button>
+              <div className="agent-heading-main">
+                <h2 className="agent-heading-title">
+                  <button className="thread-switcher" onClick={(event) => togglePopover("threads", event.currentTarget)} aria-expanded={openPopover === "threads"} aria-haspopup="dialog" title="会話を切り替えます"><span>{activeThreadName}</span><em aria-hidden="true">⌄</em></button>
+                </h2>
+                {agentHeaderState && <span className={`agent-state agent-state-${agentHeaderState.kind}`} role="status" aria-live="polite" aria-busy={agentRunning}>{agentHeaderState.label}</span>}
+              </div>
+              <div className="agent-heading-actions">
+                <button className="new-thread-button" onClick={() => void newThread()} aria-label="新しい会話" title="新しい会話を開始します" disabled={agentRunning}>＋</button>
+                <button className="thread-menu-trigger" onClick={(event) => toggleThreadMenu(event.currentTarget)} aria-expanded={threadMenuOpen} aria-haspopup="menu" aria-label="会話の操作" title="会話の名前変更、分岐、ゴール、整理、アーカイブ、削除">…</button>
+                <button className="panel-close" onClick={() => setLeftPanelOpen(false)} aria-label="Agentパネルを閉じる" title="Agentパネルを閉じます">×</button>
+              </div>
             </div>
             {openPopover === "threads" && (
               <>
                 <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
-                <div className="thread-popover">
+                <div className="thread-popover" role="dialog" aria-label="会話を切り替え">
+                  <div className="thread-popover-heading">
+                    <strong>会話</strong>
+                    <button type="button" onClick={() => { dismissPopover(false); void newThread(); }} disabled={agentRunning}>＋ 新しい会話</button>
+                  </div>
                   <div className="thread-controls">
                     <input type="search" value={threadSearch} onChange={(event) => setThreadSearch(event.target.value)} placeholder="会話を検索" aria-label="会話を検索" />
                     <button className={showArchivedThreads ? "active" : ""} onClick={() => setShowArchivedThreads((value) => !value)}>{showArchivedThreads ? "使用中" : "アーカイブ"}</button>
@@ -2701,25 +2735,37 @@ export default function Home() {
                       </button>
                     ))}
                   </div>
-                  {codexState.activeThreadId && (
-                    <div className="thread-actions">
-                      <button onClick={() => { const name = window.prompt("会話名", displayThreadName(codexState.threads[codexState.activeThreadId!]?.name) ?? ""); if (name !== null) void threadAction("name", { name }); }}>名前を変更</button>
-                      <button onClick={() => void forkThread()}>複製して分岐</button>
-                      <button onClick={() => void manageGoal()}>ゴール</button>
-                      <button onClick={() => void threadAction("compact")}>履歴を整理</button>
-                      <button onClick={() => void threadAction(showArchivedThreads ? "unarchive" : "archive")}>{showArchivedThreads ? "元に戻す" : "アーカイブ"}</button>
-                      <button onClick={() => { if (window.confirm("このWeave会話を完全に削除しますか？")) void threadAction("delete"); }}>削除</button>
-                    </div>
-                  )}
                 </div>
               </>
             )}
-            <div ref={messagesRef} className="messages" role="log" aria-live="polite" aria-relevant="additions text" aria-label="Agentとの会話" onScroll={(event) => { const element = event.currentTarget; shouldAutoScrollRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48; }}>
+            {threadMenuOpen && (
+              <>
+                <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
+                <div className="thread-actions-menu" role="menu" aria-label={`${activeThreadName}の操作`}>
+                  <strong>会話の操作</strong>
+                  <button role="menuitem" disabled={!codexState.activeThreadId} onClick={() => { const name = window.prompt("会話名", displayThreadName(codexState.threads[codexState.activeThreadId!]?.name) ?? ""); if (name !== null) { dismissPopover(false); void threadAction("name", { name }); } }}>名前を変更</button>
+                  <button role="menuitem" disabled={!codexState.activeThreadId || agentRunning} onClick={() => { dismissPopover(false); void forkThread(); }}>複製して分岐</button>
+                  <button role="menuitem" disabled={!codexState.activeThreadId} onClick={() => { dismissPopover(false); void manageGoal(); }}>ゴール</button>
+                  <button role="menuitem" disabled={!codexState.activeThreadId || agentRunning} onClick={() => { dismissPopover(false); void threadAction("compact"); }}>履歴を整理</button>
+                  <button role="menuitem" disabled={!codexState.activeThreadId || agentRunning} onClick={() => { dismissPopover(false); void threadAction(activeThread?.archived ? "unarchive" : "archive"); }}>{activeThread?.archived ? "アーカイブから戻す" : "アーカイブ"}</button>
+                  <button role="menuitem" className="danger" disabled={!codexState.activeThreadId || agentRunning} onClick={() => { if (window.confirm("このWeave会話を完全に削除しますか？")) { dismissPopover(false); void threadAction("delete"); } }}>削除</button>
+                </div>
+              </>
+            )}
+            <div ref={messagesRef} className="messages" role="log" aria-live="polite" aria-relevant="additions text" aria-label="Agentとの会話" aria-busy={agentRunning} onScroll={(event) => { const element = event.currentTarget; shouldAutoScrollRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48; }}>
               {!codexState.activeThreadId && <p className="empty-thread">会話を開始するか、既存の会話を選んでください。</p>}
               {activeTurns.length > visibleTurns.length && <p className="trimmed-log">最新{visibleTurns.length}ターンを表示しています。</p>}
-              {visibleTurns.map((turn) => (
-                <section className="turn-group" key={turn.id}>
-                  {selectTurnItems(codexState, turn.id).map((item) => <ItemCard key={item.id} item={item} />)}
+              {visibleTurns.map((turn, turnIndex) => {
+                const turnItems = selectTurnItems(codexState, turn.id);
+                const messageItems = turnItems.filter(isConversationMessage);
+                const workItems = turnItems.filter((item) => !isConversationMessage(item));
+                const turnInProgress = ["starting", "running", "inProgress"].includes(turn.status);
+                return <section className="turn-group" key={turn.id} aria-label={`ターン ${turnIndex + 1}`}>
+                  {messageItems.map((item) => <ItemCard key={item.id} item={item} />)}
+                  {workItems.length > 0 && <details className="work-details" open={turnInProgress}>
+                    <summary><span>作業ログ</span><span>{workItems.length}件</span></summary>
+                    <div className="work-items" aria-label={`作業ログ ${workItems.length}件`}>{workItems.map((item) => <ItemCard key={item.id} item={item} />)}</div>
+                  </details>}
                   {activeThreadAttachments.filter((attachment) => attachment.turnId === turn.id).map((attachment) => <AnnotationAttachment
                     key={attachment.id}
                     slideLabel={attachment.slideLabel}
@@ -2730,9 +2776,9 @@ export default function Home() {
                     onRestore={() => restoreAnnotationAttachment(attachment)}
                     onToggleOverlay={() => toggleAttachmentOverlay(attachment)}
                   />)}
-                  {(turn.status !== "completed" || turn.diff) && <footer><span>{turn.status}</span>{turn.diff && <details><summary>ターンの差分</summary><pre>{turn.diff}</pre></details>}</footer>}
-                </section>
-              ))}
+                  {(turn.status !== "completed" || turn.diff) && <footer className="turn-status"><span role="status">{turn.status}</span>{turn.diff && <details><summary>ターンの差分</summary><pre>{turn.diff}</pre></details>}</footer>}
+                </section>;
+              })}
               {unmatchedAttachments.map((attachment) => <AnnotationAttachment
                 key={attachment.id}
                 slideLabel={attachment.slideLabel}
@@ -2743,12 +2789,14 @@ export default function Home() {
                 onRestore={() => restoreAnnotationAttachment(attachment)}
                 onToggleOverlay={() => toggleAttachmentOverlay(attachment)}
               />)}
-              {Object.values(codexState.pendingRequests).map((pending) => (
-                <ServerRequestCard key={String(pending.id)} request={pending} onResolve={(id, result) => void resolveServerRequest(id, result)} onReject={(id) => void rejectServerRequest(id)} />
-              ))}
               <div ref={messagesEndRef} className="messages-end" />
             </div>
-            <div className="chat-box"
+            <div className="composer-dock">
+              {pendingServerRequests.length > 0 && <section className="blocking-region" role="region" aria-live="assertive" aria-label="確認が必要な操作">
+                <div className="blocking-heading"><strong>確認が必要です</strong><span>{pendingServerRequests.length}件</span></div>
+                {pendingServerRequests.map((pending) => <ServerRequestCard key={String(pending.id)} request={pending} onResolve={(id, result) => void resolveServerRequest(id, result)} onReject={(id) => void rejectServerRequest(id)} />)}
+              </section>}
+              <div className="chat-box"
               onDragOver={(event) => event.preventDefault()}
               onDrop={(event) => { event.preventDefault(); void uploadReferences(event.dataTransfer.files); }}
               onPaste={(event) => { const files = event.clipboardData.files; if (files.length > 0) { event.preventDefault(); void uploadReferences(files); } }}
@@ -2800,9 +2848,11 @@ export default function Home() {
                   </>}
                 </aside>
               </>}
-              <div className="context-chip" role="group" aria-label="編集コンテキスト">
-                <span className="context-summary" role="status"><span className="context-icon" aria-hidden="true">◎</span> {contextSummary} · {agentActivity}</span>
-                {activeElementAnnotations.length > 0 && <span className="context-annotation-count">要素 {activeElementAnnotations.length}件</span>}
+              <div className="context-chip" role="group" aria-label="送信コンテキスト">
+                <span className="context-chip-heading">送信対象</span>
+                <span className="context-target-chip" title={slides[activeSlide - 1]?.title || "無題"}><span className="context-icon" aria-hidden="true">▧</span>スライド {activeSlide} · {slides[activeSlide - 1]?.title || "無題"}</span>
+                {selectedId && <span className="context-target-chip"><span className="context-icon" aria-hidden="true">⌖</span>選択要素 · {blockLabels[sel?.kind ?? ""] ?? "要素"}</span>}
+                {activeElementAnnotations.length > 0 && <span className="context-target-chip"><span className="context-icon" aria-hidden="true">⌑</span>指示要素 {activeElementAnnotations.length}件</span>}
                 {activeRegionAnnotations.length > 0 && <button
                   type="button"
                   className={regionsWillSend ? "active" : "held"}
@@ -2811,6 +2861,7 @@ export default function Home() {
                   title={referencedRegions.length > 0 ? "本文から参照している範囲は送信対象から外せません" : "次の送信に指示範囲を含めるか切り替えます"}
                   onClick={() => setIncludeRegionAnnotations((current) => !current)}
                 >指示範囲 {activeRegionAnnotations.length}件 · {regionsWillSend ? "送信する" : "保留"}</button>}
+                {referenceAttachments.length > 0 && <span className="context-target-chip"><span className="context-icon" aria-hidden="true">📎</span>参照資料 {referenceAttachments.length}件</span>}
                 {activeAnnotations.length > 0 && <AnnotationLegend annotations={activeAnnotations} />}
               </div>
               {referenceAttachments.length > 0 && <div className="reference-attachments" role="list" aria-label="添付ファイル">
@@ -2821,12 +2872,13 @@ export default function Home() {
                   <button type="button" aria-label={`${attachment.name}を添付から外す`} onClick={() => setReferenceAttachments((current) => current.filter((item) => item.path !== attachment.path))}>×</button>
                 </div>)}
               </div>}
-              <textarea ref={promptRef} value={promptDraft} onChange={onPromptChange} onCompositionStart={() => { compositionRef.current = true; }} onCompositionEnd={onPromptCompositionEnd} onKeyDown={onPromptKeyDown} placeholder={agentReady ? "Agentにこのスライドの編集を依頼…" : "Codexへの接続を待っています…"} aria-label="Agentへのメッセージ" maxLength={20000} disabled={!agentReady} />
+              <textarea ref={promptRef} value={promptDraft} onChange={onPromptChange} onCompositionStart={() => { compositionRef.current = true; }} onCompositionEnd={onPromptCompositionEnd} onKeyDown={onPromptKeyDown} placeholder={agentReady ? "Agentにこのスライドの編集を依頼…" : "Codexへの接続を待っています…"} aria-label="Agentへのメッセージ" aria-busy={agentRunning} maxLength={20000} disabled={!agentReady} />
               <div className="chat-actions">
-                <span>⌘ / Ctrl ↵</span>
+                <input ref={referenceInputRef} className="sr-only" type="file" multiple onChange={(event) => { if (event.target.files) void uploadReferences(event.target.files); }} />
+                <button className={`attach-button${openPopover === "references" ? " active" : ""}`} type="button" onClick={(event) => togglePopover("references", event.currentTarget)} disabled={!agentReady} aria-expanded={openPopover === "references"} aria-haspopup="dialog" aria-label="参照資料" title="Agentへ渡すファイルやフォルダーを選びます">📎</button>
                 {codexState.catalog.models.length > 0 && selectedModelInfo && (
                   <div className="agent-model-control">
-                    <button className="agent-model-button" type="button" onClick={(event) => togglePopover("agentModel", event.currentTarget)} disabled={agentRunning} aria-expanded={openPopover === "agentModel"} aria-haspopup="menu" title="Agentのモデルと推論レベルを選びます"><span>{selectedModelInfo.displayName ?? selectedModelInfo.name ?? selectedModelInfo.id ?? selectedModelInfo.model} · {reasoningEffort}</span><b aria-hidden="true">⌄</b></button>
+                    <button className="agent-model-button" type="button" onClick={(event) => togglePopover("agentModel", event.currentTarget)} disabled={agentRunning} aria-expanded={openPopover === "agentModel"} aria-haspopup="menu" title="Agentのモデルと推論レベルを選びます"><span className="agent-model-name">{selectedModelInfo.displayName ?? selectedModelInfo.name ?? selectedModelInfo.id ?? selectedModelInfo.model}</span><span className="agent-effort-value">{reasoningEffort}</span><b aria-hidden="true">⌄</b></button>
                     {openPopover === "agentModel" && (
                       <>
                         <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
@@ -2838,11 +2890,12 @@ export default function Home() {
                     )}
                   </div>
                 )}
-                <input ref={referenceInputRef} className="sr-only" type="file" multiple onChange={(event) => { if (event.target.files) void uploadReferences(event.target.files); }} />
-                <button className={`attach-button${openPopover === "references" ? " active" : ""}`} type="button" onClick={(event) => togglePopover("references", event.currentTarget)} disabled={!agentReady} aria-expanded={openPopover === "references"} aria-haspopup="dialog" aria-label="参照資料" title="Agentへ渡すファイルやフォルダーを選びます">📎</button>
-                {agentRunning && <button className="stop-button" onClick={() => void interruptAgent()} aria-label="Agentを停止" title="実行中のAgentを停止します">■</button>}
+                <span className="chat-shortcut">⌘ / Ctrl ↵</span>
+                <span className="chat-actions-spacer" aria-hidden="true" />
+                <button className={`stop-button${agentRunning ? " active" : ""}`} onClick={() => { if (agentRunning) void interruptAgent(); }} disabled={!agentRunning} aria-hidden={!agentRunning} tabIndex={agentRunning ? 0 : -1} aria-label="Agentを停止" title="実行中のAgentを停止します">■</button>
                 <button className="send-button" onClick={() => void sendMessage()} disabled={!agentReady || !(canSendTurn(promptDraft, sendableAnnotations) || referenceAttachments.length > 0) || turnSubmitting} aria-label="メッセージを送信" data-help="入力内容と選択中の編集コンテキストをAgentへ送信します">↑</button>
               </div>
+            </div>
             </div>
           </section> : activityView === "history" ? historySidebar : activityView === "shortcuts" ? shortcutsSidebar : settingsSidebar}
         </aside> : <button className="open-agent-panel" onClick={() => setLeftPanelOpen(true)}>{activityView === "history" ? "バージョン履歴" : activityView === "shortcuts" ? "ショートカット" : activityView === "settings" ? "設定" : "Agent"}を開く</button>}
@@ -3259,7 +3312,7 @@ export default function Home() {
           <span>{saved ? "すべて保存済み" : "未保存の変更あり"}</span>
           {apiError && <span className="status-error">{apiError}</span>}
         </div>
-        <div><span>HTML</span><span>UTF-8</span><span>スペース: 2</span><button className={`connection ${agentReady ? "" : "offline"}`} onClick={() => setConnectionEpoch((value) => value + 1)} title="Agentへの接続をやり直す"><i /> {agentReady ? "Agent接続済み" : "Agentへ再接続"}</button></div>
+        <div><span>HTML</span><span>UTF-8</span><span>スペース: 2</span>{!agentReady && <button className="connection offline" onClick={() => setConnectionEpoch((value) => value + 1)} title="Agentへの接続をやり直す"><i /> Agentへ再接続</button>}</div>
       </footer>
 
       {openPopover === "quality" && (

@@ -223,13 +223,9 @@ body {
 .agent-heading { border-bottom: 1px solid var(--line); }
 .agent-heading span { display: flex; align-items: center; gap: 6px; }
 .agent-heading button:disabled { cursor: not-allowed; opacity: .4; }
-.agent-status { width: 6px; height: 6px; border-radius: 50%; background: #51d69a; box-shadow: 0 0 8px #51d69a; }
-.agent-status.offline { background: #eb6b63; box-shadow: none; }
 .messages { min-width: 0; min-height: 0; flex: 1; overflow: auto; padding: 10px; scrollbar-width: thin; }
 .context-chip { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 4px 5px; margin-bottom: 6px; border-radius: 4px; background: var(--panel-3); color: var(--muted); font-size: var(--chat-meta); }
-.context-summary { flex: 1 0 100%; display: inline-flex; align-items: center; gap: 5px; }
 .context-chip .context-icon { color: var(--accent); }
-.context-annotation-count { padding: 3px 5px; border: 1px solid var(--line-strong); border-radius: 999px; color: var(--text); }
 .context-chip button { min-height: 20px; padding: 0 6px; border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line)); border-radius: 999px; background: color-mix(in srgb, var(--accent) 12%, var(--panel-2)); color: var(--accent); font-size: var(--chat-meta); cursor: pointer; }
 .context-chip button.held { border-color: var(--line-strong); background: var(--panel-2); color: var(--muted); }
 .context-chip button:disabled { cursor: default; opacity: .82; }
@@ -368,19 +364,16 @@ button.project-card { cursor: pointer; }
 .gallery-empty { display: grid; gap: 6px; place-items: start; color: var(--muted); font-size: 10px; }
 .gallery-empty strong { color: var(--text); font-size: 12px; }
 .thread-popover { position: absolute; z-index: 31; top: 38px; left: 8px; right: 8px; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--panel-2); box-shadow: var(--shadow); }
-.thread-popover .thread-actions { border-bottom: 0; }
 
 .thread-controls { display: grid; grid-template-columns: 1fr auto; gap: 5px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
 .thread-controls input { min-width: 0; height: 24px; padding: 0 7px; border: 1px solid var(--line-strong); border-radius: 4px; outline: 0; background: var(--panel-2); color: var(--text); font-size: var(--chat-meta); }
-.thread-controls button, .thread-actions button { border: 1px solid var(--line); border-radius: 4px; background: var(--panel-2); color: var(--muted); font-size: var(--chat-micro); cursor: pointer; }
+.thread-controls button { border: 1px solid var(--line); border-radius: 4px; background: var(--panel-2); color: var(--muted); font-size: var(--chat-micro); cursor: pointer; }
 .thread-controls button.active { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
 .thread-list { max-height: 190px; overflow: auto; display: grid; align-content: start; padding: 3px 5px; border-bottom: 1px solid var(--line); scrollbar-width: thin; }
 .thread-list > button { min-width: 0; padding: 4px 6px; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); text-align: left; cursor: pointer; }
 .thread-list > button.active { background: var(--panel-3); color: var(--text); }
 .thread-list strong { overflow: hidden; font-size: var(--chat-meta); font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .thread-list small { font-size: var(--chat-micro); }
-.thread-actions { display: flex; gap: 3px; padding: 4px 6px; overflow-x: auto; border-bottom: 1px solid var(--line); }
-.thread-actions button { flex: 0 0 auto; height: 20px; padding: 0 5px; }
 .empty-thread { color: var(--muted); font-size: var(--chat-body); text-align: center; }
 .turn-group { margin-bottom: 9px; }
 .turn-group > footer { display: flex; justify-content: flex-end; color: var(--soft); font-size: var(--chat-micro); }
@@ -869,3 +862,80 @@ button.project-card { cursor: pointer; }
 /* Final minimums live after responsive/history rules so later legacy declarations cannot reduce them. */
 .history-list strong, .repository-summary span { font-size: var(--ui-label); }
 .history-list small, .history-list .version-details, .return-latest, .activity-warning { font-size: var(--ui-meta); }
+
+/* Codex conversation hierarchy: the title and messages are primary; operational details stay
+   available in quiet, turn-scoped disclosure surfaces. */
+.agent-heading { min-height: 52px; height: auto; padding: 8px 10px; align-items: center; gap: 8px; }
+.agent-heading-main { min-width: 0; flex: 1; display: grid; gap: 2px; }
+.agent-heading-title { min-width: 0; margin: 0; color: var(--text); font-size: 13px; font-weight: 600; letter-spacing: -.015em; }
+.agent-heading-title .thread-switcher { width: 100%; min-width: 0; justify-content: flex-start; margin: 0; padding: 0; color: var(--text); font-size: inherit; font-weight: inherit; text-align: left; }
+.agent-heading-title .thread-switcher span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-heading-title .thread-switcher em { margin-left: 3px; }
+.agent-heading-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 2px; }
+.agent-heading-actions button { width: 28px; height: 28px; padding: 0; border-radius: 7px; font-size: 15px; line-height: 1; }
+.agent-heading-actions .new-thread-button { color: var(--muted); }
+.agent-heading-actions .thread-menu-trigger { color: var(--text); font-size: 18px; letter-spacing: .08em; }
+.agent-heading-actions button:hover:not(:disabled), .agent-heading-actions button[aria-expanded="true"] { background: var(--panel-3); color: var(--text); }
+.agent-state { min-width: 0; display: flex; align-items: center; gap: 5px; overflow: hidden; color: var(--muted); font-size: 10px; font-weight: 500; letter-spacing: 0; text-overflow: ellipsis; white-space: nowrap; }
+.agent-state::before { content: ""; flex: 0 0 auto; width: 6px; height: 6px; border: 1px solid currentColor; border-radius: 50%; }
+.agent-state-running::before { background: var(--accent); }
+.agent-state-waiting::before { background: var(--accent); border-radius: 2px; }
+.agent-state-disconnected::before, .agent-state-incompatible::before { background: var(--danger); }
+.agent-state-connecting::before, .agent-state-reconnecting::before { border-style: dashed; }
+.thread-popover { top: 54px; left: 8px; right: 8px; }
+.thread-popover-heading { min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+.thread-popover-heading strong { color: var(--text); font-size: var(--chat-meta); font-weight: 600; }
+.thread-popover-heading button { min-height: 24px; padding: 0 7px; border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--line)); border-radius: 6px; background: color-mix(in srgb, var(--accent) 9%, var(--panel-2)); color: var(--accent); font-size: var(--chat-micro); cursor: pointer; }
+.thread-popover-heading button:disabled { cursor: not-allowed; opacity: .45; }
+.thread-actions-menu { position: absolute; z-index: 31; top: 54px; right: 8px; width: 194px; overflow: hidden; padding: 4px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--panel); box-shadow: var(--shadow); }
+.thread-actions-menu > strong { display: block; padding: 6px 8px 5px; color: var(--muted); font-size: var(--chat-micro); font-weight: 600; }
+.thread-actions-menu > button { display: block; width: 100%; min-height: 29px; padding: 0 8px; border: 0; border-radius: 5px; background: transparent; color: var(--text); font-size: var(--chat-meta); text-align: left; cursor: pointer; }
+.thread-actions-menu > button:hover:not(:disabled) { background: var(--panel-3); }
+.thread-actions-menu > button.danger { color: var(--danger); }
+.thread-actions-menu > button:disabled { cursor: not-allowed; opacity: .4; }
+.messages { padding: 12px 11px; }
+.turn-group { margin-bottom: 14px; }
+.codex-item.message { margin: 0 0 13px; padding: 0 0 0 10px; border: 0; border-left: 2px solid transparent; background: transparent; }
+.codex-item.message .message-content { padding: 0; }
+.codex-item-userMessage.message { border-left-color: var(--accent); }
+.codex-item-agentMessage.message { border-left-color: var(--line-strong); }
+.codex-item.message .message-label { margin-bottom: 4px; color: var(--muted); font-size: 10px; font-weight: 600; }
+.codex-item-userMessage.message .message-label { color: var(--accent); }
+.codex-item.message .message-content > p, .codex-item.message .codex-item-text { color: var(--text); font-size: 13px; line-height: 1.65; }
+.codex-item-agentMessage.message .message-content > p, .codex-item-agentMessage.message .codex-item-text { font-size: 13px; line-height: 1.7; }
+.work-details { margin: 2px 0 11px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: color-mix(in srgb, var(--panel-2) 82%, transparent); color: var(--muted); }
+.work-details > summary { min-height: 22px; }
+.work-details > summary span:first-child { color: var(--muted); }
+.work-details > summary span:last-child { color: var(--soft); }
+.work-items { margin-top: 6px; padding-top: 5px; border-top: 1px solid var(--line); }
+.work-items .codex-item { margin: 0 0 5px; padding: 5px 6px; border-left: 2px solid var(--line-strong); color: var(--muted); font-size: 11px; line-height: 1.5; }
+.work-items .codex-item:last-child { margin-bottom: 0; }
+.work-items .work-summary strong { color: var(--muted); font-size: 10px; }
+.work-items .work-summary-text { color: var(--soft); }
+.turn-status { align-items: center; gap: 7px; }
+.turn-status > span { color: var(--muted); }
+.composer-dock { flex: 0 0 auto; min-width: 0; display: flex; flex-direction: column; }
+.blocking-region { flex: 0 0 auto; max-height: min(38vh, 320px); overflow: auto; margin: 0 9px 7px; padding: 8px; border: 1px solid color-mix(in srgb, var(--accent) 58%, var(--line)); border-radius: 11px; background: color-mix(in srgb, var(--accent) 7%, var(--panel-2)); box-shadow: 0 5px 15px rgba(0,0,0,.1); scrollbar-width: thin; }
+.blocking-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--accent); font-size: var(--chat-meta); }
+.blocking-heading span { color: var(--muted); font-size: var(--chat-micro); }
+.blocking-region .server-request { margin: 6px 0 0; padding: 7px; border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); border-radius: 7px; background: color-mix(in srgb, var(--panel-2) 82%, transparent); }
+.blocking-region .server-request:first-of-type { margin-top: 7px; }
+.chat-box { margin: 0 9px 9px; padding: 10px 11px 9px; border-radius: 12px; }
+.context-chip { align-items: center; gap: 5px; padding: 6px; margin-bottom: 7px; border-radius: 8px; }
+.context-chip-heading { flex: 0 0 100%; color: var(--soft); font-size: var(--chat-micro); font-weight: 600; letter-spacing: .04em; }
+.context-target-chip { min-width: 0; max-width: 100%; display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--panel-2); color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+.context-target-chip .context-icon { flex: 0 0 auto; }
+.chat-box textarea { min-height: 3.3em; max-height: 96px; line-height: 1.55; }
+.chat-box > .chat-actions { min-height: 28px; margin-top: 8px; gap: 6px; }
+.chat-actions-spacer { flex: 1 1 auto; min-width: 4px; }
+.chat-shortcut { flex: 0 0 auto; color: var(--soft); font-size: var(--chat-micro); white-space: nowrap; }
+.attach-button { width: 28px; height: 28px; padding: 0; border-radius: 7px; color: var(--muted); font-size: 15px; }
+.attach-button:hover:not(:disabled), .attach-button.active { background: var(--panel-3); color: var(--accent); }
+.agent-model-button { min-height: 28px; max-width: 220px; padding: 3px 7px; border-radius: 7px; }
+.agent-model-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agent-effort-value { flex: 0 0 auto; color: var(--soft); font-size: var(--chat-micro); }
+.stop-button, .send-button { flex: 0 0 28px; width: 28px; height: 28px; min-height: 28px !important; border-radius: 8px; }
+.stop-button { visibility: hidden; margin-left: 0; }
+.stop-button.active { visibility: visible; }
+.stop-button:not(.active) { pointer-events: none; }
+.send-button { margin-left: 0; }
