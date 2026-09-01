@@ -2,13 +2,13 @@
 /* eslint-disable @typescript-eslint/no-explicit-any -- reverse requests are forward-compatible generated protocol payloads. */
 
 import { useRef, useState } from "react";
-import { beginRequestResolution, finishRequestResolution, type RequestResolutionPhase } from "../request-state";
+import { beginRequestResolution, finishRequestResolution, type RequestResolutionOutcome, type RequestResolutionPhase } from "../request-state";
 import type { PendingServerRequest } from "../types";
 
 type Props = {
   request: PendingServerRequest;
-  onResolve: (id: string | number, result: Record<string, unknown>) => Promise<void>;
-  onReject: (id: string | number) => Promise<void>;
+  onResolve: (id: string | number, result: Record<string, unknown>) => Promise<RequestResolutionOutcome>;
+  onReject: (id: string | number) => Promise<RequestResolutionOutcome>;
 };
 
 export function ServerRequestCard({ request, onResolve, onReject }: Props) {
@@ -16,27 +16,33 @@ export function ServerRequestCard({ request, onResolve, onReject }: Props) {
   const [mcpContent, setMcpContent] = useState("{}");
   const [resolutionPhase, setResolutionPhase] = useState<RequestResolutionPhase>("idle");
   const [resolutionError, setResolutionError] = useState<string | null>(null);
+  const [resolutionRetryable, setResolutionRetryable] = useState(false);
   const resolutionPhaseRef = useRef<RequestResolutionPhase>("idle");
   const params = request.params as any;
-  const submitResolution = (operation: () => Promise<void>) => {
-    const started = beginRequestResolution(resolutionPhaseRef.current);
+  const submitResolution = (operation: () => Promise<RequestResolutionOutcome>) => {
+    const started = beginRequestResolution(resolutionPhaseRef.current, resolutionRetryable);
     if (!started.started) return;
     resolutionPhaseRef.current = started.phase;
     setResolutionPhase(started.phase);
     setResolutionError(null);
+    setResolutionRetryable(false);
     void Promise.resolve()
       .then(operation)
       .then(
-        () => {
-          const next = finishRequestResolution(resolutionPhaseRef.current, true);
+        (outcome) => {
+          const result = outcome?.result === "settled" ? "settled" : "result_unknown";
+          const next = finishRequestResolution(resolutionPhaseRef.current, result);
           resolutionPhaseRef.current = next;
           setResolutionPhase(next);
+          setResolutionRetryable(result === "result_unknown" && outcome?.retryable === true);
+          setResolutionError(result === "result_unknown" ? outcome?.message ?? "回答の結果を確認できません。再試行は保留中の要求を確認してから行えます。" : null);
         },
         () => {
-          const next = finishRequestResolution(resolutionPhaseRef.current, false);
+          const next = finishRequestResolution(resolutionPhaseRef.current, "result_unknown");
           resolutionPhaseRef.current = next;
           setResolutionPhase(next);
-          setResolutionError("回答の送信に失敗しました。再試行できます。");
+          setResolutionRetryable(false);
+          setResolutionError("回答の結果を確認できません。要求の状態を確認してから再試行してください。");
         },
       );
   };
@@ -44,6 +50,7 @@ export function ServerRequestCard({ request, onResolve, onReject }: Props) {
   const reject = () => submitResolution(() => onReject(request.id));
   const isResolving = resolutionPhase === "submitting";
   const isSettled = resolutionPhase === "settled";
+  const canMutate = !isResolving && !isSettled && (resolutionPhase !== "result_unknown" || resolutionRetryable);
   const statusLabel = resolutionError ?? (isResolving ? "回答を送信中…" : isSettled ? "回答を送信しました" : "");
   const statusRole = resolutionError ? "alert" : "status";
 
@@ -60,7 +67,7 @@ export function ServerRequestCard({ request, onResolve, onReject }: Props) {
               <select
                 value={answers[question.id] ?? ""}
                 onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))}
-                disabled={isResolving || isSettled}
+                disabled={!canMutate}
               >
                 <option value="">選択してください…</option>
                 {question.options.map((option: any) => (
@@ -73,12 +80,12 @@ export function ServerRequestCard({ request, onResolve, onReject }: Props) {
               value={answers[question.id] ?? ""}
               onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))}
               placeholder={question.isOther ? "回答を入力" : "回答"}
-              disabled={isResolving || isSettled}
+              disabled={!canMutate}
             />
           </label>
         ))}
         <button
-          disabled={isResolving || isSettled || questions.some((question: any) => !answers[question.id]?.trim())}
+          disabled={!canMutate || questions.some((question: any) => !answers[question.id]?.trim())}
           onClick={() => resolve({
             answers: Object.fromEntries(
               questions.map((question: any) => [question.id, { answers: [answers[question.id]] }]),
@@ -87,7 +94,7 @@ export function ServerRequestCard({ request, onResolve, onReject }: Props) {
         >
           回答を送信
         </button>
-        <button disabled={isResolving || isSettled} onClick={reject}>キャンセル</button>
+        <button disabled={!canMutate} onClick={reject}>キャンセル</button>
         {statusLabel && <span className={`server-request-status${resolutionError ? " error" : ""}`} role={statusRole} aria-live="polite">{statusLabel}</span>}
       </article>
     );
@@ -101,9 +108,9 @@ export function ServerRequestCard({ request, onResolve, onReject }: Props) {
       <article className="server-request" aria-busy={isResolving} data-resolution-state={resolutionPhase}>
         <strong>追加の権限が必要です</strong>
         <p>{String(params.reason ?? "Codexがプロジェクトへの追加権限を求めています。")}</p>
-        <button disabled={isResolving || isSettled} onClick={() => resolve({ permissions, scope: "turn" })}>今回のみ許可</button>
-        <button disabled={isResolving || isSettled} onClick={() => resolve({ permissions, scope: "session" })}>このセッションで許可</button>
-        <button disabled={isResolving || isSettled} onClick={reject}>許可しない</button>
+        <button disabled={!canMutate} onClick={() => resolve({ permissions, scope: "turn" })}>今回のみ許可</button>
+        <button disabled={!canMutate} onClick={() => resolve({ permissions, scope: "session" })}>このセッションで許可</button>
+        <button disabled={!canMutate} onClick={reject}>許可しない</button>
         {statusLabel && <span className={`server-request-status${resolutionError ? " error" : ""}`} role={statusRole} aria-live="polite">{statusLabel}</span>}
       </article>
     );
@@ -120,16 +127,16 @@ export function ServerRequestCard({ request, onResolve, onReject }: Props) {
               if (window.confirm("外部の認証ページを開きますか？")) {
                 window.open(String(params.url), "_blank", "noopener,noreferrer");
               }
-            }} disabled={isResolving || isSettled}>認証ページを開く</button>
-            <button disabled={isResolving || isSettled} onClick={() => resolve({ action: "accept", content: null, _meta: params._meta ?? null })}>続ける</button>
+            }} disabled={!canMutate}>認証ページを開く</button>
+            <button disabled={!canMutate} onClick={() => resolve({ action: "accept", content: null, _meta: params._meta ?? null })}>続ける</button>
           </>
         ) : (
           <>
             <label className="server-question">
               <span>フォームへの回答</span>
-              <textarea value={mcpContent} onChange={(event) => setMcpContent(event.target.value)} disabled={isResolving || isSettled} />
+              <textarea value={mcpContent} onChange={(event) => setMcpContent(event.target.value)} disabled={!canMutate} />
             </label>
-            <button disabled={isResolving || isSettled} onClick={() => {
+            <button disabled={!canMutate} onClick={() => {
               try {
                 const content = JSON.parse(mcpContent);
                 resolve({
@@ -143,7 +150,7 @@ export function ServerRequestCard({ request, onResolve, onReject }: Props) {
             }}>フォームを送信</button>
           </>
         )}
-        <button disabled={isResolving || isSettled} onClick={() => resolve({ action: "decline", content: null, _meta: null })}>許可しない</button>
+        <button disabled={!canMutate} onClick={() => resolve({ action: "decline", content: null, _meta: null })}>許可しない</button>
         {statusLabel && <span className={`server-request-status${resolutionError ? " error" : ""}`} role={statusRole} aria-live="polite">{statusLabel}</span>}
       </article>
     );
@@ -165,7 +172,7 @@ export function ServerRequestCard({ request, onResolve, onReject }: Props) {
       <p>{String(params.reason ?? params.message ?? params.command ?? "Codexが許可を求めています。")}</p>
       {decisions.map((decision: any) => {
         const value = typeof decision === "string" ? decision : decision.decision;
-        return <button key={value} disabled={isResolving || isSettled} onClick={() => resolve({ decision: value })}>{decisionLabels[value] ?? value}</button>;
+        return <button key={value} disabled={!canMutate} onClick={() => resolve({ decision: value })}>{decisionLabels[value] ?? value}</button>;
       })}
       {statusLabel && <span className={`server-request-status${resolutionError ? " error" : ""}`} role={statusRole} aria-live="polite">{statusLabel}</span>}
     </article>

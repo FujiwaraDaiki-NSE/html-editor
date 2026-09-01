@@ -20,8 +20,9 @@ import { textExcerptOfNode } from "./components/editable-text-utils";
 import { ItemCard } from "./codex/components/ItemCard";
 import { ServerRequestCard } from "./codex/components/ServerRequestCard";
 import { codexReducer, initialCodexState } from "./codex/reducer";
+import type { RequestResolutionOutcome } from "./codex/request-state";
 import { isConversationMessage, partitionPendingRequests, pendingRequestScope, selectThreadRunning, selectThreadTurns, selectTurnItems } from "./codex/selectors";
-import { deriveTurnPresentation, IDLE_TURN_SUBMISSION, resetTurnSubmission, type TurnPresentationState, type TurnSubmissionState } from "./codex/turn-status";
+import { deriveTurnPresentation, IDLE_TURN_SUBMISSION, isTerminalTurnStatus, resetTurnSubmission, type TurnPresentationState, type TurnSubmissionState } from "./codex/turn-status";
 import { projectEventDecision } from "./project-events";
 
 /* A slide is now a real HTML file: its `<main class="weave-slide">` fragment is the single
@@ -479,6 +480,7 @@ export default function Home() {
   const annotationGestureRef = useRef<AnnotationGesture | null>(null);
   const popoverTriggerRef = useRef<HTMLButtonElement | null>(null);
   const threadMenuRef = useRef<HTMLDivElement>(null);
+  const threadDialogRef = useRef<HTMLDivElement>(null);
   const galleryRef = useRef<HTMLDivElement>(null);
   const projectSwitcherRef = useRef<HTMLButtonElement>(null);
   // Preview stays outside slide state so save, sync, and undo cannot observe a candidate frame.
@@ -495,6 +497,7 @@ export default function Home() {
   const activePendingServerRequests = pendingRequestGroups.active;
   const blockingPendingRequests = [...pendingRequestGroups.active, ...pendingRequestGroups.unscoped];
   const turnPresentation = deriveTurnPresentation(turnSubmission, codexState.activeThreadId, agentRunning);
+  const turnBusy = turnPresentation !== "idle";
   const zoomLevel = manualZoom ?? defaultCanvasZoom;
   const slideScale = fitScale * zoomLevel;
   const activeSlideId = slides[activeSlide - 1]?.id;
@@ -609,6 +612,29 @@ export default function Home() {
           ? event.key === "ArrowUp" ? items.length - 1 : 0
           : (currentIndex + (event.key === "ArrowUp" ? -1 : 1) + items.length) % items.length;
     items[nextIndex]?.focus();
+  };
+  const onThreadDialogKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      dismissPopover();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const focusable = Array.from(event.currentTarget.querySelectorAll<HTMLElement>("button:not(:disabled), input:not(:disabled), [href], [tabindex]:not([tabindex=\"-1\"])"));
+    if (focusable.length === 0) {
+      event.preventDefault();
+      event.currentTarget.focus();
+      return;
+    }
+    const currentIndex = focusable.indexOf(document.activeElement as HTMLElement);
+    const nextIndex = event.shiftKey
+      ? currentIndex <= 0 ? focusable.length - 1 : currentIndex - 1
+      : currentIndex < 0 || currentIndex === focusable.length - 1 ? 0 : currentIndex + 1;
+    if ((event.shiftKey && currentIndex <= 0) || (!event.shiftKey && (currentIndex < 0 || currentIndex === focusable.length - 1))) {
+      event.preventDefault();
+      focusable[nextIndex]?.focus();
+    }
   };
   const slideRoot = () => canvasRef.current?.querySelector<HTMLElement>(".weave-slide") ?? null;
   const contentSlot = () => canvasRef.current?.querySelector<HTMLElement>(contentSlotSelector) ?? null;
@@ -959,7 +985,7 @@ export default function Home() {
       if (attribute === "xlink:href") node.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", `${apiBase}/${path}`);
       else node.setAttribute("href", `${apiBase}/${path}`);
     });
-    host.querySelectorAll<HTMLElement>("[data-weave-id]").forEach((node) => { node.draggable = !annotationMode && !agentRunning && isEditableSlideNode(node) && !isTitleSlot(node); });
+    host.querySelectorAll<HTMLElement>("[data-weave-id]").forEach((node) => { node.draggable = !annotationMode && !turnBusy && isEditableSlideNode(node) && !isTitleSlot(node); });
     const root = host.querySelector<HTMLElement>(".weave-slide");
     if (root) {
       setCurrentTemplateId(active?.templateId ?? "");
@@ -968,7 +994,7 @@ export default function Home() {
     }
   // composeFor is intentionally omitted: injecting on every render would reset the live DOM caret.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSlide, injectKey, mode, agentRunning, annotationMode]);
+  }, [activeSlide, injectKey, mode, turnBusy, annotationMode]);
 
   /* Selection outline + inspector read-out follow the selected node without re-injecting. */
   useLayoutEffect(() => {
@@ -1047,16 +1073,17 @@ export default function Home() {
   }, [codexState.items, agentRunning]);
 
   useEffect(() => {
-    const next = resetTurnSubmission(turnSubmission, codexState.activeThreadId, agentRunning, connectionStatus);
+    const submittedTurnStatus = turnSubmission.turnId ? codexState.turns[turnSubmission.turnId]?.status : null;
+    const next = resetTurnSubmission(turnSubmission, codexState.activeThreadId, agentRunning, connectionStatus, submittedTurnStatus);
     if (next === turnSubmission) return;
     window.setTimeout(() => {
       setTurnSubmission((current) => {
-        if (current.phase !== turnSubmission.phase || current.threadId !== turnSubmission.threadId) return current;
+        if (current.phase !== turnSubmission.phase || current.threadId !== turnSubmission.threadId || current.turnId !== turnSubmission.turnId) return current;
         if (next.phase === "idle") turnInFlightRef.current = false;
         return next;
       });
     });
-  }, [agentRunning, codexState.activeThreadId, connectionStatus, turnSubmission]);
+  }, [agentRunning, codexState.activeThreadId, codexState.turns, connectionStatus, turnSubmission]);
 
   useEffect(() => { if (showPresenter) presenterRef.current?.focus(); }, [showPresenter]);
 
@@ -1077,6 +1104,14 @@ export default function Home() {
     if (firstItem) firstItem.focus();
     else threadMenuRef.current?.focus();
   }, [threadMenuOpen]);
+
+  useEffect(() => {
+    if (openPopover !== "threads") return;
+    const search = threadDialogRef.current?.querySelector<HTMLInputElement>('input[type="search"]:not(:disabled)');
+    const first = search ?? threadDialogRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)");
+    if (first) first.focus();
+    else threadDialogRef.current?.focus();
+  }, [openPopover]);
 
   /* --- Live-DOM editing on the canvas -------------------------------------------------- */
 
@@ -1392,7 +1427,7 @@ export default function Home() {
     if (node.getAttribute?.("contenteditable") === "true") {
       node.removeAttribute("contenteditable");
       node.removeAttribute("data-editing");
-      node.draggable = !annotationMode && !agentRunning && !isTitleSlot(node);
+      node.draggable = !annotationMode && !turnBusy && !isTitleSlot(node);
       setEditingId(null);
       syncFromDom();
     }
@@ -2127,6 +2162,7 @@ export default function Home() {
   const thumbHtml = (html: string, css: string, title: string) => html ? <iframe className="project-live" sandbox="" title={title} loading="lazy" srcDoc={`<!doctype html><html><head><style>${css}</style><style>html,body{width:${designWidth}px;height:${designHeight}px;margin:0;overflow:hidden;background:#0d1017}body > .weave-slide{width:${designWidth}px;height:${designHeight}px}</style></head><body>${html}</body></html>`} /> : null;
 
   const saveProject = async () => {
+    if (turnBusy) return false;
     try {
       const generation = editGenerationRef.current;
       const response = await fetch(`${apiBase}/save`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ deck: deckPayload(), ...(importedTemplates ? { templates: importedTemplates } : {}), message: saveMessage || deckTitle, expectedRevision: serverRevision, idempotencyKey: createMessageId() }) });
@@ -2223,6 +2259,7 @@ export default function Home() {
   };
 
   const restoreHistory = async (commit?: string) => {
+    if (turnBusy) return;
     try {
       const endpoint = commit ? "history/checkout" : "history/main";
       const response = await fetch(`${apiBase}/${endpoint}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(commit ? { commit } : {}) });
@@ -2237,6 +2274,7 @@ export default function Home() {
   };
 
   const checkoutVariation = async (branch: string) => {
+    if (turnBusy) return;
     try {
       const response = await fetch(`${apiBase}/variations/checkout`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ branch }) });
       const result = await response.json();
@@ -2250,7 +2288,7 @@ export default function Home() {
   };
 
   const openVariationCompare = async () => {
-    if (variationCompareLoading || agentRunning || variations.length === 0) return;
+    if (variationCompareLoading || turnBusy || variations.length === 0) return;
     setVariationCompareLoading(true);
     try {
       const response = await fetch(`${apiBase}/variations/compare`);
@@ -2273,12 +2311,13 @@ export default function Home() {
   };
 
   const generateVariation = async () => {
+    if (turnBusy) return;
     const prompt = variationPrompt.trim();
     const boxes = liveAnnotationBoxes();
     const variationAnnotations = collectTurnAnnotations(prompt, boxes);
     if (!canSendTurn(prompt, variationAnnotations) || turnInFlightRef.current || turnSubmission.phase !== "idle") return;
     turnInFlightRef.current = true;
-    setTurnSubmission({ phase: "submitting", threadId: codexState.activeThreadId });
+    setTurnSubmission({ phase: "submitting", threadId: codexState.activeThreadId, turnId: null });
     setShowVariationPrompt(false);
     setApiError(null);
     let accepted = false;
@@ -2287,9 +2326,12 @@ export default function Home() {
       const response = await fetch(`${apiBase}/variations/generate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt, deck: deckPayload(), clientUserMessageId: createMessageId(), model: selectedModel || undefined, effort: reasoningEffort, approvalPolicy, contextEnvelope: contextEnvelope(variationAnnotations, overflowingIds(liveOverflowMeasurements())) }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "デザイン案を生成できませんでした。");
-      if (response.status !== 202 || typeof result.thread?.id !== "string") throw new Error("デザイン案の受付状態を確認できませんでした。");
+      if (response.status !== 202 || typeof result.thread?.id !== "string" || typeof result.turn?.id !== "string") throw new Error("デザイン案の受付状態を確認できませんでした。");
       accepted = true;
-      setTurnSubmission({ phase: "accepted", threadId: result.thread.id });
+      if (isTerminalTurnStatus(result.turn.status)) {
+        turnInFlightRef.current = false;
+        setTurnSubmission(IDLE_TURN_SUBMISSION);
+      } else setTurnSubmission({ phase: "accepted", threadId: result.thread.id, turnId: result.turn.id });
       setActiveVariation(result.branch);
       dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
     } catch (error) {
@@ -2301,6 +2343,7 @@ export default function Home() {
   };
 
   const acceptVariation = async () => {
+    if (turnBusy) return;
     try {
       const response = await fetch(`${apiBase}/variations/accept`, { method: "POST" });
       const result = await response.json();
@@ -2311,6 +2354,7 @@ export default function Home() {
   };
 
   const archiveVariation = async () => {
+    if (turnBusy) return;
     try {
       const response = await fetch(`${apiBase}/variations/archive`, { method: "POST" });
       const result = await response.json();
@@ -2369,7 +2413,7 @@ export default function Home() {
     const requestDeck = deckPayload();
     const requestEnvelope = contextEnvelope(turnAnnotations, overflowing, referenceAttachments);
     turnInFlightRef.current = true;
-    setTurnSubmission({ phase: "submitting", threadId: codexState.activeThreadId });
+    setTurnSubmission({ phase: "submitting", threadId: codexState.activeThreadId, turnId: null });
     shouldAutoScrollRef.current = true;
     setApiError(null);
     let accepted = false;
@@ -2381,7 +2425,7 @@ export default function Home() {
         if (!startResponse.ok) throw new Error(started.error ?? "会話を開始できませんでした。");
         threadId = started.thread.id;
         dispatchCodex({ type: "threadLoaded", thread: started.thread, activate: true });
-        setTurnSubmission({ phase: "submitting", threadId });
+        setTurnSubmission({ phase: "submitting", threadId, turnId: null });
       }
       if (!threadId) throw new Error("操作対象の会話を特定できませんでした。");
       const steering = agentRunning;
@@ -2390,10 +2434,13 @@ export default function Home() {
       const response = await fetch(`${apiBase}/${endpoint}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId, prompt: value, clientUserMessageId: createMessageId(), selectedId, deck: requestDeck, model: selectedModel || undefined, effort: reasoningEffort, approvalPolicy, contextEnvelope: requestEnvelope, attachments: referenceAttachments }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Agentへの依頼を開始できませんでした。");
-      if (response.status !== 202) throw new Error("Agentへの依頼受付状態を確認できませんでした。");
+      if (response.status !== 202 || (!steering && typeof result.turn?.id !== "string") || (steering && typeof result.turnId !== "string")) throw new Error("Agentへの依頼受付状態を確認できませんでした。");
       if (!steering) {
         accepted = true;
-        setTurnSubmission({ phase: "accepted", threadId });
+        if (isTerminalTurnStatus(result.turn.status)) {
+          turnInFlightRef.current = false;
+          setTurnSubmission(IDLE_TURN_SUBMISSION);
+        } else setTurnSubmission({ phase: "accepted", threadId, turnId: result.turn.id });
       } else setTurnSubmission(IDLE_TURN_SUBMISSION);
       if (turnAnnotations.length > 0 && slide) {
         const turnId = steering ? runningTurnId ?? result.turn?.id ?? result.turnId ?? null : result.turn?.id ?? result.turnId ?? null;
@@ -2430,6 +2477,7 @@ export default function Home() {
   };
 
   const newThread = async () => {
+    if (turnBusy) return;
     clearTurnSubmission();
     try {
       const response = await fetch(`${apiBase}/codex/thread/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ approvalPolicy, model: selectedModel || undefined }) });
@@ -2451,6 +2499,7 @@ export default function Home() {
   };
 
   const threadAction = async (action: string, params: Record<string, unknown> = {}) => {
+    if (turnBusy) return;
     const threadId = codexState.activeThreadId;
     if (!threadId) return;
     try {
@@ -2463,7 +2512,7 @@ export default function Home() {
   };
 
   const forkThread = async () => {
-    if (!codexState.activeThreadId) return;
+    if (!codexState.activeThreadId || turnBusy) return;
     clearTurnSubmission();
     try {
       const response = await fetch(`${apiBase}/codex/thread/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: codexState.activeThreadId }) });
@@ -2474,6 +2523,7 @@ export default function Home() {
   };
 
   const manageGoal = async () => {
+    if (turnBusy) return;
     const threadId = codexState.activeThreadId;
     if (!threadId) return;
     try {
@@ -2487,24 +2537,49 @@ export default function Home() {
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   };
 
-  const resolveServerRequest = async (id: string | number, result: Record<string, unknown>) => {
+  const resyncPendingRequests = async (id: string | number): Promise<boolean | null> => {
+    try {
+      const response = await fetch(`${apiBase}/state`);
+      const state = await response.json();
+      const requests = state?.codex?.pendingRequests;
+      if (!response.ok || !Array.isArray(requests)) throw new Error("確認要求の状態を再同期できませんでした。");
+      dispatchCodex({ type: "pendingRequests", requests });
+      return requests.some((request: { id?: string | number }) => String(request.id) === String(id));
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : String(error));
+      return null;
+    }
+  };
+  const unknownRequestResolution = async (id: string | number, error: unknown): Promise<RequestResolutionOutcome> => {
+    const message = error instanceof Error ? error.message : String(error);
+    setApiError(message);
+    const stillPending = await resyncPendingRequests(id);
+    return {
+      result: "result_unknown",
+      retryable: stillPending === true,
+      message: stillPending === true
+        ? "回答の結果を確認できませんでした。要求はまだ保留中のため再試行できます。"
+        : "回答の結果を確認できません。要求の状態を確認してから再試行してください。",
+    };
+  };
+  const resolveServerRequest = async (id: string | number, result: Record<string, unknown>): Promise<RequestResolutionOutcome> => {
     try {
       const response = await fetch(`${apiBase}/codex/request/resolve`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, result }) });
       const value = await response.json();
       if (!response.ok) throw new Error(value.error ?? "Codexへ回答を送れませんでした。");
+      return { result: "settled" };
     } catch (error) {
-      setApiError(error instanceof Error ? error.message : String(error));
-      throw error;
+      return unknownRequestResolution(id, error);
     }
   };
-  const rejectServerRequest = async (id: string | number) => {
+  const rejectServerRequest = async (id: string | number): Promise<RequestResolutionOutcome> => {
     try {
       const response = await fetch(`${apiBase}/codex/request/reject`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, message: "Declined in Weave." }) });
       const value = await response.json();
       if (!response.ok) throw new Error(value.error ?? "Codexへ拒否の回答を送れませんでした。");
+      return { result: "settled" };
     } catch (error) {
-      setApiError(error instanceof Error ? error.message : String(error));
-      throw error;
+      return unknownRequestResolution(id, error);
     }
   };
 
@@ -2597,9 +2672,9 @@ export default function Home() {
             <button
               className={`slide-item ${activeSlide === slideNumber ? "active" : ""}`}
               onClick={() => switchSlide(slideNumber)}
-              disabled={agentRunning}
+              disabled={turnBusy}
               title={`${slideNumber}枚目を開く: ${slide.title || "無題"}`}
-              draggable={!agentRunning}
+              draggable={!turnBusy}
               onDragStart={() => setDraggedSlide(index)}
               onDragOver={(event) => event.preventDefault()}
               onDrop={() => {
@@ -2626,19 +2701,19 @@ export default function Home() {
               aria-haspopup="menu"
               aria-expanded={openPopover === "slideMenu" && activeSlide === slideNumber}
               onClick={(event) => { if (activeSlide !== slideNumber) switchSlide(slideNumber); togglePopover("slideMenu", event.currentTarget); }}
-              disabled={agentRunning}
+              disabled={turnBusy}
             >⋯</button>
             {openPopover === "slideMenu" && activeSlide === slideNumber && <div className="slide-actions-menu" role="menu">
-              <button role="menuitem" onClick={() => { dismissPopover(false); duplicateSlide(); }}>スライドを複製</button>
-              <button role="menuitem" onClick={() => { dismissPopover(false); moveSlide(-1); }} disabled={activeSlide === 1}>左へ移動</button>
-              <button role="menuitem" onClick={() => { dismissPopover(false); moveSlide(1); }} disabled={activeSlide === slides.length}>右へ移動</button>
-              <button role="menuitem" className="danger" onClick={() => { dismissPopover(false); deleteSlide(); }} disabled={slides.length <= 1}>スライドを削除</button>
+              <button role="menuitem" onClick={() => { dismissPopover(false); duplicateSlide(); }} disabled={turnBusy}>スライドを複製</button>
+              <button role="menuitem" onClick={() => { dismissPopover(false); moveSlide(-1); }} disabled={turnBusy || activeSlide === 1}>左へ移動</button>
+              <button role="menuitem" onClick={() => { dismissPopover(false); moveSlide(1); }} disabled={turnBusy || activeSlide === slides.length}>右へ移動</button>
+              <button role="menuitem" className="danger" onClick={() => { dismissPopover(false); deleteSlide(); }} disabled={turnBusy || slides.length <= 1}>スライドを削除</button>
             </div>}
           </div>
         );
       })}
       <span className="new-slide-wrap">
-        <button className="new-slide" onClick={(event) => togglePopover("newSlide", event.currentTarget)} disabled={agentRunning || !templates.length} aria-label="新しいスライド" title="新しいスライドを追加します">＋</button>
+        <button className="new-slide" onClick={(event) => togglePopover("newSlide", event.currentTarget)} disabled={turnBusy || !templates.length} aria-label="新しいスライド" title="新しいスライドを追加します">＋</button>
         {openPopover === "newSlide" && (
           <>
             <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
@@ -2646,7 +2721,7 @@ export default function Home() {
               {templates.map((template) => (
                 <div className="template-group" key={template.id}>
                   <strong className="template-group-name">{template.name}</strong>
-                  {template.layouts.map((layout) => <button key={`${template.id}-${layout.id}`} role="option" aria-selected="false" onClick={() => addSlide(template.id, layout.id)}>{templatePreview(template, `new-slide-${layout.id}`, layout.id)}<span>{layout.name}</span></button>)}
+                  {template.layouts.map((layout) => <button key={`${template.id}-${layout.id}`} role="option" aria-selected="false" onClick={() => addSlide(template.id, layout.id)} disabled={turnBusy}>{templatePreview(template, `new-slide-${layout.id}`, layout.id)}<span>{layout.name}</span></button>)}
                 </div>
               ))}
             </div>
@@ -2681,13 +2756,13 @@ export default function Home() {
           {project && <details className="version-details"><summary>技術情報</summary><small>{project.branch} · {project.commit}</small></details>}
         </div>
         <label className="save-message"><span>バージョン名</span><input value={saveMessage} onChange={(event) => setSaveMessage(event.target.value)} placeholder={deckTitle} /></label>
-        <button className="sidebar-primary-action" onClick={() => void saveProject()} disabled={saved || agentRunning}>{saved ? "現在のバージョンは保存済み" : "現在のバージョンを保存"}</button>
-        {project?.branch === "detached" && <button className="return-latest" onClick={() => void restoreHistory()} disabled={agentRunning}>最新バージョンへ戻る</button>}
+        <button className="sidebar-primary-action" onClick={() => void saveProject()} disabled={saved || turnBusy}>{saved ? "現在のバージョンは保存済み" : "現在のバージョンを保存"}</button>
+        {project?.branch === "detached" && <button className="return-latest" onClick={() => void restoreHistory()} disabled={turnBusy}>最新バージョンへ戻る</button>}
         <div className="activity-section-label">保存済みバージョン</div>
         <div className="history-list">
           {history.map((entry, index) => (
             <div className="history-entry" key={entry.id}>
-              <button onClick={() => void restoreHistory(entry.id)} disabled={!saved || agentRunning}>
+              <button onClick={() => void restoreHistory(entry.id)} disabled={!saved || turnBusy}>
                 <i className={index === 0 ? "current" : ""} /><span><strong>{entry.message}</strong><small>{new Date(entry.date).toLocaleString()}</small></span>
               </button>
               <details className="version-details"><summary>詳細</summary><small>{entry.shortId}</small></details>
@@ -2744,7 +2819,7 @@ export default function Home() {
         <div className="top-actions">
           <button className="delivery-button" onClick={(event) => togglePopover("delivery", event.currentTarget)} aria-expanded={openPopover === "delivery"} aria-haspopup="menu" data-help="プレゼン表示、書き出し、印刷を選びます">プレゼン・書き出し <span aria-hidden="true">⌄</span></button>
           <input ref={importRef} className="sr-only" type="file" accept=".json,.weave.json,application/json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importBundle(file); }} />
-          <button className="save-button" onClick={() => void saveProject()} disabled={agentRunning} data-help={saved ? "現在の内容は保存済みです" : "現在の編集内容を新しいバージョンとして保存します"}><span>{saved ? "✓" : "↑"}</span> {saved ? "保存済み" : "保存"}</button>
+          <button className="save-button" onClick={() => void saveProject()} disabled={turnBusy} data-help={saved ? "現在の内容は保存済みです" : "現在の編集内容を新しいバージョンとして保存します"}><span>{saved ? "✓" : "↑"}</span> {saved ? "保存済み" : "保存"}</button>
         </div>
       </header>
 
@@ -2777,16 +2852,16 @@ export default function Home() {
 
         {leftPanelOpen ? <aside className="left-panel">
           <div className="panel-resizer" role="separator" aria-orientation="vertical" aria-label="サイドバーの幅を変更" aria-valuenow={sidebarWidth} aria-valuemin={280} aria-valuemax={560} tabIndex={0} onPointerDown={startSidebarResize} onKeyDown={(event) => { if (event.key === "ArrowLeft") { event.preventDefault(); adjustSidebarWidth(-16); } if (event.key === "ArrowRight") { event.preventDefault(); adjustSidebarWidth(16); } }} />
-          {activityView === "agent" ? <section className="agent-panel" aria-label="Agentとの会話" aria-busy={turnPresentation !== "idle"}>
+          {activityView === "agent" ? <section className="agent-panel" aria-label="Agentとの会話" aria-busy={turnBusy}>
             <div className="agent-heading">
               <div className="agent-heading-main">
                 <h2 className="agent-heading-title">
                   <button className="thread-switcher" onClick={(event) => togglePopover("threads", event.currentTarget)} aria-expanded={openPopover === "threads"} aria-haspopup="dialog" title="会話を切り替えます"><span>{activeThreadName}</span><em aria-hidden="true">⌄</em></button>
                 </h2>
-                <span className={`agent-state agent-state-${agentHeaderState?.kind ?? "idle"}`} role="status" aria-live="polite" aria-busy={turnPresentation !== "idle"} data-turn-state={turnPresentation} data-status={agentHeaderState?.kind ?? "idle"}>{agentHeaderState?.label ?? ""}</span>
+                <span className={`agent-state agent-state-${agentHeaderState?.kind ?? "idle"}`} role="status" aria-live="polite" aria-busy={turnBusy} data-turn-state={turnPresentation} data-status={agentHeaderState?.kind ?? "idle"}>{agentHeaderState?.label ?? ""}</span>
               </div>
               <div className="agent-heading-actions">
-                <button className="new-thread-button" onClick={() => void newThread()} aria-label="新しい会話" title="新しい会話を開始します" disabled={turnPresentation !== "idle"}>＋</button>
+                <button className="new-thread-button" onClick={() => void newThread()} aria-label="新しい会話" title="新しい会話を開始します" disabled={turnBusy}>＋</button>
                 <button className="thread-menu-trigger" onClick={(event) => toggleThreadMenu(event.currentTarget)} aria-expanded={threadMenuOpen} aria-haspopup="menu" aria-label="会話の操作" title="会話の名前変更、分岐、ゴール、整理、アーカイブ、削除">…</button>
                 <button className="panel-close" onClick={() => setLeftPanelOpen(false)} aria-label="Agentパネルを閉じる" title="Agentパネルを閉じます">×</button>
               </div>
@@ -2794,10 +2869,10 @@ export default function Home() {
             {openPopover === "threads" && (
               <>
                 <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
-                <div className="thread-popover" role="dialog" aria-label="会話を切り替え">
+                <div ref={threadDialogRef} className="thread-popover" role="dialog" aria-modal="true" aria-label="会話を切り替え" tabIndex={-1} onKeyDown={onThreadDialogKeyDown}>
                   <div className="thread-popover-heading">
                     <strong>会話</strong>
-                    <button type="button" onClick={() => { dismissPopover(false); void newThread(); }} disabled={turnPresentation !== "idle"}>＋ 新しい会話</button>
+                    <button type="button" onClick={() => { dismissPopover(); void newThread(); }} disabled={turnBusy}>＋ 新しい会話</button>
                   </div>
                   <div className="thread-controls">
                     <input type="search" value={threadSearch} onChange={(event) => setThreadSearch(event.target.value)} placeholder="会話を検索" aria-label="会話を検索" />
@@ -2805,7 +2880,7 @@ export default function Home() {
                   </div>
                   <div className="thread-list" aria-label="会話一覧">
                     {codexState.threadOrder.map((id) => codexState.threads[id]).filter((thread) => thread && thread.archived === showArchivedThreads).slice(0, 12).map((thread) => (
-                      <button key={thread.id} className={codexState.activeThreadId === thread.id ? "active" : ""} onClick={() => { dismissPopover(false); void openThread(thread.id); }}>
+                      <button key={thread.id} className={codexState.activeThreadId === thread.id ? "active" : ""} onClick={() => { dismissPopover(); void openThread(thread.id); }}>
                         <strong>{displayThreadName(thread.name) || thread.preview || "新しい会話"}</strong>
                         <small>{thread.status}</small>
                       </button>
@@ -2819,16 +2894,16 @@ export default function Home() {
                 <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
                 <div ref={threadMenuRef} className="thread-actions-menu" role="menu" tabIndex={-1} aria-label={`${activeThreadName}の操作`} onKeyDown={onThreadMenuKeyDown}>
                   <strong>会話の操作</strong>
-                  <button role="menuitem" disabled={!codexState.activeThreadId} onClick={() => { const name = window.prompt("会話名", displayThreadName(codexState.threads[codexState.activeThreadId!]?.name) ?? ""); if (name !== null) { dismissPopover(); void threadAction("name", { name }); } }}>名前を変更</button>
-                  <button role="menuitem" disabled={!codexState.activeThreadId || agentRunning} onClick={() => { dismissPopover(); void forkThread(); }}>複製して分岐</button>
-                  <button role="menuitem" disabled={!codexState.activeThreadId} onClick={() => { dismissPopover(); void manageGoal(); }}>ゴール</button>
-                  <button role="menuitem" disabled={!codexState.activeThreadId || agentRunning} onClick={() => { dismissPopover(); void threadAction("compact"); }}>履歴を整理</button>
-                  <button role="menuitem" disabled={!codexState.activeThreadId || agentRunning} onClick={() => { dismissPopover(); void threadAction(activeThread?.archived ? "unarchive" : "archive"); }}>{activeThread?.archived ? "アーカイブから戻す" : "アーカイブ"}</button>
-                  <button role="menuitem" className="danger" disabled={!codexState.activeThreadId || agentRunning} onClick={() => { if (window.confirm("このWeave会話を完全に削除しますか？")) { dismissPopover(); void threadAction("delete"); } }}>削除</button>
+                  <button role="menuitem" disabled={!codexState.activeThreadId || turnBusy} onClick={() => { const name = window.prompt("会話名", displayThreadName(codexState.threads[codexState.activeThreadId!]?.name) ?? ""); if (name !== null) { dismissPopover(); void threadAction("name", { name }); } }}>名前を変更</button>
+                  <button role="menuitem" disabled={!codexState.activeThreadId || turnBusy} onClick={() => { dismissPopover(); void forkThread(); }}>複製して分岐</button>
+                  <button role="menuitem" disabled={!codexState.activeThreadId || turnBusy} onClick={() => { dismissPopover(); void manageGoal(); }}>ゴール</button>
+                  <button role="menuitem" disabled={!codexState.activeThreadId || turnBusy} onClick={() => { dismissPopover(); void threadAction("compact"); }}>履歴を整理</button>
+                  <button role="menuitem" disabled={!codexState.activeThreadId || turnBusy} onClick={() => { dismissPopover(); void threadAction(activeThread?.archived ? "unarchive" : "archive"); }}>{activeThread?.archived ? "アーカイブから戻す" : "アーカイブ"}</button>
+                  <button role="menuitem" className="danger" disabled={!codexState.activeThreadId || turnBusy} onClick={() => { if (window.confirm("このWeave会話を完全に削除しますか？")) { dismissPopover(); void threadAction("delete"); } }}>削除</button>
                 </div>
               </>
             )}
-            <div ref={messagesRef} className="messages" role="log" aria-live="polite" aria-relevant="additions text" aria-label="Agentとの会話" aria-busy={agentRunning} onScroll={(event) => { const element = event.currentTarget; shouldAutoScrollRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48; }}>
+            <div ref={messagesRef} className="messages" role="log" aria-live="polite" aria-relevant="additions text" aria-label="Agentとの会話" aria-busy={turnBusy} onScroll={(event) => { const element = event.currentTarget; shouldAutoScrollRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48; }}>
               {!codexState.activeThreadId && <p className="empty-thread">会話を開始するか、既存の会話を選んでください。</p>}
               {activeTurns.length > visibleTurns.length && <p className="trimmed-log">最新{visibleTurns.length}ターンを表示しています。</p>}
               {visibleTurns.map((turn, turnIndex) => {
@@ -2867,7 +2942,7 @@ export default function Home() {
               />)}
               <div ref={messagesEndRef} className="messages-end" />
             </div>
-            <div className="composer-dock" data-turn-state={turnPresentation} aria-busy={turnPresentation === "submission" || turnPresentation === "in_progress"}>
+            <div className="composer-dock" data-turn-state={turnPresentation} aria-busy={turnBusy}>
               {pendingServerRequests.length > 0 && <section className="blocking-region" role="region" aria-live="assertive" aria-label="確認が必要な操作" data-pending-count={pendingServerRequests.length}>
                 <div className="blocking-heading"><strong>{activePendingServerRequests.length > 0 ? "確認が必要です" : "確認が必要な要求があります"}</strong><span>{pendingServerRequests.length}件</span></div>
                 {pendingRequestGroups.unscoped.length > 0 && <p className="blocking-notice" role="status">会話を特定できない確認が {pendingRequestGroups.unscoped.length}件あります。</p>}
@@ -2956,19 +3031,19 @@ export default function Home() {
                   <button type="button" aria-label={`${attachment.name}を添付から外す`} onClick={() => setReferenceAttachments((current) => current.filter((item) => item.path !== attachment.path))}>×</button>
                 </div>)}
               </div>}
-              <textarea ref={promptRef} value={promptDraft} onChange={onPromptChange} onCompositionStart={() => { compositionRef.current = true; }} onCompositionEnd={onPromptCompositionEnd} onKeyDown={onPromptKeyDown} placeholder={agentReady ? "Agentにこのスライドの編集を依頼…" : "Codexへの接続を待っています…"} aria-label="Agentへのメッセージ" aria-busy={agentRunning} maxLength={20000} disabled={!agentReady} />
+              <textarea ref={promptRef} value={promptDraft} onChange={onPromptChange} onCompositionStart={() => { compositionRef.current = true; }} onCompositionEnd={onPromptCompositionEnd} onKeyDown={onPromptKeyDown} placeholder={agentReady ? "Agentにこのスライドの編集を依頼…" : "Codexへの接続を待っています…"} aria-label="Agentへのメッセージ" aria-busy={turnBusy} maxLength={20000} disabled={!agentReady} />
               <div className="chat-actions">
                 <input ref={referenceInputRef} className="sr-only" type="file" multiple onChange={(event) => { if (event.target.files) void uploadReferences(event.target.files); }} />
                 <button className={`attach-button${openPopover === "references" ? " active" : ""}`} type="button" onClick={(event) => togglePopover("references", event.currentTarget)} disabled={!agentReady} aria-expanded={openPopover === "references"} aria-haspopup="dialog" aria-label="参照資料" title="Agentへ渡すファイルやフォルダーを選びます">📎</button>
                 {codexState.catalog.models.length > 0 && selectedModelInfo && (
                   <div className="agent-model-control">
-                    <button className="agent-model-button" type="button" onClick={(event) => togglePopover("agentModel", event.currentTarget)} disabled={agentRunning} aria-expanded={openPopover === "agentModel"} aria-haspopup="menu" title="Agentのモデルと推論レベルを選びます"><span className="agent-model-name">{selectedModelInfo.displayName ?? selectedModelInfo.name ?? selectedModelInfo.id ?? selectedModelInfo.model}</span><span className="agent-effort-value">{reasoningEffort}</span><b aria-hidden="true">⌄</b></button>
+                    <button className="agent-model-button" type="button" onClick={(event) => togglePopover("agentModel", event.currentTarget)} disabled={turnBusy} aria-expanded={openPopover === "agentModel"} aria-haspopup="menu" title="Agentのモデルと推論レベルを選びます"><span className="agent-model-name">{selectedModelInfo.displayName ?? selectedModelInfo.name ?? selectedModelInfo.id ?? selectedModelInfo.model}</span><span className="agent-effort-value">{reasoningEffort}</span><b aria-hidden="true">⌄</b></button>
                     {openPopover === "agentModel" && (
                       <>
                         <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
                         <div className="agent-model-popover" role="menu" aria-label="Agentのモデルと推論レベル">
-                          <section role="group" aria-label="モデル"><strong>モデル</strong>{codexState.catalog.models.map((model: any) => { const modelId = model.id ?? model.model; return <button key={modelId} role="menuitemradio" aria-checked={selectedModel === modelId} className={selectedModel === modelId ? "active" : ""} onClick={() => { const nextEffort = model.supportedReasoningEfforts?.map((option: any) => option.reasoningEffort).includes(reasoningEffort) ? reasoningEffort : model.defaultReasoningEffort ?? model.supportedReasoningEfforts?.[0]?.reasoningEffort ?? reasoningEffort; agentModelStore.write({ model: modelId, effort: nextEffort }); dismissPopover(false); }}><span>{model.displayName ?? model.name ?? model.id ?? model.model}</span>{selectedModel === modelId && <b aria-hidden="true">✓</b>}</button>; })}</section>
-                          <section role="group" aria-label="推論レベル"><strong>推論レベル</strong>{availableEfforts.map((effort: string) => <button key={effort} role="menuitemradio" aria-checked={reasoningEffort === effort} className={reasoningEffort === effort ? "active" : ""} onClick={() => { agentModelStore.write({ model: selectedModel, effort }); dismissPopover(false); }}><span>{effort}</span>{reasoningEffort === effort && <b aria-hidden="true">✓</b>}</button>)}</section>
+                          <section role="group" aria-label="モデル"><strong>モデル</strong>{codexState.catalog.models.map((model: any) => { const modelId = model.id ?? model.model; return <button key={modelId} role="menuitemradio" aria-checked={selectedModel === modelId} className={selectedModel === modelId ? "active" : ""} disabled={turnBusy} onClick={() => { const nextEffort = model.supportedReasoningEfforts?.map((option: any) => option.reasoningEffort).includes(reasoningEffort) ? reasoningEffort : model.defaultReasoningEffort ?? model.supportedReasoningEfforts?.[0]?.reasoningEffort ?? reasoningEffort; agentModelStore.write({ model: modelId, effort: nextEffort }); dismissPopover(false); }}><span>{model.displayName ?? model.name ?? model.id ?? model.model}</span>{selectedModel === modelId && <b aria-hidden="true">✓</b>}</button>; })}</section>
+                          <section role="group" aria-label="推論レベル"><strong>推論レベル</strong>{availableEfforts.map((effort: string) => <button key={effort} role="menuitemradio" aria-checked={reasoningEffort === effort} className={reasoningEffort === effort ? "active" : ""} disabled={turnBusy} onClick={() => { agentModelStore.write({ model: selectedModel, effort }); dismissPopover(false); }}><span>{effort}</span>{reasoningEffort === effort && <b aria-hidden="true">✓</b>}</button>)}</section>
                         </div>
                       </>
                     )}
@@ -2987,20 +3062,20 @@ export default function Home() {
         <section className="center-stage">
           <div className="editor-tabs">
             <div className="variation-tabs">
-              {variations.length > 0 && <button className={activeVariation === "main" ? "active" : ""} onClick={() => void checkoutVariation("main")} disabled={agentRunning}><span className="variation-dot dot-0" />元の案</button>}
+              {variations.length > 0 && <button className={activeVariation === "main" ? "active" : ""} onClick={() => void checkoutVariation("main")} disabled={turnBusy}><span className="variation-dot dot-0" />元の案</button>}
               {variations.map((variation, index) => (
-                <button key={variation.branch} className={activeVariation === variation.branch ? "active" : ""} onClick={() => void checkoutVariation(variation.branch)} disabled={agentRunning}>
+                <button key={variation.branch} className={activeVariation === variation.branch ? "active" : ""} onClick={() => void checkoutVariation(variation.branch)} disabled={turnBusy}>
                   <span className={`variation-dot dot-${index + 1}`} />{variation.label}<small>{variation.status === "ready" ? "準備完了" : "生成中"}</small>
                 </button>
               ))}
-              <button className="add-variation" onClick={() => setShowVariationPrompt(!showVariationPrompt)} aria-label="別案を追加" disabled={agentRunning}>＋</button>
-              {variations.length > 0 && <button className="compare-variations" onClick={() => void openVariationCompare()} disabled={agentRunning || variationCompareLoading}>{variationCompareLoading ? "読み込み中…" : "比較"}</button>}
+              <button className="add-variation" onClick={() => setShowVariationPrompt(!showVariationPrompt)} aria-label="別案を追加" disabled={turnBusy}>＋</button>
+              {variations.length > 0 && <button className="compare-variations" onClick={() => void openVariationCompare()} disabled={turnBusy || variationCompareLoading}>{variationCompareLoading ? "読み込み中…" : "比較"}</button>}
             </div>
             <div className="editor-tab-actions">
               {activeVariation.startsWith("weave/variation/") && (
                 <>
-                  <button className="archive-direction" onClick={() => void archiveVariation()} disabled={agentRunning}>履歴へ送る</button>
-                  <button className="use-direction" onClick={() => void acceptVariation()} disabled={agentRunning}>この案を採用</button>
+                  <button className="archive-direction" onClick={() => void archiveVariation()} disabled={turnBusy}>履歴へ送る</button>
+                  <button className="use-direction" onClick={() => void acceptVariation()} disabled={turnBusy}>この案を採用</button>
                 </>
               )}
               <div className="view-toggle" role="group" aria-label="編集表示">
@@ -3016,7 +3091,7 @@ export default function Home() {
                 <div><span>新しいデザイン案</span><button aria-label="デザイン案の作成を閉じる" onClick={() => setShowVariationPrompt(false)}>×</button></div>
                 <label htmlFor="variation-prompt">どのような雰囲気にしますか？</label>
                 <textarea id="variation-prompt" value={variationPrompt} maxLength={16000} onChange={(event) => setVariationPrompt(event.target.value)} />
-                <button onClick={() => void generateVariation()} disabled={!agentReady || agentRunning}><span>✦</span> デザイン案を生成</button>
+                <button onClick={() => void generateVariation()} disabled={!agentReady || turnBusy}><span>✦</span> デザイン案を生成</button>
                 <small>最新の保存済みバージョンから順番に生成します。</small>
               </div>
             )}
@@ -3191,7 +3266,7 @@ export default function Home() {
                   key={item.id}
                   style={{ paddingLeft: 14 + item.depth * 14 }}
                   className={[selectedId === item.id ? "active" : "", treeDragId === item.id ? "dragging" : "", treeDrop?.id === item.id ? `drop-${treeDrop.position}` : ""].filter(Boolean).join(" ")}
-                  draggable={!annotationMode && !agentRunning && !item.locked}
+                  draggable={!annotationMode && !turnBusy && !item.locked}
                   onClick={() => setSelectedId(item.id)}
                   onDragStart={(event) => { if (annotationMode || item.locked) { event.preventDefault(); return; } event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", item.id); setTreeDragId(item.id); setSelectedId(item.id); }}
                   onDragOver={(event) => onTreeDragOver(event, item)}

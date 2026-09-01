@@ -1,11 +1,18 @@
-export type RequestResolutionPhase = "idle" | "submitting" | "settled";
+export type RequestResolutionPhase = "idle" | "submitting" | "settled" | "result_unknown";
 
-export function beginRequestResolution(phase: RequestResolutionPhase): { phase: RequestResolutionPhase; started: boolean } {
-  if (phase !== "idle") return { phase, started: false };
+export type RequestResolutionOutcome = {
+  result: "settled" | "result_unknown";
+  retryable?: boolean;
+  message?: string;
+};
+
+export function beginRequestResolution(phase: RequestResolutionPhase, retryable = false): { phase: RequestResolutionPhase; started: boolean } {
+  if (phase !== "idle" && !(phase === "result_unknown" && retryable)) return { phase, started: false };
   return { phase: "submitting", started: true };
 }
 
-export function finishRequestResolution(phase: RequestResolutionPhase, succeeded: boolean): RequestResolutionPhase {
+export function finishRequestResolution(phase: RequestResolutionPhase, result: boolean | RequestResolutionOutcome["result"]): RequestResolutionPhase {
   if (phase !== "submitting") return phase;
-  return succeeded ? "settled" : "idle";
+  if (result === true || result === "settled") return "settled";
+  return result === "result_unknown" ? "result_unknown" : "idle";
 }
