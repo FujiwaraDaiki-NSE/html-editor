@@ -1086,7 +1086,7 @@ export default function Home() {
     setOpenPopover(null);
     if (annotationMode) setSelectedAnnotationId(null);
     setAnnotationMode(!annotationMode);
-    setAnnouncement(annotationMode ? "Rough mode left" : "Rough mode entered. Drag to draw a frame, then label it.");
+    setAnnouncement(annotationMode ? "Mark for Agent finished" : "Mark for Agent enabled. Drag over what you want the Agent to change.");
   };
 
   const updateAnnotationGesture = (event: { clientX: number; clientY: number }) => {
@@ -2591,7 +2591,7 @@ export default function Home() {
   const shortcutsSidebar = (
     <section className="activity-panel shortcuts-panel" aria-label="Keyboard shortcuts">
       <header className="activity-panel-heading"><span>KEYBOARD SHORTCUTS</span><button className="panel-close" aria-label="Close keyboard shortcuts" onClick={() => setLeftPanelOpen(false)}>×</button></header>
-      <div className="activity-panel-body"><dl><dt>← / →</dt><dd>Previous / next slide</dd><dt>Double-click or Enter</dt><dd>Edit selected text</dd><dt>@</dt><dd>Point to an element from the message composer</dd><dt>A</dt><dd>Toggle rough mode</dd><dt>Esc</dt><dd>Finish editing, leave an annotation label, or close presentation</dd><dt>⌘/Ctrl Z</dt><dd>Undo</dd><dt>⌘/Ctrl Shift Z</dt><dd>Redo</dd><dt>?</dt><dd>Open this view</dd></dl></div>
+      <div className="activity-panel-body"><dl><dt>← / →</dt><dd>Previous / next slide</dd><dt>Double-click or Enter</dt><dd>Edit selected text</dd><dt>@</dt><dd>Point to an element from the message composer</dd><dt>A</dt><dd>Toggle Mark for Agent</dd><dt>Esc</dt><dd>Finish editing, label a marked area, or close presentation</dd><dt>⌘/Ctrl Z</dt><dd>Undo</dd><dt>⌘/Ctrl Shift Z</dt><dd>Redo</dd><dt>?</dt><dd>Open this view</dd></dl></div>
     </section>
   );
 
@@ -2856,7 +2856,7 @@ export default function Home() {
               )}
               <div className="view-toggle" role="group" aria-label="Editor view">
                 <button className={mode === "preview" ? "active" : ""} onClick={() => { if (mode === "code") reinject(); setMode("preview"); }}>▣ <span>Preview</span></button>
-                <button className={mode === "code" ? "active" : ""} onClick={() => { setSlidesSynced(captureActive()); setSelectedAnnotationId(null); setPointerPicking(false); if (annotationMode) setAnnouncement("Rough mode left"); setAnnotationMode(false); setMode("code"); }}>‹› <span>Source</span></button>
+                <button className={mode === "code" ? "active" : ""} onClick={() => { setSlidesSynced(captureActive()); setSelectedAnnotationId(null); setPointerPicking(false); if (annotationMode) setAnnouncement("Mark for Agent finished"); setAnnotationMode(false); setMode("code"); }}>‹› <span>Source</span></button>
               </div>
             </div>
           </div>
@@ -2895,7 +2895,7 @@ export default function Home() {
                   {pointerPicking
                     ? "Pointing · click an element to reference it · Esc to cancel"
                     : annotationMode
-                    ? `Rough mode · drag to draw a frame${recalledAnnotations.length > 0 ? ` · Comparing ${activeOverlayLabel}` : ""}`
+                    ? `Marking for Agent · drag over what you want changed${recalledAnnotations.length > 0 ? ` · Comparing ${activeOverlayLabel}` : ""}`
                     : recalledAnnotations.length > 0
                       ? `Comparing sent annotations · ${activeOverlayLabel}`
                       : draggedId ? "Moving block · release to place" : editingId ? "Editing text · Esc to finish" : selectedId ? "Selected · drag to reorder" : "Click a block to select it"}
@@ -2985,9 +2985,9 @@ export default function Home() {
                       className={annotationMode ? "active" : ""}
                       aria-pressed={annotationMode}
                       aria-keyshortcuts="A"
-                      title="Toggle rough mode (A)"
+                      title="Toggle Mark for Agent (A)"
                       onClick={toggleAnnotationMode}
-                    >▱ <span>Rough notes</span></button>
+                    >▱ <span>Mark for Agent</span></button>
                   </div>
                 </div>
                 {openPopover === "addBlock" && (
@@ -3056,7 +3056,7 @@ export default function Home() {
           </section></>}
           {inspectorView === "design" && <>
           <div className="selection-path"><span>content</span><b>›</b><strong>{sel ? `${sel.kind}.${sel.id}` : "slide"}</strong></div>
-          {annotationMode && <div className="annotation-inspector-notice" role="status">Rough mode draws frames only. Editing is off while sketching.</div>}
+          {annotationMode && <div className="annotation-inspector-notice" role="status">Mark for Agent creates marked areas only. Editing is off while marking.</div>}
           <fieldset className="inspector-editing" disabled={annotationMode}>
           {sel && (
             <>

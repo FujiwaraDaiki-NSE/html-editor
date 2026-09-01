@@ -336,14 +336,15 @@ test("annotation mode draws regions without selecting or pointing at elements", 
   assert.doesNotMatch(gestureType, /elementId/);
   assert.doesNotMatch(annotationPointerDown, /readSelection|setSelectedId/);
   assert.doesNotMatch(annotationPointerEnd, /pointElement|target: \{ kind: "element" \}/);
-  for (const wording of ["Rough mode · drag to draw a frame", "Rough mode draws frames only", "Point to an element from the message composer"]) assert.match(page, new RegExp(wording));
+  for (const wording of ["Marking for Agent · drag over what you want changed", "Mark for Agent creates marked areas only", "Point to an element from the message composer"]) assert.match(page, new RegExp(wording));
+  assert.doesNotMatch(page, /Rough/);
   /* The UI names the act; the umbrella term stays in the data vocabulary only (D10). */
   assert.doesNotMatch(page, /Annotation mode/);
   assert.match(page, /data-annotation-mode/);
   assert.match(readme, /`@`[^\n]+要素[^\n]+矩形だけ/);
 });
 
-test("rough mode shows what it can do before anything is drawn", async () => {
+test("Mark for Agent shows what it can do before anything is drawn", async () => {
   const [overlay, css] = await Promise.all([
     readFile(new URL("../app/components/AnnotationOverlay.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
@@ -353,7 +354,7 @@ test("rough mode shows what it can do before anything is drawn", async () => {
   assert.match(overlay, /annotation-empty-state" aria-hidden="true"/);
   assert.match(css, /\.annotation-empty-state \{[^}]*pointer-events: none/);
   /* The label teaches by example rather than naming the field. */
-  assert.match(overlay, /placeholder="What goes here\?/);
+  assert.match(overlay, /placeholder="Tell the Agent what to change"/);
   /* The paper belongs to the drafting layer: recall reads the result, so it is never veiled. */
   assert.match(css, /\.annotation-overlay-layer\.interactive \{[^}]*backdrop-filter/);
   assert.doesNotMatch(css, /\.annotation-recall-layer[^\n]*backdrop-filter/);

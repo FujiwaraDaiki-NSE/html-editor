@@ -154,9 +154,9 @@ export function AnnotationOverlay({
           zoom — and whatever size the deck's own slide root happens to render at. */}
       {interactive && annotations.length === 0 && (
         <div className="annotation-empty-state" aria-hidden="true">
-          <strong>Drag to draw a frame</strong>
-          <span>→ then write what goes in it</span>
-          <small>Frames are sent to Agent together</small>
+          <strong>Drag over what you want changed</strong>
+          <span>→ then tell the Agent what to change</span>
+          <small>Marked areas are sent to Agent together</small>
         </div>
       )}
     <div className="annotation-overlay-scroll" ref={scrollRef}>
@@ -202,9 +202,9 @@ export function AnnotationOverlay({
                     }}
                     className="annotation-label"
                     value={annotation.label}
-                    aria-label={`Annotation ${annotation.order} label`}
-                    placeholder="What goes here? (e.g. photo, one-line metric band)"
-                    title="What goes here? (e.g. photo, one-line metric band)"
+                    aria-label={`Marked area ${annotation.order} instruction`}
+                    placeholder="Tell the Agent what to change"
+                    title="Tell the Agent what to change"
                     onFocus={() => onSelect(annotation.id)}
                     onPointerDown={(event) => { event.stopPropagation(); onSelect(annotation.id); }}
                     onKeyDown={(event) => {
