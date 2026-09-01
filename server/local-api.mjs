@@ -31,6 +31,7 @@ import {
   assertSwitchable,
   switchProject,
   projectState,
+  getVariationPreviews,
   readProject,
   readDeckCss,
   readTemplates,
@@ -315,6 +316,10 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET" && url.pathname === "/api/state") {
       return sendJson(request, response, 200, await statePayload());
+    }
+    if (request.method === "GET" && url.pathname === "/api/variations/compare") {
+      if (activeProjectTurn()) return sendJson(request, response, 409, { error: "An Agent turn is running." });
+      return sendJson(request, response, 200, { previews: getVariationPreviews() });
     }
     if (request.method === "GET" && url.pathname === "/api/projects") {
       return sendJson(request, response, 200, { projects: await listProjects() });

@@ -14,6 +14,8 @@ test("rejects unsupported project collection methods with the complete Allow val
 
 test("preserves single-method route guards and leaves unknown routes to the 404 handler", () => {
   assert.deepEqual(routeMethodDecision("/api/state", "POST"), { allowed: false, allow: "GET" });
+  assert.deepEqual(routeMethodDecision("/api/variations/compare", "GET"), { allowed: true, allow: "GET" });
+  assert.deepEqual(routeMethodDecision("/api/variations/compare", "POST"), { allowed: false, allow: "GET" });
   assert.deepEqual(routeMethodDecision("/api/save", "GET"), { allowed: false, allow: "POST" });
   assert.deepEqual(routeMethodDecision("/missing", "POST"), { allowed: true, allow: null });
 });

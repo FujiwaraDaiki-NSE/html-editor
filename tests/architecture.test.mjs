@@ -176,7 +176,7 @@ test("transient lists share one dismissible popover contract", async () => {
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
-  assert.match(page, /type OpenPopover = "delivery" \| "threads" \| "addBlock" \| "layouts" \| "newSlide" \| "quality" \| "agentModel" \| "references" \| null/);
+  assert.match(page, /type OpenPopover = "delivery" \| "threads" \| "addBlock" \| "layouts" \| "newSlide" \| "slideMenu" \| "quality" \| "agentModel" \| "references" \| null/);
   assert.doesNotMatch(page, /OpenPopover[^\n]*"project"/);
   assert.match(page, /const \[openPopover, setOpenPopover\]/);
   assert.match(page, /event\.key !== "Escape"/);
@@ -193,9 +193,11 @@ test("commands are grouped by editing, project, and delivery intent", async () =
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
-  for (const group of ["history-tools", "content-tools", "slide-tools", "zoom-tools"]) {
+  for (const group of ["history-tools", "content-tools", "zoom-tools"]) {
     assert.match(page, new RegExp(`className="canvas-tool-group ${group}"`));
   }
+  assert.doesNotMatch(page, /className="canvas-tool-group slide-tools"/);
+  assert.match(page, /className="slide-actions-menu" role="menu"/);
   assert.doesNotMatch(page, /className="topbar-popover project-menu"/);
   assert.match(page, /className="project-switcher"[^>]*aria-haspopup="dialog"/);
   assert.match(page, /className="gallery" role="dialog"/);
@@ -282,12 +284,31 @@ test("a selected element can be referenced without knowing the pointing shortcut
   ]);
   const pointerReferenceHelper = page.match(/const pickPointerElement[\s\S]{0,200}?\n\s+(\w+)\([^;\n]*\);/)?.[1];
   const buttonReferenceHelper = page.match(/const referenceSelectedElement[\s\S]{0,200}?\n\s+(\w+)\([^;\n]*\);/)?.[1];
-  const referenceButton = page.match(/agentReady &&[\s\S]{0,200}<button[^>]*className="canvas-reference-button"[^>]*>@[^<]*Reference<\/button>/)?.[0] ?? "";
+  const referenceButton = page.match(/agentReady &&[\s\S]{0,200}<button[^>]*onClick=\{referenceSelectedElement\}[^>]*>@ Agent<\/button>/)?.[0] ?? "";
   assert.ok(pointerReferenceHelper);
   assert.equal(buttonReferenceHelper, pointerReferenceHelper);
   assert.match(referenceButton, /onClick=\{referenceSelectedElement\}/);
-  assert.match(css, /\.canvas-reference-button \{[^}]*margin: 0 4px/);
-  assert.match(css, /\.canvas-reference-button \{[^}]*pointer-events: auto/);
+  assert.match(css, /\.selection-toolbar \{[^}]*position: absolute/);
+  assert.match(css, /\.selection-toolbar button \{[^}]*cursor: pointer/);
+});
+
+test("issue 3 keeps every primary surface reachable and removes implementation-facing chrome", async () => {
+  const [page, css, layout] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
+  ]);
+  for (const view of ["Canvas", "Agent", "History", "Keys", "Slides", "Inspector", "Settings"]) assert.match(page, new RegExp(`>${view}<\\/button>`));
+  assert.match(css, /@media \(max-width: 900px\)[\s\S]*\.mobile-tabs/);
+  assert.match(page, /className="slide-thumbnail"[\s\S]*dangerouslySetInnerHTML/);
+  assert.doesNotMatch(page, /mini-[1-4]|Working tree clean|Unsaved editor changes|Commit label|Return to latest on main|>Code</);
+  assert.match(page, /className="document-title-field" data-unsaved=/);
+  assert.doesNotMatch(css, /unsaved-dot::after/);
+  assert.match(page, /sel\.container && sel\.kind !== "metrics"/);
+  assert.match(page, /Compare directions/);
+  assert.match(page, /Agent changes/);
+  assert.match(layout, /<html lang="en">/);
+  assert.match(css, /font-family: var\(--font-geist-sans\)/);
 });
 
 test("pointer tabs stay persistent only when a frame needs an outside target", async () => {

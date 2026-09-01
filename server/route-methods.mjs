@@ -1,6 +1,6 @@
 const ROUTE_METHODS = [
   [/^\/healthz$/, ["GET"]],
-  [/^\/api\/(?:state|codex\/events|codex\/threads)$/, ["GET"]],
+  [/^\/api\/(?:state|variations\/compare|codex\/events|codex\/threads)$/, ["GET"]],
   [/^\/api\/folders$/, ["GET"]],
   [/^\/api\/(?:assets|projects\/[^/]+\/assets)\//, ["GET"]],
   [/^\/api\/projects$/, ["GET", "POST"]],

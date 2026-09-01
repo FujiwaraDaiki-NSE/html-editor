@@ -36,7 +36,11 @@ type FolderBrowser = { path: string; parent: string | null; breadcrumbs: Array<{
 
 type SlideNav = "filmstrip" | "rail";
 type ActivityView = "agent" | "history" | "shortcuts" | "settings";
-type OpenPopover = "delivery" | "threads" | "addBlock" | "layouts" | "newSlide" | "quality" | "agentModel" | "references" | null;
+type MobileView = "canvas" | "agent" | "history" | "shortcuts" | "slides" | "inspector" | "settings";
+type InspectorView = "layers" | "design";
+type OpenPopover = "delivery" | "threads" | "addBlock" | "layouts" | "newSlide" | "slideMenu" | "quality" | "agentModel" | "references" | null;
+type VariationPreview = { branch: string; label: string; css: string; deck: ServerState["deck"] };
+type ChangedTarget = { slideId: string; elementId: string };
 
 type ServerState = {
   deck: { title: string; defaultTemplateId: string; slides: SlideDoc[] };
@@ -305,6 +309,25 @@ const sanitizePreviewHtml = (input: string): string => {
 
 const displayAssetHtml = (input: string): string => rewriteAssetUrls(sanitizePreviewHtml(input), apiBase);
 
+const changedTargets = (before: SlideDoc[], after: SlideDoc[]): ChangedTarget[] => {
+  if (typeof DOMParser === "undefined") return [];
+  const parser = new DOMParser();
+  const beforeBySlide = new Map(before.map((slide) => [slide.id, slide]));
+  return after.flatMap((slide) => {
+    const previous = beforeBySlide.get(slide.id);
+    if (!previous) return [];
+    const oldDocument = parser.parseFromString(previous.html, "text/html");
+    const newDocument = parser.parseFromString(slide.html, "text/html");
+    return Array.from(newDocument.querySelectorAll<HTMLElement>("[data-weave-id]"))
+      .filter((node) => {
+        const id = node.dataset.weaveId;
+        const oldNode = id ? oldDocument.querySelector<HTMLElement>(`[data-weave-id="${CSS.escape(id)}"]`) : null;
+        return !!id && oldNode?.outerHTML !== node.outerHTML;
+      })
+      .map((node) => ({ slideId: slide.id, elementId: node.dataset.weaveId! }));
+  });
+};
+
 const kindOfNode = (node: HTMLElement): string => blockKinds.find((cls) => node.classList.contains(cls)) ?? node.tagName.toLowerCase();
 const refreshSlideAnnotations = (annotations: Annotation[], slideId: string, boxes: AnnotationBox[]) => {
   const refreshed = new Map<string, Annotation>(refreshAnnotations(annotations.filter((annotation) => annotation.slideId === slideId), boxes).map((annotation: Annotation): [string, Annotation] => [annotation.id, annotation]));
@@ -326,7 +349,7 @@ export default function Home() {
   const [slides, setSlides] = useState<SlideDoc[]>(initialSlides);
   const [templates, setTemplates] = useState<TemplateDoc[]>([]);
   const [activeSlide, setActiveSlide] = useState(1);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedIdState] = useState<string | null>(null);
   const [deckCss, setDeckCss] = useState<string>(defaultDeckCss);
   const [mode, setMode] = useState<"preview" | "code">("preview");
   const [theme, setTheme] = useState<"dark" | "light">("dark");
@@ -337,6 +360,8 @@ export default function Home() {
   const [activeVariation, setActiveVariation] = useState("main");
   const [variations, setVariations] = useState<ServerState["variations"]>([]);
   const [showVariationPrompt, setShowVariationPrompt] = useState(false);
+  const [variationPreviews, setVariationPreviews] = useState<VariationPreview[] | null>(null);
+  const [variationCompareLoading, setVariationCompareLoading] = useState(false);
   const [variationPrompt, setVariationPrompt] = useState("Explore a bolder editorial hierarchy with a concise headline and stronger metric emphasis.");
   const [openPopover, setOpenPopover] = useState<OpenPopover>(null);
   const [saved, setSaved] = useState(true);
@@ -378,6 +403,9 @@ export default function Home() {
   const [newProjectCreating, setNewProjectCreating] = useState(false);
   const [showPresenter, setShowPresenter] = useState(false);
   const [inspectorOpen, setInspectorOpen] = useState(true);
+  const [leftPanelOpen, setLeftPanelOpen] = useState(true);
+  const [mobileView, setMobileView] = useState<MobileView>("canvas");
+  const [inspectorView, setInspectorView] = useState<InspectorView>("layers");
   const [objectTreeOpen, setObjectTreeOpen] = useState(true);
   const [canvasFocused, setCanvasFocused] = useState(false);
   const [announcement, setAnnouncement] = useState("Editor ready");
@@ -408,6 +436,15 @@ export default function Home() {
   const [referenceView, setReferenceView] = useState<"shelf" | "browse">("shelf");
   const [folderBrowser, setFolderBrowser] = useState<FolderBrowser | null>(null);
   const [folderImporting, setFolderImporting] = useState(false);
+  const [changedReview, setChangedReview] = useState<ChangedTarget[]>([]);
+  const [changedReviewIndex, setChangedReviewIndex] = useState(0);
+  const setSelectedId = (id: string | null) => {
+    setSelectedIdState(id);
+    if (id) {
+      setInspectorOpen(true);
+      setInspectorView("design");
+    }
+  };
 
   const canvasRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -466,6 +503,18 @@ export default function Home() {
     ? `${activeOverlayTurnIndex >= 0 ? `Turn ${activeOverlayTurnIndex + 1}` : "Sent turn"} · ${activeOverlayAttachment.slideLabel}`
     : "";
   const recalledAnnotations = activeOverlayAttachment?.slideId === activeSlideId ? activeOverlayAttachment.annotations : [];
+  const contextSummary = [
+    `Slide ${activeSlide}: ${slides[activeSlide - 1]?.title || "Untitled"}`,
+    selectedId ? `selected ${sel?.kind ?? "element"}` : "no element selected",
+    `${sendableAnnotations.length} annotation${sendableAnnotations.length === 1 ? "" : "s"}`,
+    `${referenceAttachments.length} reference${referenceAttachments.length === 1 ? "" : "s"}`,
+  ].join(" · ");
+
+  const showActivity = (view: ActivityView) => {
+    setActivityView(view);
+    setLeftPanelOpen(true);
+    setMobileView(view);
+  };
 
   useEffect(() => { document.documentElement.style.setProperty("--weave-sidebar-width", `${sidebarWidth}px`); }, [sidebarWidth]);
   const startSidebarResize = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -530,14 +579,14 @@ export default function Home() {
 
   /* A slide file contains only editable slot content. Everything users see in the canvas is
      derived from its Template master + selected Layout, including frame furniture and numbering. */
-  const layoutFor = (slide: SlideDoc, templateOverride?: TemplateDoc, layoutOverride?: TemplateLayout) => {
+  const layoutFor = useCallback((slide: SlideDoc, templateOverride?: TemplateDoc, layoutOverride?: TemplateLayout) => {
     const template = templateOverride ?? templates.find((item) => item.id === slide.templateId);
     if (!template) throw new Error(`Template reference is missing: ${slide.templateId}`);
     const layout = layoutOverride ?? template.layouts.find((item) => item.id === slide.layoutId);
     if (!layout) throw new Error(`Layout reference is missing: ${slide.templateId}/${slide.layoutId}`);
     return { template, layout };
-  };
-  const composeFor = (slide: SlideDoc, position: number, total: number, templateOverride?: TemplateDoc, layoutOverride?: TemplateLayout) => {
+  }, [templates]);
+  const composeFor = useCallback((slide: SlideDoc, position: number, total: number, templateOverride?: TemplateDoc, layoutOverride?: TemplateLayout) => {
     const { template, layout } = layoutFor(slide, templateOverride, layoutOverride);
     return composeSlideHtml({
       slideHtml: slide.html,
@@ -550,8 +599,8 @@ export default function Home() {
       accent: slide.accent,
       instanceId: slide.id,
     });
-  };
-  const composedSlides = (source: SlideDoc[]) => source.map((slide, index) => composeFor(slide, index + 1, source.length));
+  }, [layoutFor]);
+  const composedSlides = useCallback((source: SlideDoc[]) => source.map((slide, index) => composeFor(slide, index + 1, source.length)), [composeFor]);
 
   const readSelection = (node: HTMLElement): SelState => {
     const kind = kindOfNode(node);
@@ -648,7 +697,7 @@ export default function Home() {
     try { html = composedSlides(slides).join("\n"); } catch (error) { return { ok: false, diagnostics: [{ code: "template-reference", source: "slides", severity: "error", message: error instanceof Error ? error.message : String(error) }], errors: 1, warnings: 0 }; }
     const result = auditContentPolicy({ css: deckCss, html });
     return { ok: result.ok, diagnostics: result.diagnostics, errors: result.summary.errors, warnings: result.summary.warnings };
-  }, [slides, deckCss, templates]);
+  }, [slides, deckCss, composedSlides]);
   const qualityReport = useMemo(() => {
     const rejectedErrors = projectEventDiagnostics.filter((item) => item.severity !== "warning").length;
     const rejectedWarnings = projectEventDiagnostics.length - rejectedErrors;
@@ -766,6 +815,11 @@ export default function Home() {
               if (stateResponse.ok) {
                 const state = await stateResponse.json();
                 const unchanged = generation === editGenerationRef.current;
+                if (envelope.type === "weave/project" && envelope.payload?.status === "updated" && unchanged) {
+                  const targets = changedTargets(slidesRef.current, state.deck?.slides ?? []);
+                  setChangedReview(targets);
+                  setChangedReviewIndex(0);
+                }
                 applyServerState(state, unchanged);
                 if (!unchanged) {
                   markDirty();
@@ -883,6 +937,19 @@ export default function Home() {
     // `slides` is a dependency because every DOM edit flows back through it: without it the tree
     // keeps showing the pre-move order after a canvas or tree drag.
   }, [selectedId, injectKey, activeSlide, mode, slides, annotationMode]);
+
+  useLayoutEffect(() => {
+    const host = canvasRef.current;
+    if (!host || mode !== "preview") return;
+    host.querySelectorAll<HTMLElement>("[data-agent-changed]").forEach((node) => delete node.dataset.agentChanged);
+    const active = slidesRef.current[activeRef.current - 1];
+    if (!active) return;
+    changedReview.filter((target) => target.slideId === active.id).forEach((target) => {
+      host.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(target.elementId)}"]`)?.setAttribute("data-agent-changed", "true");
+    });
+    const current = changedReview[changedReviewIndex];
+    if (current?.slideId === active.id) setSelectedId(current.elementId);
+  }, [changedReview, changedReviewIndex, activeSlide, injectKey, mode]);
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
@@ -1594,6 +1661,27 @@ export default function Home() {
     syncFromDom();
   };
 
+  const duplicateSelected = () => {
+    const node = selectedNode();
+    if (!node || !isEditableSlideNode(node) || isTitleSlot(node)) return;
+    checkpoint();
+    const clone = node.cloneNode(true) as HTMLElement;
+    [clone, ...Array.from(clone.querySelectorAll<HTMLElement>("[data-weave-id]"))].forEach((element) => {
+      element.dataset.weaveId = `block-${createMessageId().slice(6)}`;
+      element.classList.remove("weave-selected");
+      element.removeAttribute("data-editing");
+      element.removeAttribute("contenteditable");
+    });
+    node.after(clone);
+    setSelectedId(clone.dataset.weaveId ?? null);
+    syncFromDom();
+  };
+
+  const beginEditSelected = () => {
+    const node = selectedNode();
+    if (node) beginEdit(node);
+  };
+
   /* The inspector and Agent share Tailwind classes as the only style representation. */
   const applyClasses = (mutate: (node: HTMLElement) => void) => {
     const node = selectedNode();
@@ -1609,6 +1697,7 @@ export default function Home() {
   /* Flipping a container's direction swaps which axis its children are sized on, so their intents
      are read under the old axis and re-expressed under the new one. */
   const setDirection = (value: string) => applyClasses((node) => {
+    if (node.classList.contains("metrics")) return;
     const children = Array.from(node.children);
     const intents = children.map(sizeOf);
     node.classList.remove("row", "column", "grid", "flex", "flex-row", "flex-col", "grid-cols-2", "grid-cols-3", "grid-cols-4");
@@ -1809,7 +1898,7 @@ export default function Home() {
       if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "a") { event.preventDefault(); toggleAnnotationMode(); }
       else if (annotationMode && selectedAnnotationId && (event.key === "Delete" || event.key === "Backspace")) { event.preventDefault(); deleteAnnotation(selectedAnnotationId); }
       else if (!annotationMode && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") { event.preventDefault(); if (event.shiftKey) redo(); else undo(); }
-      else if (event.key === "?") setActivityView("shortcuts");
+      else if (event.key === "?") showActivity("shortcuts");
       else if (event.key === "ArrowRight" && activeSlide < slides.length) switchSlide(activeSlide + 1);
       else if (event.key === "ArrowLeft" && activeSlide > 1) switchSlide(activeSlide - 1);
     };
@@ -1853,7 +1942,7 @@ export default function Home() {
     try {
       const response = await fetch(`${apiBase}/projects`);
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "プロジェクト一覧を読み込めませんでした。");
+      if (!response.ok) throw new Error(result.error ?? "Could not load projects.");
       setGalleryProjects(result.projects ?? []);
       setApiError(null);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
@@ -1896,7 +1985,7 @@ export default function Home() {
         if (result.code === "WEAVE_PROJECT_DIRTY") setGalleryDialog({ kind: "dirty", slug: target.slug, title: target.title });
         else if (result.code === "WEAVE_TURN_RUNNING") setGalleryDialog({ kind: "turn", slug: target.slug, title: target.title });
         else if (result.code === "WEAVE_PROJECT_BLOCKED") setGalleryTip(target.slug);
-        else throw new Error(result.error ?? "プロジェクトを切り替えられませんでした。");
+        else throw new Error(result.error ?? "Could not switch projects.");
         return;
       }
       applyServerState(result as ServerState);
@@ -1912,7 +2001,7 @@ export default function Home() {
       const method = action === "rename" ? "PATCH" : "POST";
       const response = await fetch(`${apiBase}/projects/${slug}${action === "rename" ? "" : `/${action}`}`, { method, headers: { "content-type": "application/json" }, body: action === "rename" ? JSON.stringify({ title }) : "{}" });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "プロジェクトを更新できませんでした。");
+      if (!response.ok) throw new Error(result.error ?? "Could not update the project.");
       setGalleryProjects(result.projects ?? []);
       setGalleryDialog(null);
       setGalleryMenu(null);
@@ -1928,7 +2017,7 @@ export default function Home() {
     try {
       const response = await fetch(`${apiBase}/projects`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title, templateId: newProjectTemplate }) });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "プロジェクトを作成できませんでした。");
+      if (!response.ok) throw new Error(result.error ?? "Could not create the project.");
       applyServerState(result as ServerState);
       resetProjectEditor();
       closeGallery();
@@ -1938,14 +2027,14 @@ export default function Home() {
   };
 
   const relativeProjectTime = (value: string | null) => {
-    if (!value) return "保存日時不明";
+    if (!value) return "Unknown save time";
     const days = Math.max(0, Math.floor((galleryNow - new Date(value).getTime()) / 86_400_000));
     const minutes = Math.max(0, Math.floor((galleryNow - new Date(value).getTime()) / 60_000));
-    if (minutes < 1) return "たった今保存";
-    if (minutes < 60) return `${minutes}分前に保存`;
-    if (days === 0) return `${Math.floor(minutes / 60)}時間前に保存`;
-    if (days === 1) return "昨日";
-    if (days < 7) return `${days}日前に保存`;
+    if (minutes < 1) return "Saved just now";
+    if (minutes < 60) return `Saved ${minutes}m ago`;
+    if (days === 0) return `Saved ${Math.floor(minutes / 60)}h ago`;
+    if (days === 1) return "Saved yesterday";
+    if (days < 7) return `Saved ${days}d ago`;
     return new Date(value).toLocaleDateString("ja-JP", { year: "numeric", month: "numeric", day: "numeric" });
   };
 
@@ -2072,6 +2161,29 @@ export default function Home() {
     } catch (error) {
       setApiError(error instanceof Error ? error.message : String(error));
     }
+  };
+
+  const openVariationCompare = async () => {
+    if (variationCompareLoading || agentRunning || variations.length === 0) return;
+    setVariationCompareLoading(true);
+    try {
+      const response = await fetch(`${apiBase}/variations/compare`);
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "Could not load direction comparison.");
+      setVariationPreviews(result.previews ?? []);
+      setApiError(null);
+    } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
+    finally { setVariationCompareLoading(false); }
+  };
+
+  const reviewChangedTarget = (index: number) => {
+    if (changedReview.length === 0) return;
+    const normalized = (index + changedReview.length) % changedReview.length;
+    const target = changedReview[normalized];
+    const slideIndex = slidesRef.current.findIndex((slide) => slide.id === target.slideId);
+    setChangedReviewIndex(normalized);
+    if (slideIndex >= 0 && slideIndex + 1 !== activeRef.current) switchSlide(slideIndex + 1);
+    else setSelectedId(target.elementId);
   };
 
   const generateVariation = async () => {
@@ -2356,6 +2468,13 @@ export default function Home() {
   const currentSlide = slides[activeSlide - 1];
   const currentTemplate = templates.find((template) => template.id === (currentSlide?.templateId ?? currentTemplateId));
   const currentLayout = currentTemplate?.layouts.find((layout) => layout.id === currentSlide?.layoutId);
+  const slideThumbnail = (slide: SlideDoc, index: number) => {
+    try {
+      return <span className="slide-thumbnail" aria-hidden="true" dangerouslySetInnerHTML={{ __html: displayAssetHtml(composeFor(slide, index + 1, slides.length)) }} />;
+    } catch {
+      return <span className="slide-thumbnail slide-thumbnail-empty" aria-hidden="true" />;
+    }
+  };
 
   const slideNavigator = (
     <>
@@ -2387,9 +2506,23 @@ export default function Home() {
               }}
             >
               <span className="slide-number">{String(slideNumber).padStart(2, "0")}</span>
-              <span className={`mini-slide mini-${(index % 4) + 1}`}><i /><b /><em /></span>
+              {slideThumbnail(slide, index)}
               <span className="slide-name">{slide.title || "Untitled"}</span>
             </button>
+            <button
+              className="slide-menu-trigger"
+              aria-label={`Slide ${slideNumber} actions`}
+              aria-haspopup="menu"
+              aria-expanded={openPopover === "slideMenu" && activeSlide === slideNumber}
+              onClick={(event) => { if (activeSlide !== slideNumber) switchSlide(slideNumber); togglePopover("slideMenu", event.currentTarget); }}
+              disabled={agentRunning}
+            >⋯</button>
+            {openPopover === "slideMenu" && activeSlide === slideNumber && <div className="slide-actions-menu" role="menu">
+              <button role="menuitem" onClick={() => { dismissPopover(false); duplicateSlide(); }}>Duplicate slide</button>
+              <button role="menuitem" onClick={() => { dismissPopover(false); moveSlide(-1); }} disabled={activeSlide === 1}>Move left</button>
+              <button role="menuitem" onClick={() => { dismissPopover(false); moveSlide(1); }} disabled={activeSlide === slides.length}>Move right</button>
+              <button role="menuitem" className="danger" onClick={() => { dismissPopover(false); deleteSlide(); }} disabled={slides.length <= 1}>Delete slide</button>
+            </div>}
           </div>
         );
       })}
@@ -2413,7 +2546,7 @@ export default function Home() {
   );
 
   const presenterScale = typeof window === "undefined" ? 1 : Math.min((window.innerWidth - 80) / designWidth, (window.innerHeight - 120) / designHeight);
-  const containerLike = !!sel && sel.container;
+  const containerLike = !!sel && sel.container && sel.kind !== "metrics";
   const propertyRows = (schema: Control[]) => schema.map((ctl) => {
     const current = sel?.read[ctl.key] ?? "";
     return (
@@ -2429,39 +2562,42 @@ export default function Home() {
   });
 
   const historySidebar = (
-    <section className="activity-panel history-panel" aria-label="Git history">
-      <header className="activity-panel-heading"><span>HISTORY</span><small>{project?.branch ?? "Connecting…"}</small></header>
+    <section className="activity-panel history-panel" aria-label="Version history">
+      <header className="activity-panel-heading"><span>VERSION HISTORY</span><button className="panel-close" aria-label="Close version history" onClick={() => setLeftPanelOpen(false)}>×</button></header>
       <div className="activity-panel-body">
         <div className="repository-summary">
-          <span><i className={saved ? "clean" : "dirty"} />{saved ? "Working tree clean" : "Unsaved editor changes"}</span>
-          <small>{project ? `${project.branch} · ${project.commit}` : "Repository unavailable"}</small>
+          <span><i className={saved ? "clean" : "dirty"} />{saved ? "Everything is saved" : "You have unsaved changes"}</span>
+          {project && <details className="version-details"><summary>Technical details</summary><small>{project.branch} · {project.commit}</small></details>}
         </div>
-        <label className="save-message"><span>Commit label</span><input value={saveMessage} onChange={(event) => setSaveMessage(event.target.value)} placeholder={deckTitle} /></label>
+        <label className="save-message"><span>Version name</span><input value={saveMessage} onChange={(event) => setSaveMessage(event.target.value)} placeholder={deckTitle} /></label>
         <button className="sidebar-primary-action" onClick={() => void saveProject()} disabled={saved || agentRunning}>{saved ? "Current version saved" : "Save current version"}</button>
-        {project?.branch === "detached" && <button className="return-latest" onClick={() => void restoreHistory()} disabled={agentRunning}>Return to latest on main</button>}
-        <div className="activity-section-label">COMMITS</div>
+        {project?.branch === "detached" && <button className="return-latest" onClick={() => void restoreHistory()} disabled={agentRunning}>Return to latest version</button>}
+        <div className="activity-section-label">SAVED VERSIONS</div>
         <div className="history-list">
           {history.map((entry, index) => (
-            <button key={entry.id} onClick={() => void restoreHistory(entry.id)} disabled={!saved || agentRunning}>
-              <i className={index === 0 ? "current" : ""} /><span><strong>{entry.message}</strong><small>{entry.shortId} · {new Date(entry.date).toLocaleString()}</small></span>
-            </button>
+            <div className="history-entry" key={entry.id}>
+              <button onClick={() => void restoreHistory(entry.id)} disabled={!saved || agentRunning}>
+                <i className={index === 0 ? "current" : ""} /><span><strong>{entry.message}</strong><small>{new Date(entry.date).toLocaleString()}</small></span>
+              </button>
+              <details className="version-details"><summary>Details</summary><small>{entry.shortId}</small></details>
+            </div>
           ))}
         </div>
-        {!saved && <p className="activity-warning">Save the current edit before restoring a commit.</p>}
+        {!saved && <p className="activity-warning">Save the current edit before restoring a version.</p>}
       </div>
     </section>
   );
 
   const shortcutsSidebar = (
     <section className="activity-panel shortcuts-panel" aria-label="Keyboard shortcuts">
-      <header className="activity-panel-heading"><span>KEYBOARD SHORTCUTS</span></header>
+      <header className="activity-panel-heading"><span>KEYBOARD SHORTCUTS</span><button className="panel-close" aria-label="Close keyboard shortcuts" onClick={() => setLeftPanelOpen(false)}>×</button></header>
       <div className="activity-panel-body"><dl><dt>← / →</dt><dd>Previous / next slide</dd><dt>Double-click or Enter</dt><dd>Edit selected text</dd><dt>@</dt><dd>Point to an element from the message composer</dd><dt>A</dt><dd>Toggle rough mode</dd><dt>Esc</dt><dd>Finish editing, leave an annotation label, or close presentation</dd><dt>⌘/Ctrl Z</dt><dd>Undo</dd><dt>⌘/Ctrl Shift Z</dt><dd>Redo</dd><dt>?</dt><dd>Open this view</dd></dl></div>
     </section>
   );
 
   const settingsSidebar = (
     <section className="activity-panel settings-panel" aria-label="Settings">
-      <header className="activity-panel-heading"><span>SETTINGS</span><small>CLI {codexState.connection.cliVersion ?? "unknown"}</small></header>
+      <header className="activity-panel-heading"><span>SETTINGS</span><button className="panel-close" aria-label="Close settings" onClick={() => setLeftPanelOpen(false)}>×</button></header>
       <div className="activity-panel-body settings-sidebar">
         <section><h3>Appearance</h3><label><span>Color mode</span><select value={theme} onChange={(event) => setTheme(event.target.value as "dark" | "light")}><option value="dark">Dark</option><option value="light">Light</option></select></label><label><span>Slide navigator</span><select value={slideNav} onChange={(event) => slideNavStore.write(event.target.value as SlideNav)}><option value="filmstrip">Filmstrip</option><option value="rail">Rail</option></select></label></section>
         <section><h3>Agent</h3>
@@ -2481,13 +2617,17 @@ export default function Home() {
     <main className={`weave-app ${theme}`} style={{ "--accent": accent } as React.CSSProperties}>
       <header className="topbar">
         <div className="traffic-lights" aria-hidden="true"><span /><span /><span /></div>
-        <button ref={projectSwitcherRef} className="project-switcher" aria-label="プロジェクト一覧を開く" aria-expanded={galleryOpen} aria-haspopup="dialog" onClick={openGallery}>
+        <button ref={projectSwitcherRef} className="project-switcher" aria-label="Open projects" aria-expanded={galleryOpen} aria-haspopup="dialog" onClick={openGallery}>
           <span className="project-mark">W</span>
           <span><strong>{deckTitle}</strong><small>{project?.root.split("/").pop() ?? "Local project"}</small></span>
           <span className="chevron">⌄</span>
         </button>
         <div className="document-title">
-          <input className={!saved ? "unsaved-dot" : ""} aria-label="Deck title" value={deckTitle} onChange={(event) => { setDeckTitle(event.target.value); markDirty(); }} />
+          <span className="document-title-field" data-unsaved={!saved ? "true" : undefined}>
+            <input aria-label="Deck title" value={deckTitle} onChange={(event) => { setDeckTitle(event.target.value); markDirty(); }} />
+            {!saved && <i className="unsaved-dot" aria-hidden="true" />}
+            {!saved && <span className="sr-only">Unsaved changes</span>}
+          </span>
           <small>Slide {activeSlide} of {slides.length}</small>
         </div>
         <div className="top-actions">
@@ -2509,28 +2649,29 @@ export default function Home() {
         </>
       )}
 
-      <div className="workspace" data-slide-nav={slideNav} data-inspector={inspectorOpen ? "open" : "closed"} data-focus={canvasFocused ? "canvas" : "workspace"}>
+      <div className="workspace" data-slide-nav={slideNav} data-inspector={inspectorOpen ? "open" : "closed"} data-agent={leftPanelOpen ? "open" : "closed"} data-mobile-view={mobileView} data-focus={canvasFocused ? "canvas" : "workspace"}>
         <nav className="activity-rail" aria-label="Primary navigation">
           <div className="activity-top">
-            <button className={`activity-button ${activityView === "agent" ? "active" : ""}`} aria-label="Agent" aria-pressed={activityView === "agent"} onClick={() => setActivityView("agent")}>◇</button>
-            <button className={`activity-button ${activityView === "history" ? "active" : ""}`} aria-label="History" aria-pressed={activityView === "history"} onClick={() => setActivityView("history")}>↶</button>
-            <button className={`activity-button ${activityView === "shortcuts" ? "active" : ""}`} aria-label="Keyboard shortcuts" aria-pressed={activityView === "shortcuts"} onClick={() => setActivityView("shortcuts")}>⌨</button>
+            <button className={`activity-button ${activityView === "agent" ? "active" : ""}`} aria-label="Agent" aria-pressed={activityView === "agent"} onClick={() => showActivity("agent")}>◇</button>
+            <button className={`activity-button ${activityView === "history" ? "active" : ""}`} aria-label="Version history" aria-pressed={activityView === "history"} onClick={() => showActivity("history")}>↶</button>
+            <button className={`activity-button ${activityView === "shortcuts" ? "active" : ""}`} aria-label="Keyboard shortcuts" aria-pressed={activityView === "shortcuts"} onClick={() => showActivity("shortcuts")}>⌨</button>
           </div>
           <div className="activity-bottom">
             <div className="avatar">FK</div>
-            <button className={`activity-button ${activityView === "settings" ? "active" : ""}`} aria-label="Settings" aria-pressed={activityView === "settings"} onClick={() => setActivityView("settings")}>⚙</button>
+            <button className={`activity-button ${activityView === "settings" ? "active" : ""}`} aria-label="Settings" aria-pressed={activityView === "settings"} onClick={() => showActivity("settings")}>⚙</button>
           </div>
         </nav>
 
         {slideNav === "rail" && <nav className="slide-nav slide-rail" aria-label="Slides">{slideNavigator}</nav>}
 
-        <aside className="left-panel">
+        {leftPanelOpen ? <aside className="left-panel">
           <div className="panel-resizer" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" aria-valuenow={sidebarWidth} aria-valuemin={280} aria-valuemax={560} tabIndex={0} onPointerDown={startSidebarResize} onKeyDown={(event) => { if (event.key === "ArrowLeft") { event.preventDefault(); adjustSidebarWidth(-16); } if (event.key === "ArrowRight") { event.preventDefault(); adjustSidebarWidth(16); } }} />
           {activityView === "agent" ? <section className="agent-panel">
             <div className="agent-heading">
               <span><i aria-hidden="true" className={`agent-status ${agentReady ? "" : "offline"}`} /> AGENT</span>
               <button className="thread-switcher" onClick={(event) => togglePopover("threads", event.currentTarget)} aria-expanded={openPopover === "threads"} aria-haspopup="listbox" title="Switch conversation"><span>{activeThreadName}</span><em aria-hidden="true">⌄</em></button>
               <button onClick={() => void newThread()} aria-label="New conversation" title="New conversation" disabled={agentRunning}>＋</button>
+              <button className="panel-close" onClick={() => setLeftPanelOpen(false)} aria-label="Close Agent panel" title="Close Agent panel">×</button>
             </div>
             {openPopover === "threads" && (
               <>
@@ -2648,7 +2789,7 @@ export default function Home() {
                 </aside>
               </>}
               <div className="context-chip" role="group" aria-label="Editor context">
-                <span className="context-summary" role="status"><span className="context-icon" aria-hidden="true">◎</span> Slide {activeSlide} in context · {agentActivity}</span>
+                <span className="context-summary" role="status"><span className="context-icon" aria-hidden="true">◎</span> {contextSummary} · {agentActivity}</span>
                 {activeElementAnnotations.length > 0 && <span className="context-annotation-count">{activeElementAnnotations.length} element{activeElementAnnotations.length === 1 ? "" : "s"}</span>}
                 {activeRegionAnnotations.length > 0 && <button
                   type="button"
@@ -2692,18 +2833,19 @@ export default function Home() {
               </div>
             </div>
           </section> : activityView === "history" ? historySidebar : activityView === "shortcuts" ? shortcutsSidebar : settingsSidebar}
-        </aside>
+        </aside> : <button className="open-agent-panel" onClick={() => setLeftPanelOpen(true)}>Open {activityView === "history" ? "version history" : activityView === "shortcuts" ? "shortcuts" : activityView}</button>}
 
         <section className="center-stage">
           <div className="editor-tabs">
             <div className="variation-tabs">
-              <button className={activeVariation === "main" ? "active" : ""} onClick={() => void checkoutVariation("main")} disabled={agentRunning}><span className="variation-dot dot-0" />Original</button>
+              {variations.length > 0 && <button className={activeVariation === "main" ? "active" : ""} onClick={() => void checkoutVariation("main")} disabled={agentRunning}><span className="variation-dot dot-0" />Original</button>}
               {variations.map((variation, index) => (
                 <button key={variation.branch} className={activeVariation === variation.branch ? "active" : ""} onClick={() => void checkoutVariation(variation.branch)} disabled={agentRunning}>
                   <span className={`variation-dot dot-${index + 1}`} />{variation.label}<small>{variation.status === "ready" ? "Ready" : "Generating"}</small>
                 </button>
               ))}
               <button className="add-variation" onClick={() => setShowVariationPrompt(!showVariationPrompt)} aria-label="Add direction" disabled={agentRunning}>＋</button>
+              {variations.length > 0 && <button className="compare-variations" onClick={() => void openVariationCompare()} disabled={agentRunning || variationCompareLoading}>{variationCompareLoading ? "Loading…" : "Compare"}</button>}
             </div>
             <div className="editor-tab-actions">
               {activeVariation.startsWith("weave/variation/") && (
@@ -2714,7 +2856,7 @@ export default function Home() {
               )}
               <div className="view-toggle" role="group" aria-label="Editor view">
                 <button className={mode === "preview" ? "active" : ""} onClick={() => { if (mode === "code") reinject(); setMode("preview"); }}>▣ <span>Preview</span></button>
-                <button className={mode === "code" ? "active" : ""} onClick={() => { setSlidesSynced(captureActive()); setSelectedAnnotationId(null); setPointerPicking(false); if (annotationMode) setAnnouncement("Rough mode left"); setAnnotationMode(false); setMode("code"); }}>‹› <span>Code</span></button>
+                <button className={mode === "code" ? "active" : ""} onClick={() => { setSlidesSynced(captureActive()); setSelectedAnnotationId(null); setPointerPicking(false); if (annotationMode) setAnnouncement("Rough mode left"); setAnnotationMode(false); setMode("code"); }}>‹› <span>Source</span></button>
               </div>
             </div>
           </div>
@@ -2729,7 +2871,22 @@ export default function Home() {
                 <small>Generated sequentially from the latest saved version.</small>
               </div>
             )}
-            {mode === "preview" ? (
+            {variationPreviews ? (
+              <section className="variation-compare" aria-label="Direction comparison">
+                <header><span><strong>Compare directions</strong><small>Slide {activeSlide} shown side by side</small></span><button onClick={() => setVariationPreviews(null)}>Close comparison</button></header>
+                <div className="variation-compare-grid">
+                  {variationPreviews.map((preview) => {
+                    const previewSlide = preview.deck.slides[Math.min(activeSlide - 1, preview.deck.slides.length - 1)];
+                    let html = "";
+                    try { html = previewSlide ? composeFor(previewSlide, Math.min(activeSlide, preview.deck.slides.length), preview.deck.slides.length) : ""; } catch { html = ""; }
+                    return <article key={preview.branch} className={preview.branch === activeVariation ? "active" : ""}>
+                      <div className="variation-card-preview"><style>{preview.css}</style><div dangerouslySetInnerHTML={{ __html: displayAssetHtml(html) }} /></div>
+                      <footer><span><strong>{preview.label}</strong><small>{previewSlide?.title || "Untitled"}</small></span><button onClick={async () => { setVariationPreviews(null); await checkoutVariation(preview.branch); }}>Open</button></footer>
+                    </article>;
+                  })}
+                </div>
+              </section>
+            ) : mode === "preview" ? (
               <div className="slide-shell">
                 {/* The project stylesheet is the only thing styling the slide; the editor's
                     own chrome lives in globals.css and never overlaps these rules. */}
@@ -2741,10 +2898,7 @@ export default function Home() {
                     ? `Rough mode · drag to draw a frame${recalledAnnotations.length > 0 ? ` · Comparing ${activeOverlayLabel}` : ""}`
                     : recalledAnnotations.length > 0
                       ? `Comparing sent annotations · ${activeOverlayLabel}`
-                      : draggedId ? "Moving block · release to place" : editingId ? "Editing text · Esc to finish" : selectedId ? <>
-                        Move mode · drag to reorder · double-click to edit
-                        {agentReady && <><span aria-hidden="true"> · </span><button type="button" className="canvas-reference-button" onClick={referenceSelectedElement}>@ Reference</button></>}
-                      </> : "Click a block to select it"}
+                      : draggedId ? "Moving block · release to place" : editingId ? "Editing text · Esc to finish" : selectedId ? "Selected · drag to reorder" : "Click a block to select it"}
                 </div>
                 <div
                   className="slide-viewport"
@@ -2791,6 +2945,18 @@ export default function Home() {
                     onGestureEnd={onAnnotationGestureEnd}
                   />
                 </div>
+                {changedReview.length > 0 && <div className="changed-review" role="status">
+                  <span><strong>Agent changes</strong><small>{changedReviewIndex + 1} of {changedReview.length}</small></span>
+                  <button onClick={() => reviewChangedTarget(changedReviewIndex - 1)} aria-label="Previous changed element">←</button>
+                  <button onClick={() => reviewChangedTarget(changedReviewIndex + 1)} aria-label="Next changed element">→</button>
+                  <button onClick={() => { setChangedReview([]); setSelectedId(null); }}>Done</button>
+                </div>}
+                {selectedId && sel && !annotationMode && <div className="selection-toolbar" role="toolbar" aria-label="Selected element actions">
+                  {!sel.container && sel.kind !== "image" && <button onClick={beginEditSelected}>Edit</button>}
+                  {agentReady && <button onClick={referenceSelectedElement}>@ Agent</button>}
+                  {!outline.some((item) => item.id === selectedId && item.locked) && <button onClick={duplicateSelected}>Duplicate</button>}
+                  {outline.length > 1 && !outline.some((item) => item.id === selectedId && item.locked) && <button className="danger" onClick={deleteSelected}>Delete</button>}
+                </div>}
                 <div className="canvas-toolbar">
                   <div className="canvas-tool-group history-tools" role="group" aria-label="Edit history">
                     <button onClick={undo} disabled={annotationMode || historyState.undo === 0} aria-label="Undo" title="Undo">↶</button>
@@ -2799,12 +2965,6 @@ export default function Home() {
                   <div className="canvas-tool-group content-tools" role="group" aria-label="Slide content">
                     <button onClick={(event) => togglePopover("addBlock", event.currentTarget)} className={openPopover === "addBlock" ? "active" : ""} aria-expanded={openPopover === "addBlock"} aria-haspopup="menu" disabled={annotationMode}>＋ Add block</button>
                     <input ref={imageInputRef} className="sr-only" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml,image/gif" onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadImage(file); }} />
-                  </div>
-                  <div className="canvas-tool-group slide-tools" role="group" aria-label="Slide operations">
-                    <button onClick={duplicateSlide} title="Duplicate slide">Duplicate</button>
-                    <button onClick={() => moveSlide(-1)} disabled={activeSlide === 1} aria-label="Move slide left" title="Move slide left">←</button>
-                    <button onClick={() => moveSlide(1)} disabled={activeSlide === slides.length} aria-label="Move slide right" title="Move slide right">→</button>
-                    <button onClick={deleteSlide} disabled={slides.length <= 1}>Delete</button>
                   </div>
                   <div className="canvas-tool-group zoom-tools" role="group" aria-label="Canvas zoom">
                     <button aria-label="Zoom out" onClick={() => setManualZoom(Math.max(.25, zoomLevel - .1))}>−</button>
@@ -2827,7 +2987,7 @@ export default function Home() {
                       aria-keyshortcuts="A"
                       title="Toggle rough mode (A)"
                       onClick={toggleAnnotationMode}
-                    >▱ <span>Rough</span></button>
+                    >▱ <span>Rough notes</span></button>
                   </div>
                 </div>
                 {openPopover === "addBlock" && (
@@ -2862,7 +3022,11 @@ export default function Home() {
 
         {inspectorOpen ? <aside className="inspector">
           <div className="inspector-heading"><span>INSPECTOR</span><button aria-label="Close inspector" onClick={() => setInspectorOpen(false)}>×</button></div>
-          <div className="selection-path"><span>content</span><b>›</b><strong>{sel ? `${sel.kind}.${sel.id}` : "no selection"}</strong></div>
+          <div className="inspector-tabs" role="tablist" aria-label="Inspector sections">
+            <button role="tab" aria-selected={inspectorView === "layers"} className={inspectorView === "layers" ? "active" : ""} onClick={() => setInspectorView("layers")}>Layers</button>
+            <button role="tab" aria-selected={inspectorView === "design"} className={inspectorView === "design" ? "active" : ""} onClick={() => setInspectorView("design")}>Design</button>
+          </div>
+          {inspectorView === "layers" && <><div className="selection-path"><span>content</span><b>›</b><strong>{sel ? `${sel.kind}.${sel.id}` : "no selection"}</strong></div>
           <section className="layer-tree">
             <button type="button" className="property-heading" aria-expanded={objectTreeOpen} onClick={() => setObjectTreeOpen((open) => !open)}>
               <span>OBJECT TREE</span><span className="tree-heading-summary"><span>{outline.length}</span><span className="tree-toggle-glyph" aria-hidden="true">⌃</span></span>
@@ -2889,7 +3053,9 @@ export default function Home() {
                 </button>
               ))}
             </div>}
-          </section>
+          </section></>}
+          {inspectorView === "design" && <>
+          <div className="selection-path"><span>content</span><b>›</b><strong>{sel ? `${sel.kind}.${sel.id}` : "slide"}</strong></div>
           {annotationMode && <div className="annotation-inspector-notice" role="status">Rough mode draws frames only. Editing is off while sketching.</div>}
           <fieldset className="inspector-editing" disabled={annotationMode}>
           {sel && (
@@ -2995,58 +3161,69 @@ export default function Home() {
             <span>ACCENT</span>
             <div>{accents.map((item) => <button key={item.color} style={{ background: item.color }} className={accent === item.color ? "active" : ""} onClick={() => setSlideAccent(item.color)} aria-label={`Use accent ${item.color}`} />)}</div>
           </section>
-          <button className="delete-block" onClick={deleteSelected} disabled={!sel || outline.length <= 1 || outline.some((item) => item.id === selectedId && item.locked)}>Delete selected block</button>
+          {sel && outline.length > 1 && !outline.some((item) => item.id === selectedId && item.locked) && <button className="delete-block" onClick={deleteSelected}>Delete selected block</button>}
           </fieldset>
+          </>}
         </aside> : <button className="open-inspector" onClick={() => setInspectorOpen(true)}>Inspector</button>}
+        <nav className="mobile-tabs" aria-label="Workspace views">
+          <button className={mobileView === "canvas" ? "active" : ""} aria-pressed={mobileView === "canvas"} onClick={() => setMobileView("canvas")}>Canvas</button>
+          <button className={mobileView === "agent" ? "active" : ""} aria-pressed={mobileView === "agent"} onClick={() => { setActivityView("agent"); setLeftPanelOpen(true); setMobileView("agent"); }}>Agent</button>
+          <button className={mobileView === "history" ? "active" : ""} aria-pressed={mobileView === "history"} onClick={() => { setActivityView("history"); setLeftPanelOpen(true); setMobileView("history"); }}>History</button>
+          <button className={mobileView === "shortcuts" ? "active" : ""} aria-pressed={mobileView === "shortcuts"} onClick={() => { setActivityView("shortcuts"); setLeftPanelOpen(true); setMobileView("shortcuts"); }}>Keys</button>
+          <button className={mobileView === "slides" ? "active" : ""} aria-pressed={mobileView === "slides"} onClick={() => setMobileView("slides")}>Slides</button>
+          <button className={mobileView === "inspector" ? "active" : ""} aria-pressed={mobileView === "inspector"} onClick={() => { setInspectorOpen(true); setMobileView("inspector"); }}>Inspector</button>
+          <button className={mobileView === "settings" ? "active" : ""} aria-pressed={mobileView === "settings"} onClick={() => { setActivityView("settings"); setLeftPanelOpen(true); setMobileView("settings"); }}>Settings</button>
+        </nav>
+        <nav className="mobile-slide-panel slide-nav" aria-label="Slides">{slideNavigator}</nav>
       </div>
 
       {galleryOpen && (
         <div ref={galleryRef} className="gallery" role="dialog" aria-modal="true" aria-labelledby="gallery-title" tabIndex={-1} onPointerDown={() => setGalleryMenu(null)}>
           <header className="gallery-head">
-            {galleryView === "new" ? <button className="back-link" onClick={() => setGalleryView("list")}>← プロジェクト</button> : <h3 id="gallery-title">プロジェクト <span className="count">{galleryLoading ? "読み込み中…" : `${galleryProjects.length}件`}</span></h3>}
-            {galleryView === "new" && <h3 id="gallery-title">新規プロジェクト</h3>}
-            {galleryView === "list" && <button className="ghost-button" onClick={() => importRef.current?.click()}>バンドルを読み込む</button>}
+            {galleryView === "new" ? <button className="back-link" onClick={() => setGalleryView("list")}>← Projects</button> : <h3 id="gallery-title">Projects <span className="count">{galleryLoading ? "Loading…" : galleryProjects.length}</span></h3>}
+            {galleryView === "new" && <h3 id="gallery-title">New project</h3>}
+            {galleryView === "list" && <button className="ghost-button" onClick={() => importRef.current?.click()}>Import bundle</button>}
             {apiError && <span className="gallery-error">{apiError}</span>}
-            <button className="close-x" aria-label="ギャラリーを閉じる" onClick={closeGallery}>×</button>
+            <button className="close-x" aria-label="Close project gallery" onClick={closeGallery}>×</button>
           </header>
           {galleryView === "new" ? (
             <div className="new-flow">
               <div className="template-row">
                 {templates.map((template) => <div className={`project-card ${newProjectTemplate === template.id ? "selected" : ""}`} key={template.id}>
-                  <button className="project-thumb" onClick={() => setNewProjectTemplate(template.id)} aria-label={`${template.name}テンプレートを選択`}>{templateThumbnail(template, template.name)}</button>
-                  <div className="card-meta"><strong>{template.name}</strong><small>{template.layouts.length}レイアウト</small></div>
+                  <button className="project-thumb" onClick={() => setNewProjectTemplate(template.id)} aria-label={`Choose ${template.name} template`}>{templateThumbnail(template, template.name)}</button>
+                  <div className="card-meta"><strong>{template.name}</strong><small>{template.layouts.length} layouts</small></div>
                 </div>)}
               </div>
               <div className="name-row">
-                <label htmlFor="new-project-title">名前</label>
+                <label htmlFor="new-project-title">Name</label>
                 <input id="new-project-title" className="name-field" value={newProjectTitle} onChange={(event) => setNewProjectTitle(event.target.value)} autoFocus />
                 <code>workspaces/{projectSlug(newProjectTitle)}</code>
-                <button className="ghost-button" onClick={() => setGalleryView("list")}>キャンセル</button>
-                <button className="primary-button" disabled={!newProjectTitle.trim() || newProjectCreating} onClick={() => void createProject()}>{newProjectCreating ? "作成中…" : "作成して開く"}</button>
+                <button className="ghost-button" onClick={() => setGalleryView("list")}>Cancel</button>
+                <button className="primary-button" disabled={!newProjectTitle.trim() || newProjectCreating} onClick={() => void createProject()}>{newProjectCreating ? "Creating…" : "Create and open"}</button>
               </div>
             </div>
           ) : (
             <div className="gallery-body" onPointerDown={(event) => { if (event.target === event.currentTarget) setGalleryMenu(null); }}>
-              {galleryLoading ? <p className="gallery-empty">読み込み中…</p> : <>
-                {galleryProjects.length === 0 && <div className="gallery-empty"><strong>プロジェクトがありません</strong><span>新規プロジェクトを作成して始めましょう。</span></div>}
+              {galleryLoading ? <p className="gallery-empty">Loading…</p> : <>
+                {galleryProjects.length === 0 && <div className="gallery-empty"><strong>No projects yet</strong><span>Create a project to get started.</span></div>}
                 <div className="gallery-grid">
-                  <button className="new-project-card" onClick={() => { setGalleryView("new"); setGalleryMenu(null); setGalleryTip(null); }}><b>＋</b><span>新規プロジェクト</span></button>
+                  <button className="new-project-card" onClick={() => { setGalleryView("new"); setGalleryMenu(null); setGalleryTip(null); }}><b>＋</b><span>New project</span></button>
                   {galleryProjects.map((item) => <div key={item.slug} className="project-card-wrap">
-                    <button className={`project-card ${item.current ? "current" : ""} ${item.blocked ? "blocked" : ""}`} onClick={() => void switchProject(item)} disabled={!!gallerySwitching} aria-label={`${item.title}を開く`}>
+                    <button className={`project-card ${item.current ? "current" : ""} ${item.blocked ? "blocked" : ""}`} onClick={() => void switchProject(item)} disabled={!!gallerySwitching} aria-label={`Open ${item.title}`}>
                       <span className="project-thumb">
-                        {gallerySwitching === item.slug ? <span className="thumb-loading">読み込み中…</span> : thumbHtml(item.thumbnailHtml, item.css, item.title)}
-                        {item.current && <span className="card-pill">開いています</span>}
-                        {item.blocked && <span className="card-pill warn">提案が未決着</span>}
+                        {gallerySwitching === item.slug ? <span className="thumb-loading">Loading…</span> : thumbHtml(item.thumbnailHtml, item.css, item.title)}
+                        {item.current && <span className="card-pill">Open</span>}
+                        {item.blocked && <span className="card-pill warn">Directions pending</span>}
                       </span>
-                      <span className="card-meta"><strong>{item.title}</strong><small>{item.current && !saved ? "未保存の変更あり" : `${item.slideCount}枚 · ${relativeProjectTime(item.updatedAt)}`}</small></span>
+                      <span className="card-meta"><strong>{item.title}</strong><small>{item.current && !saved ? "Unsaved changes" : `${item.slideCount} slides · ${relativeProjectTime(item.updatedAt)}`}</small></span>
                     </button>
-                    <button className="kebab" aria-label={`${item.title}のメニュー`} aria-haspopup="menu" aria-expanded={galleryMenu === item.slug} onPointerDown={(event) => event.stopPropagation()} onClick={() => { setGalleryTip(null); setGalleryMenu((current) => current === item.slug ? null : item.slug); }}>⋯</button>
+                    <button className="kebab" aria-label={`${item.title} menu`} aria-haspopup="menu" aria-expanded={galleryMenu === item.slug} onPointerDown={(event) => event.stopPropagation()} onClick={() => { setGalleryTip(null); setGalleryMenu((current) => current === item.slug ? null : item.slug); }}>⋯</button>
                     {galleryMenu === item.slug && <div className="card-menu" role="menu" onPointerDown={(event) => event.stopPropagation()}>
-                      <button role="menuitem" onClick={() => { setRenameDraft(item.title); setGalleryDialog({ kind: "rename", slug: item.slug, title: item.title }); setGalleryMenu(null); }}><span>名前を変更</span><small>表示名だけを変更します</small></button>
-                      <button role="menuitem" onClick={() => void galleryMutation(item.slug, "duplicate")}><span>複製</span><small>新しいプロジェクトとして保存</small></button>
-                      {!item.current && <button className="danger" role="menuitem" onClick={() => { setGalleryDialog({ kind: "archive", slug: item.slug, title: item.title }); setGalleryMenu(null); }}><span>アーカイブ</span><small>一覧から移動します</small></button>}
+                      <button role="menuitem" onClick={() => { setRenameDraft(item.title); setGalleryDialog({ kind: "rename", slug: item.slug, title: item.title }); setGalleryMenu(null); }}><span>Rename</span><small>Change the display name</small></button>
+                      <button role="menuitem" onClick={() => void galleryMutation(item.slug, "duplicate")}><span>Duplicate</span><small>Save as a new project</small></button>
+                      {!item.current && <button className="danger" role="menuitem" onClick={() => { setGalleryDialog({ kind: "archive", slug: item.slug, title: item.title }); setGalleryMenu(null); }}><span>Archive</span><small>Move out of this list</small></button>}
                     </div>}
-                    {galleryTip === item.slug && <div className="card-tip"><strong>いまは開けません</strong><p>生成した提案が{item.blockedCount}件残っています。採用・history送り・破棄のいずれかで閉じてから切り替えてください。</p></div>}
+                    {galleryTip === item.slug && <div className="card-tip"><strong>Cannot open yet</strong><p>{item.blockedCount} generated direction{item.blockedCount === 1 ? " is" : "s are"} still pending. Use, archive, or discard them before switching.</p></div>}
                   </div>)}
                 </div>
               </>}
@@ -3054,11 +3231,11 @@ export default function Home() {
           )}
           {galleryDialog && <><div className="scrim" onClick={() => setGalleryDialog(null)} />
             <div className="dialog" role="alertdialog" aria-modal="true">
-              {galleryDialog.kind === "rename" && <><div className="dialog-body"><strong>名前を変更</strong><input className="name-field" autoFocus value={renameDraft} onChange={(event) => setRenameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void galleryMutation(galleryDialog.slug, "rename", renameDraft); }} /></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>キャンセル</button><button className="primary-button" onClick={() => void galleryMutation(galleryDialog.slug, "rename", renameDraft)}>保存</button></div></>}
-              {galleryDialog.kind === "archive" && <><div className="dialog-body"><strong>「{galleryDialog.title}」をアーカイブしますか？</strong><p>プロジェクトは削除せず、一覧から移動します。</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>キャンセル</button><button className="primary-button" onClick={() => void galleryMutation(galleryDialog.slug, "archive")}>アーカイブ</button></div></>}
-              {galleryDialog.kind === "dirty" && <><div className="dialog-body"><strong>保存してから切り替えます</strong><p>「{deckTitle}」には未保存の変更があります。進行中の編集とUndo履歴はプロジェクトをまたいで引き継がれません。</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>キャンセル</button><button className="primary-button" onClick={async () => { const target = galleryProjects.find((item) => item.slug === galleryDialog.slug); setGalleryDialog(null); if (await saveProject() && target) void switchProject(target, false, true); }}>保存して「{galleryDialog.title}」を開く</button></div></>}
-              {galleryDialog.kind === "create" && <><div className="dialog-body"><strong>保存してから作成します</strong><p>「{deckTitle}」には未保存の変更があります。保存後に新しいプロジェクトを作成して開きます。</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>キャンセル</button><button className="primary-button" onClick={async () => { setGalleryDialog(null); if (await saveProject()) void createProject(true); }}>保存して作成</button></div></>}
-              {galleryDialog.kind === "turn" && <><div className="dialog-body"><strong>生成を中断して切り替えますか？</strong><p>現在のCodexの生成を中断すると、完了していない変更は保存されません。</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>キャンセル</button><button className="primary-button" onClick={() => { const target = galleryProjects.find((item) => item.slug === galleryDialog.slug); setGalleryDialog(null); if (target) void switchProject(target, true); }}>中断して切り替え</button></div></>}
+              {galleryDialog.kind === "rename" && <><div className="dialog-body"><strong>Rename project</strong><input className="name-field" autoFocus value={renameDraft} onChange={(event) => setRenameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void galleryMutation(galleryDialog.slug, "rename", renameDraft); }} /></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>Cancel</button><button className="primary-button" onClick={() => void galleryMutation(galleryDialog.slug, "rename", renameDraft)}>Save</button></div></>}
+              {galleryDialog.kind === "archive" && <><div className="dialog-body"><strong>Archive “{galleryDialog.title}”?</strong><p>The project is not deleted; it moves out of this list.</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>Cancel</button><button className="primary-button" onClick={() => void galleryMutation(galleryDialog.slug, "archive")}>Archive</button></div></>}
+              {galleryDialog.kind === "dirty" && <><div className="dialog-body"><strong>Save before switching</strong><p>“{deckTitle}” has unsaved changes. In-progress edits and undo history do not carry between projects.</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>Cancel</button><button className="primary-button" onClick={async () => { const target = galleryProjects.find((item) => item.slug === galleryDialog.slug); setGalleryDialog(null); if (await saveProject() && target) void switchProject(target, false, true); }}>Save and open “{galleryDialog.title}”</button></div></>}
+              {galleryDialog.kind === "create" && <><div className="dialog-body"><strong>Save before creating</strong><p>“{deckTitle}” has unsaved changes. We will save it before opening a new project.</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>Cancel</button><button className="primary-button" onClick={async () => { setGalleryDialog(null); if (await saveProject()) void createProject(true); }}>Save and create</button></div></>}
+              {galleryDialog.kind === "turn" && <><div className="dialog-body"><strong>Stop generation and switch?</strong><p>Stopping the current Agent generation discards incomplete changes.</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>Cancel</button><button className="primary-button" onClick={() => { const target = galleryProjects.find((item) => item.slug === galleryDialog.slug); setGalleryDialog(null); if (target) void switchProject(target, true); }}>Stop and switch</button></div></>}
             </div>
           </>}
         </div>
@@ -3067,7 +3244,7 @@ export default function Home() {
       <footer className="statusbar">
         <div>
           <button className={`quality-button ${qualityReport.ok ? "ok" : "error"}`} onClick={(event) => togglePopover("quality", event.currentTarget)} aria-expanded={openPopover === "quality"}>Quality {qualityReport.ok ? (qualityReport.warnings ? `${qualityReport.warnings} warnings` : "✓") : `${qualityReport.errors} errors`}</button>
-          <span>{project ? `${project.branch} · ${project.commit}` : "Connecting…"}</span>
+          <span>{saved ? "Everything saved" : "Unsaved changes"}</span>
           {apiError && <span className="status-error">{apiError}</span>}
         </div>
         <div><span>HTML</span><span>UTF-8</span><span>Spaces: 2</span><button className={`connection ${agentReady ? "" : "offline"}`} onClick={() => setConnectionEpoch((value) => value + 1)} title="Reconnect"><i /> {agentReady ? "Agent connected" : "Reconnect Agent"}</button></div>

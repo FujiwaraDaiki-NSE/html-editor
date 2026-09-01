@@ -937,6 +937,30 @@ export function getVariations(root = currentProjectRoot) {
   }) : [];
 }
 
+/** Read saved direction snapshots without checking out a branch, so comparisons never disturb editing state. */
+export function getVariationPreviews(root = currentProjectRoot) {
+  const directions = [{ branch: "main", label: "Original" }, ...getVariations(root).map(({ branch, label }) => ({ branch, label }))];
+  return directions.map(({ branch, label }) => {
+    const manifest = JSON.parse(gitAt(root, ["show", `${branch}:.weave/deck.json`]));
+    if (manifest?.schemaVersion !== 2 || !Array.isArray(manifest.slides) || manifest.slides.length === 0) throw new Error(`Invalid saved direction: ${branch}`);
+    const slides = manifest.slides.map((slide, index) => ({
+      id: String(slide.id),
+      title: String(slide.title ?? `Slide ${index + 1}`),
+      notes: String(slide.notes ?? ""),
+      templateId: String(slide.templateId ?? ""),
+      layoutId: String(slide.layoutId ?? ""),
+      accent: String(slide.accent ?? ""),
+      html: gitAt(root, ["show", `${branch}:slides/${slide.id}.html`]),
+    }));
+    return {
+      branch,
+      label,
+      css: gitAt(root, ["show", `${branch}:styles/deck.css`]),
+      deck: { title: String(manifest.title ?? ""), defaultTemplateId: String(manifest.defaultTemplateId ?? ""), slides },
+    };
+  });
+}
+
 export function projectState() {
   return {
     history: getHistory(),
