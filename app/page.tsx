@@ -497,7 +497,8 @@ export default function Home() {
   const activePendingServerRequests = pendingRequestGroups.active;
   const blockingPendingRequests = [...pendingRequestGroups.active, ...pendingRequestGroups.unscoped];
   const turnPresentation = deriveTurnPresentation(turnSubmission, codexState.activeThreadId, agentRunning);
-  const turnBusy = turnPresentation !== "idle";
+  const turnBusy = turnSubmission.phase !== "idle" || codexState.activeTurnId !== null;
+  const canSubmitAgentMessage = !turnBusy || agentRunning;
   const zoomLevel = manualZoom ?? defaultCanvasZoom;
   const slideScale = fitScale * zoomLevel;
   const activeSlideId = slides[activeSlide - 1]?.id;
@@ -806,6 +807,9 @@ export default function Home() {
       in_progress: { kind: "running", label: "実行中…" },
     };
     if (turnPresentation !== "idle") return turnLabels[turnPresentation];
+    if (turnSubmission.phase === "submitting") return { kind: "submission", label: "別の会話へ送信中…" };
+    if (turnSubmission.phase === "accepted") return { kind: "accepted", label: "別の会話で開始待ち" };
+    if (codexState.activeTurnId) return { kind: "running", label: "別の会話で実行中…" };
     return null;
   })();
 
@@ -2408,7 +2412,7 @@ export default function Home() {
     const overflowing = overflowingIds(liveOverflowMeasurements());
     const boxes = viewportRef.current ? liveAnnotationBoxes() : null;
     const turnAnnotations = collectTurnAnnotations(value, boxes);
-    if (!(canSendTurn(value, turnAnnotations) || referenceAttachments.length > 0) || turnInFlightRef.current || turnSubmission.phase !== "idle") return;
+    if (!(canSendTurn(value, turnAnnotations) || referenceAttachments.length > 0) || turnInFlightRef.current || turnSubmission.phase !== "idle" || !canSubmitAgentMessage) return;
     if (slide && boxes) setAnnotations((current) => refreshSlideAnnotations(current, slide.id, boxes));
     const requestDeck = deckPayload();
     const requestEnvelope = contextEnvelope(turnAnnotations, overflowing, referenceAttachments);
@@ -2489,7 +2493,6 @@ export default function Home() {
   };
 
   const openThread = async (threadId: string) => {
-    clearTurnSubmission();
     try {
       const response = await fetch(`${apiBase}/codex/thread/resume`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId }) });
       const result = await response.json();
@@ -3052,7 +3055,7 @@ export default function Home() {
                 <span className="chat-shortcut">⌘ / Ctrl ↵</span>
                 <span className="chat-actions-spacer" aria-hidden="true" />
                 <button className={`stop-button${agentRunning ? " active" : ""}`} onClick={() => { if (agentRunning) void interruptAgent(); }} disabled={!agentRunning} aria-hidden={!agentRunning} tabIndex={agentRunning ? 0 : -1} aria-label="Agentを停止" title="実行中のAgentを停止します">■</button>
-                <button className="send-button" onClick={() => void sendMessage()} disabled={!agentReady || !(canSendTurn(promptDraft, sendableAnnotations) || referenceAttachments.length > 0) || turnSubmission.phase !== "idle"} aria-label="メッセージを送信" data-help="入力内容と選択中の編集コンテキストをAgentへ送信します">↑</button>
+                <button className="send-button" onClick={() => void sendMessage()} disabled={!agentReady || !(canSendTurn(promptDraft, sendableAnnotations) || referenceAttachments.length > 0) || turnSubmission.phase !== "idle" || !canSubmitAgentMessage} aria-label="メッセージを送信" data-help="入力内容と選択中の編集コンテキストをAgentへ送信します">↑</button>
               </div>
             </div>
             </div>

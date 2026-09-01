@@ -29,14 +29,13 @@ export function deriveTurnPresentation(
 
 export function resetTurnSubmission(
   submission: TurnSubmissionState,
-  activeThreadId: string | null,
+  _activeThreadId: string | null,
   agentRunning: boolean,
   connectionStatus: "connecting" | "connected" | "reconnecting" | "disconnected" | "incompatible",
   turnStatus: string | null | undefined = null,
 ): TurnSubmissionState {
   if (submission.phase === "idle") return submission;
   if (connectionStatus !== "connected") return IDLE_TURN_SUBMISSION;
-  if (submission.threadId !== activeThreadId) return IDLE_TURN_SUBMISSION;
   if (submission.turnId && isTerminalTurnStatus(turnStatus)) return IDLE_TURN_SUBMISSION;
   if (submission.phase === "accepted" && agentRunning) return IDLE_TURN_SUBMISSION;
   return submission;

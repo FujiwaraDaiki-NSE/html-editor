@@ -23,6 +23,9 @@ test("Codex chat separates conversation, turn work logs, and blocking requests",
   assert.match(page, /response\.status !== 202/);
   assert.match(page, /phase: "accepted"/);
   assert.match(page, /turnId: result\.turn\.id/);
+  assert.match(page, /turnSubmission\.phase !== "idle" \|\| codexState\.activeTurnId !== null/);
+  assert.match(page, /const canSubmitAgentMessage = !turnBusy \|\| agentRunning/);
+  assert.match(page, /別の会話で実行中/);
   assert.match(page, /resyncPendingRequests/);
   assert.match(page, /result: "result_unknown"/);
   assert.match(page, /setTurnSubmission\(IDLE_TURN_SUBMISSION\)/);
@@ -51,7 +54,7 @@ test("Codex chat separates conversation, turn work logs, and blocking requests",
   assert.match(requestCard, /resolutionRetryable/);
 });
 
-test("turn submission distinguishes acceptance from progress and resets stale acceptance", () => {
+test("turn submission distinguishes acceptance from progress and survives conversation switches", () => {
   const accepted = { phase: "accepted", threadId: "thread-1", turnId: "turn-1" };
   const submitting = { phase: "submitting", threadId: "thread-1", turnId: null };
   assert.equal(deriveTurnPresentation(submitting, "thread-1", false), "submission");
@@ -59,8 +62,8 @@ test("turn submission distinguishes acceptance from progress and resets stale ac
   assert.equal(deriveTurnPresentation(accepted, "thread-1", false), "accepted");
   assert.equal(deriveTurnPresentation(accepted, "thread-1", true), "in_progress");
   assert.deepEqual(resetTurnSubmission(accepted, "thread-1", true, "connected"), IDLE_TURN_SUBMISSION);
-  assert.deepEqual(resetTurnSubmission(accepted, "thread-2", false, "connected"), IDLE_TURN_SUBMISSION);
-  assert.deepEqual(resetTurnSubmission(submitting, "thread-2", false, "connected"), IDLE_TURN_SUBMISSION);
+  assert.deepEqual(resetTurnSubmission(accepted, "thread-2", false, "connected"), accepted);
+  assert.deepEqual(resetTurnSubmission(submitting, "thread-2", false, "connected"), submitting);
   assert.deepEqual(resetTurnSubmission(accepted, "thread-1", false, "connected", "completed"), IDLE_TURN_SUBMISSION);
   assert.deepEqual(resetTurnSubmission(accepted, "thread-1", false, "connected", "failed"), IDLE_TURN_SUBMISSION);
   assert.equal(isTerminalTurnStatus("completed"), true);
