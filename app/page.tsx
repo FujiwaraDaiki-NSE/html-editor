@@ -20,7 +20,8 @@ import { textExcerptOfNode } from "./components/editable-text-utils";
 import { ItemCard } from "./codex/components/ItemCard";
 import { ServerRequestCard } from "./codex/components/ServerRequestCard";
 import { codexReducer, initialCodexState } from "./codex/reducer";
-import { isConversationMessage, selectThreadRunning, selectThreadTurns, selectTurnItems } from "./codex/selectors";
+import { isConversationMessage, partitionPendingRequests, pendingRequestScope, selectThreadRunning, selectThreadTurns, selectTurnItems } from "./codex/selectors";
+import { deriveTurnPresentation, IDLE_TURN_SUBMISSION, resetTurnSubmission, type TurnPresentationState, type TurnSubmissionState } from "./codex/turn-status";
 import { projectEventDecision } from "./project-events";
 
 /* A slide is now a real HTML file: its `<main class="weave-slide">` fragment is the single
@@ -384,7 +385,7 @@ export default function Home() {
   const [approvalPolicy, setApprovalPolicy] = useState("never");
   const [apiKeyDraft, setApiKeyDraft] = useState("");
   const [mcpResult, setMcpResult] = useState("");
-  const [turnSubmitting, setTurnSubmitting] = useState(false);
+  const [turnSubmission, setTurnSubmission] = useState<TurnSubmissionState>(IDLE_TURN_SUBMISSION);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draggedSlide, setDraggedSlide] = useState<number | null>(null);
@@ -477,6 +478,7 @@ export default function Home() {
   const blockDragRef = useRef<BlockDragSession | null>(null);
   const annotationGestureRef = useRef<AnnotationGesture | null>(null);
   const popoverTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const threadMenuRef = useRef<HTMLDivElement>(null);
   const galleryRef = useRef<HTMLDivElement>(null);
   const projectSwitcherRef = useRef<HTMLButtonElement>(null);
   // Preview stays outside slide state so save, sync, and undo cannot observe a candidate frame.
@@ -489,6 +491,10 @@ export default function Home() {
   const activeTurns = selectThreadTurns(codexState, codexState.activeThreadId);
   const visibleTurns = activeTurns.slice(-100);
   const pendingServerRequests = Object.values(codexState.pendingRequests);
+  const pendingRequestGroups = partitionPendingRequests(pendingServerRequests, codexState.activeThreadId);
+  const activePendingServerRequests = pendingRequestGroups.active;
+  const blockingPendingRequests = [...pendingRequestGroups.active, ...pendingRequestGroups.unscoped];
+  const turnPresentation = deriveTurnPresentation(turnSubmission, codexState.activeThreadId, agentRunning);
   const zoomLevel = manualZoom ?? defaultCanvasZoom;
   const slideScale = fitScale * zoomLevel;
   const activeSlideId = slides[activeSlide - 1]?.id;
@@ -582,6 +588,27 @@ export default function Home() {
     setOpenPopover(null);
     setReferenceView("shelf");
     setThreadMenuOpen((current) => !current);
+  };
+  const onThreadMenuKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const menu = event.currentTarget;
+    const items = Array.from(menu.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)'));
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      dismissPopover();
+      return;
+    }
+    if (!items.length || !["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const currentIndex = items.indexOf(document.activeElement as HTMLButtonElement);
+    const nextIndex = event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? items.length - 1
+        : currentIndex < 0
+          ? event.key === "ArrowUp" ? items.length - 1 : 0
+          : (currentIndex + (event.key === "ArrowUp" ? -1 : 1) + items.length) % items.length;
+    items[nextIndex]?.focus();
   };
   const slideRoot = () => canvasRef.current?.querySelector<HTMLElement>(".weave-slide") ?? null;
   const contentSlot = () => canvasRef.current?.querySelector<HTMLElement>(contentSlotSelector) ?? null;
@@ -732,7 +759,7 @@ export default function Home() {
   const availableEfforts = useMemo(() => selectedModelInfo?.supportedReasoningEfforts?.map((option: any) => option.reasoningEffort) ?? ["low", "medium", "high"], [selectedModelInfo]);
   const connectionStatus = codexState.connection.status;
   const connectionError = codexState.connection.error;
-  const agentHeaderState = useMemo(() => {
+  const agentHeaderState = (() => {
     const connectionLabels: Record<typeof connectionStatus, string> = {
       connecting: "Codexへ接続中…",
       connected: "",
@@ -746,10 +773,15 @@ export default function Home() {
         label: connectionError ?? connectionLabels[connectionStatus],
       };
     }
-    if (pendingServerRequests.length > 0) return { kind: "waiting", label: `確認待ち（${pendingServerRequests.length}件）` };
-    if (agentRunning) return { kind: "running", label: "実行中…" };
+    if (activePendingServerRequests.length > 0) return { kind: "waiting", label: `確認待ち（${activePendingServerRequests.length}件）` };
+    const turnLabels: Record<Exclude<TurnPresentationState, "idle">, { kind: string; label: string }> = {
+      submission: { kind: "submission", label: "送信中…" },
+      accepted: { kind: "accepted", label: "受理済み・開始待ち" },
+      in_progress: { kind: "running", label: "実行中…" },
+    };
+    if (turnPresentation !== "idle") return turnLabels[turnPresentation];
     return null;
-  }, [agentRunning, connectionError, connectionStatus, pendingServerRequests.length]);
+  })();
 
   /* `applyDeck` controls whether the on-disk deck replaces the editor buffer. Status-only polls
      (retrying while Codex connects) pass false so they never clobber unsaved edits — the local
@@ -1014,6 +1046,18 @@ export default function Home() {
     if (shouldAutoScrollRef.current) messagesEndRef.current?.scrollIntoView({ behavior: agentRunning ? "smooth" : "auto", block: "end" });
   }, [codexState.items, agentRunning]);
 
+  useEffect(() => {
+    const next = resetTurnSubmission(turnSubmission, codexState.activeThreadId, agentRunning, connectionStatus);
+    if (next === turnSubmission) return;
+    window.setTimeout(() => {
+      setTurnSubmission((current) => {
+        if (current.phase !== turnSubmission.phase || current.threadId !== turnSubmission.threadId) return current;
+        if (next.phase === "idle") turnInFlightRef.current = false;
+        return next;
+      });
+    });
+  }, [agentRunning, codexState.activeThreadId, connectionStatus, turnSubmission]);
+
   useEffect(() => { if (showPresenter) presenterRef.current?.focus(); }, [showPresenter]);
 
   useEffect(() => {
@@ -1026,6 +1070,13 @@ export default function Home() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [dismissPopover, openPopover, threadMenuOpen]);
+
+  useEffect(() => {
+    if (!threadMenuOpen) return;
+    const firstItem = threadMenuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)');
+    if (firstItem) firstItem.focus();
+    else threadMenuRef.current?.focus();
+  }, [threadMenuOpen]);
 
   /* --- Live-DOM editing on the canvas -------------------------------------------------- */
 
@@ -2225,23 +2276,27 @@ export default function Home() {
     const prompt = variationPrompt.trim();
     const boxes = liveAnnotationBoxes();
     const variationAnnotations = collectTurnAnnotations(prompt, boxes);
-    if (!canSendTurn(prompt, variationAnnotations) || turnInFlightRef.current) return;
+    if (!canSendTurn(prompt, variationAnnotations) || turnInFlightRef.current || turnSubmission.phase !== "idle") return;
     turnInFlightRef.current = true;
-    setTurnSubmitting(true);
+    setTurnSubmission({ phase: "submitting", threadId: codexState.activeThreadId });
     setShowVariationPrompt(false);
     setApiError(null);
+    let accepted = false;
     try {
       // Variations are branch trials, so annotations stay on the canvas instead of being consumed.
       const response = await fetch(`${apiBase}/variations/generate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt, deck: deckPayload(), clientUserMessageId: createMessageId(), model: selectedModel || undefined, effort: reasoningEffort, approvalPolicy, contextEnvelope: contextEnvelope(variationAnnotations, overflowingIds(liveOverflowMeasurements())) }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "デザイン案を生成できませんでした。");
+      if (response.status !== 202 || typeof result.thread?.id !== "string") throw new Error("デザイン案の受付状態を確認できませんでした。");
+      accepted = true;
+      setTurnSubmission({ phase: "accepted", threadId: result.thread.id });
       setActiveVariation(result.branch);
       dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
     } catch (error) {
+      if (!accepted) setTurnSubmission(IDLE_TURN_SUBMISSION);
       setApiError(error instanceof Error ? error.message : String(error));
     } finally {
-      turnInFlightRef.current = false;
-      setTurnSubmitting(false);
+      if (!accepted) turnInFlightRef.current = false;
     }
   };
 
@@ -2297,6 +2352,11 @@ export default function Home() {
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && !isComposing) { event.preventDefault(); void sendMessage(); }
   };
 
+  const clearTurnSubmission = () => {
+    turnInFlightRef.current = false;
+    setTurnSubmission(IDLE_TURN_SUBMISSION);
+  };
+
   const sendMessage = async () => {
     const value = promptDraft.trim();
     const slide = slidesRef.current[activeRef.current - 1];
@@ -2304,14 +2364,15 @@ export default function Home() {
     const overflowing = overflowingIds(liveOverflowMeasurements());
     const boxes = viewportRef.current ? liveAnnotationBoxes() : null;
     const turnAnnotations = collectTurnAnnotations(value, boxes);
-    if (!(canSendTurn(value, turnAnnotations) || referenceAttachments.length > 0) || turnInFlightRef.current) return;
+    if (!(canSendTurn(value, turnAnnotations) || referenceAttachments.length > 0) || turnInFlightRef.current || turnSubmission.phase !== "idle") return;
     if (slide && boxes) setAnnotations((current) => refreshSlideAnnotations(current, slide.id, boxes));
     const requestDeck = deckPayload();
     const requestEnvelope = contextEnvelope(turnAnnotations, overflowing, referenceAttachments);
     turnInFlightRef.current = true;
-    setTurnSubmitting(true);
+    setTurnSubmission({ phase: "submitting", threadId: codexState.activeThreadId });
     shouldAutoScrollRef.current = true;
     setApiError(null);
+    let accepted = false;
     try {
       let threadId = codexState.activeThreadId;
       if (!threadId) {
@@ -2320,6 +2381,7 @@ export default function Home() {
         if (!startResponse.ok) throw new Error(started.error ?? "会話を開始できませんでした。");
         threadId = started.thread.id;
         dispatchCodex({ type: "threadLoaded", thread: started.thread, activate: true });
+        setTurnSubmission({ phase: "submitting", threadId });
       }
       if (!threadId) throw new Error("操作対象の会話を特定できませんでした。");
       const steering = agentRunning;
@@ -2328,6 +2390,11 @@ export default function Home() {
       const response = await fetch(`${apiBase}/${endpoint}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId, prompt: value, clientUserMessageId: createMessageId(), selectedId, deck: requestDeck, model: selectedModel || undefined, effort: reasoningEffort, approvalPolicy, contextEnvelope: requestEnvelope, attachments: referenceAttachments }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Agentへの依頼を開始できませんでした。");
+      if (response.status !== 202) throw new Error("Agentへの依頼受付状態を確認できませんでした。");
+      if (!steering) {
+        accepted = true;
+        setTurnSubmission({ phase: "accepted", threadId });
+      } else setTurnSubmission(IDLE_TURN_SUBMISSION);
       if (turnAnnotations.length > 0 && slide) {
         const turnId = steering ? runningTurnId ?? result.turn?.id ?? result.turnId ?? null : result.turn?.id ?? result.turnId ?? null;
         setAnnotationAttachments((current) => [...current, {
@@ -2347,10 +2414,10 @@ export default function Home() {
       setReferenceAttachments([]);
       setIncludeRegionAnnotations(true);
     } catch (error) {
+      if (!accepted) setTurnSubmission(IDLE_TURN_SUBMISSION);
       setApiError(error instanceof Error ? error.message : String(error));
     } finally {
-      turnInFlightRef.current = false;
-      setTurnSubmitting(false);
+      if (!accepted) turnInFlightRef.current = false;
     }
   };
 
@@ -2363,6 +2430,7 @@ export default function Home() {
   };
 
   const newThread = async () => {
+    clearTurnSubmission();
     try {
       const response = await fetch(`${apiBase}/codex/thread/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ approvalPolicy, model: selectedModel || undefined }) });
       const result = await response.json();
@@ -2373,6 +2441,7 @@ export default function Home() {
   };
 
   const openThread = async (threadId: string) => {
+    clearTurnSubmission();
     try {
       const response = await fetch(`${apiBase}/codex/thread/resume`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId }) });
       const result = await response.json();
@@ -2395,6 +2464,7 @@ export default function Home() {
 
   const forkThread = async () => {
     if (!codexState.activeThreadId) return;
+    clearTurnSubmission();
     try {
       const response = await fetch(`${apiBase}/codex/thread/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: codexState.activeThreadId }) });
       const result = await response.json();
@@ -2422,14 +2492,20 @@ export default function Home() {
       const response = await fetch(`${apiBase}/codex/request/resolve`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, result }) });
       const value = await response.json();
       if (!response.ok) throw new Error(value.error ?? "Codexへ回答を送れませんでした。");
-    } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : String(error));
+      throw error;
+    }
   };
   const rejectServerRequest = async (id: string | number) => {
     try {
       const response = await fetch(`${apiBase}/codex/request/reject`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, message: "Declined in Weave." }) });
       const value = await response.json();
       if (!response.ok) throw new Error(value.error ?? "Codexへ拒否の回答を送れませんでした。");
-    } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : String(error));
+      throw error;
+    }
   };
 
   const updateSkill = async (skill: any, enabled: boolean) => {
@@ -2701,16 +2777,16 @@ export default function Home() {
 
         {leftPanelOpen ? <aside className="left-panel">
           <div className="panel-resizer" role="separator" aria-orientation="vertical" aria-label="サイドバーの幅を変更" aria-valuenow={sidebarWidth} aria-valuemin={280} aria-valuemax={560} tabIndex={0} onPointerDown={startSidebarResize} onKeyDown={(event) => { if (event.key === "ArrowLeft") { event.preventDefault(); adjustSidebarWidth(-16); } if (event.key === "ArrowRight") { event.preventDefault(); adjustSidebarWidth(16); } }} />
-          {activityView === "agent" ? <section className="agent-panel" aria-label="Agentとの会話" aria-busy={agentRunning}>
+          {activityView === "agent" ? <section className="agent-panel" aria-label="Agentとの会話" aria-busy={turnPresentation !== "idle"}>
             <div className="agent-heading">
               <div className="agent-heading-main">
                 <h2 className="agent-heading-title">
                   <button className="thread-switcher" onClick={(event) => togglePopover("threads", event.currentTarget)} aria-expanded={openPopover === "threads"} aria-haspopup="dialog" title="会話を切り替えます"><span>{activeThreadName}</span><em aria-hidden="true">⌄</em></button>
                 </h2>
-                {agentHeaderState && <span className={`agent-state agent-state-${agentHeaderState.kind}`} role="status" aria-live="polite" aria-busy={agentRunning}>{agentHeaderState.label}</span>}
+                <span className={`agent-state agent-state-${agentHeaderState?.kind ?? "idle"}`} role="status" aria-live="polite" aria-busy={turnPresentation !== "idle"} data-turn-state={turnPresentation} data-status={agentHeaderState?.kind ?? "idle"}>{agentHeaderState?.label ?? ""}</span>
               </div>
               <div className="agent-heading-actions">
-                <button className="new-thread-button" onClick={() => void newThread()} aria-label="新しい会話" title="新しい会話を開始します" disabled={agentRunning}>＋</button>
+                <button className="new-thread-button" onClick={() => void newThread()} aria-label="新しい会話" title="新しい会話を開始します" disabled={turnPresentation !== "idle"}>＋</button>
                 <button className="thread-menu-trigger" onClick={(event) => toggleThreadMenu(event.currentTarget)} aria-expanded={threadMenuOpen} aria-haspopup="menu" aria-label="会話の操作" title="会話の名前変更、分岐、ゴール、整理、アーカイブ、削除">…</button>
                 <button className="panel-close" onClick={() => setLeftPanelOpen(false)} aria-label="Agentパネルを閉じる" title="Agentパネルを閉じます">×</button>
               </div>
@@ -2721,7 +2797,7 @@ export default function Home() {
                 <div className="thread-popover" role="dialog" aria-label="会話を切り替え">
                   <div className="thread-popover-heading">
                     <strong>会話</strong>
-                    <button type="button" onClick={() => { dismissPopover(false); void newThread(); }} disabled={agentRunning}>＋ 新しい会話</button>
+                    <button type="button" onClick={() => { dismissPopover(false); void newThread(); }} disabled={turnPresentation !== "idle"}>＋ 新しい会話</button>
                   </div>
                   <div className="thread-controls">
                     <input type="search" value={threadSearch} onChange={(event) => setThreadSearch(event.target.value)} placeholder="会話を検索" aria-label="会話を検索" />
@@ -2741,14 +2817,14 @@ export default function Home() {
             {threadMenuOpen && (
               <>
                 <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
-                <div className="thread-actions-menu" role="menu" aria-label={`${activeThreadName}の操作`}>
+                <div ref={threadMenuRef} className="thread-actions-menu" role="menu" tabIndex={-1} aria-label={`${activeThreadName}の操作`} onKeyDown={onThreadMenuKeyDown}>
                   <strong>会話の操作</strong>
-                  <button role="menuitem" disabled={!codexState.activeThreadId} onClick={() => { const name = window.prompt("会話名", displayThreadName(codexState.threads[codexState.activeThreadId!]?.name) ?? ""); if (name !== null) { dismissPopover(false); void threadAction("name", { name }); } }}>名前を変更</button>
-                  <button role="menuitem" disabled={!codexState.activeThreadId || agentRunning} onClick={() => { dismissPopover(false); void forkThread(); }}>複製して分岐</button>
-                  <button role="menuitem" disabled={!codexState.activeThreadId} onClick={() => { dismissPopover(false); void manageGoal(); }}>ゴール</button>
-                  <button role="menuitem" disabled={!codexState.activeThreadId || agentRunning} onClick={() => { dismissPopover(false); void threadAction("compact"); }}>履歴を整理</button>
-                  <button role="menuitem" disabled={!codexState.activeThreadId || agentRunning} onClick={() => { dismissPopover(false); void threadAction(activeThread?.archived ? "unarchive" : "archive"); }}>{activeThread?.archived ? "アーカイブから戻す" : "アーカイブ"}</button>
-                  <button role="menuitem" className="danger" disabled={!codexState.activeThreadId || agentRunning} onClick={() => { if (window.confirm("このWeave会話を完全に削除しますか？")) { dismissPopover(false); void threadAction("delete"); } }}>削除</button>
+                  <button role="menuitem" disabled={!codexState.activeThreadId} onClick={() => { const name = window.prompt("会話名", displayThreadName(codexState.threads[codexState.activeThreadId!]?.name) ?? ""); if (name !== null) { dismissPopover(); void threadAction("name", { name }); } }}>名前を変更</button>
+                  <button role="menuitem" disabled={!codexState.activeThreadId || agentRunning} onClick={() => { dismissPopover(); void forkThread(); }}>複製して分岐</button>
+                  <button role="menuitem" disabled={!codexState.activeThreadId} onClick={() => { dismissPopover(); void manageGoal(); }}>ゴール</button>
+                  <button role="menuitem" disabled={!codexState.activeThreadId || agentRunning} onClick={() => { dismissPopover(); void threadAction("compact"); }}>履歴を整理</button>
+                  <button role="menuitem" disabled={!codexState.activeThreadId || agentRunning} onClick={() => { dismissPopover(); void threadAction(activeThread?.archived ? "unarchive" : "archive"); }}>{activeThread?.archived ? "アーカイブから戻す" : "アーカイブ"}</button>
+                  <button role="menuitem" className="danger" disabled={!codexState.activeThreadId || agentRunning} onClick={() => { if (window.confirm("このWeave会話を完全に削除しますか？")) { dismissPopover(); void threadAction("delete"); } }}>削除</button>
                 </div>
               </>
             )}
@@ -2791,10 +2867,18 @@ export default function Home() {
               />)}
               <div ref={messagesEndRef} className="messages-end" />
             </div>
-            <div className="composer-dock">
-              {pendingServerRequests.length > 0 && <section className="blocking-region" role="region" aria-live="assertive" aria-label="確認が必要な操作">
-                <div className="blocking-heading"><strong>確認が必要です</strong><span>{pendingServerRequests.length}件</span></div>
-                {pendingServerRequests.map((pending) => <ServerRequestCard key={String(pending.id)} request={pending} onResolve={(id, result) => void resolveServerRequest(id, result)} onReject={(id) => void rejectServerRequest(id)} />)}
+            <div className="composer-dock" data-turn-state={turnPresentation} aria-busy={turnPresentation === "submission" || turnPresentation === "in_progress"}>
+              {pendingServerRequests.length > 0 && <section className="blocking-region" role="region" aria-live="assertive" aria-label="確認が必要な操作" data-pending-count={pendingServerRequests.length}>
+                <div className="blocking-heading"><strong>{activePendingServerRequests.length > 0 ? "確認が必要です" : "確認が必要な要求があります"}</strong><span>{pendingServerRequests.length}件</span></div>
+                {pendingRequestGroups.unscoped.length > 0 && <p className="blocking-notice" role="status">会話を特定できない確認が {pendingRequestGroups.unscoped.length}件あります。</p>}
+                {pendingRequestGroups.other.length > 0 && <p className="blocking-notice" role="status">別の会話に属する確認が {pendingRequestGroups.other.length}件あります。対象の会話を選ぶと操作できます。</p>}
+                {blockingPendingRequests.map((pending) => {
+                  const scope = pendingRequestScope(pending, codexState.activeThreadId);
+                  return <div className={`blocking-request blocking-request-${scope}`} key={String(pending.id)} data-request-scope={scope}>
+                    {scope === "unscoped" && <span className="blocking-request-label">会話を特定できない確認</span>}
+                    <ServerRequestCard request={pending} onResolve={resolveServerRequest} onReject={rejectServerRequest} />
+                  </div>;
+                })}
               </section>}
               <div className="chat-box"
               onDragOver={(event) => event.preventDefault()}
@@ -2893,7 +2977,7 @@ export default function Home() {
                 <span className="chat-shortcut">⌘ / Ctrl ↵</span>
                 <span className="chat-actions-spacer" aria-hidden="true" />
                 <button className={`stop-button${agentRunning ? " active" : ""}`} onClick={() => { if (agentRunning) void interruptAgent(); }} disabled={!agentRunning} aria-hidden={!agentRunning} tabIndex={agentRunning ? 0 : -1} aria-label="Agentを停止" title="実行中のAgentを停止します">■</button>
-                <button className="send-button" onClick={() => void sendMessage()} disabled={!agentReady || !(canSendTurn(promptDraft, sendableAnnotations) || referenceAttachments.length > 0) || turnSubmitting} aria-label="メッセージを送信" data-help="入力内容と選択中の編集コンテキストをAgentへ送信します">↑</button>
+                <button className="send-button" onClick={() => void sendMessage()} disabled={!agentReady || !(canSendTurn(promptDraft, sendableAnnotations) || referenceAttachments.length > 0) || turnSubmission.phase !== "idle"} aria-label="メッセージを送信" data-help="入力内容と選択中の編集コンテキストをAgentへ送信します">↑</button>
               </div>
             </div>
             </div>

@@ -403,6 +403,8 @@ button.project-card { cursor: pointer; }
 .server-request strong, .server-request p { display: block; margin: 0 0 6px; overflow-wrap: anywhere; }
 .server-request button { margin: 2px 3px 0 0; padding: 4px 6px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--panel-3); color: var(--text); font-size: var(--chat-meta); cursor: pointer; }
 .server-request button:disabled { cursor: not-allowed; opacity: .5; }
+.server-request-status { display: block; margin-top: 5px; color: var(--muted); font-size: var(--chat-micro); }
+.server-request-status.error { color: var(--danger); }
 .server-question { display: grid; gap: 4px; margin: 7px 0; }
 .server-question span { color: var(--text); font-size: var(--chat-meta); font-weight: 600; }
 .server-question small { color: var(--muted); font-size: var(--chat-micro); }
@@ -876,10 +878,14 @@ button.project-card { cursor: pointer; }
 .agent-heading-actions .new-thread-button { color: var(--muted); }
 .agent-heading-actions .thread-menu-trigger { color: var(--text); font-size: 18px; letter-spacing: .08em; }
 .agent-heading-actions button:hover:not(:disabled), .agent-heading-actions button[aria-expanded="true"] { background: var(--panel-3); color: var(--text); }
-.agent-state { min-width: 0; display: flex; align-items: center; gap: 5px; overflow: hidden; color: var(--muted); font-size: 10px; font-weight: 500; letter-spacing: 0; text-overflow: ellipsis; white-space: nowrap; }
+.agent-state { min-width: 0; min-height: 14px; display: flex; align-items: center; gap: 5px; overflow: hidden; color: var(--muted); font-size: 10px; font-weight: 500; letter-spacing: 0; text-overflow: ellipsis; white-space: nowrap; }
+.agent-state:empty { visibility: hidden; }
+.agent-state:empty::before { display: none; }
 .agent-state::before { content: ""; flex: 0 0 auto; width: 6px; height: 6px; border: 1px solid currentColor; border-radius: 50%; }
 .agent-state-running::before { background: var(--accent); }
 .agent-state-waiting::before { background: var(--accent); border-radius: 2px; }
+.agent-state-accepted::before { background: var(--accent); border-radius: 2px; }
+.agent-state-submission::before { border-style: dashed; }
 .agent-state-disconnected::before, .agent-state-incompatible::before { background: var(--danger); }
 .agent-state-connecting::before, .agent-state-reconnecting::before { border-style: dashed; }
 .thread-popover { top: 54px; left: 8px; right: 8px; }
@@ -918,8 +924,13 @@ button.project-card { cursor: pointer; }
 .blocking-region { flex: 0 0 auto; max-height: min(38vh, 320px); overflow: auto; margin: 0 9px 7px; padding: 8px; border: 1px solid color-mix(in srgb, var(--accent) 58%, var(--line)); border-radius: 11px; background: color-mix(in srgb, var(--accent) 7%, var(--panel-2)); box-shadow: 0 5px 15px rgba(0,0,0,.1); scrollbar-width: thin; }
 .blocking-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--accent); font-size: var(--chat-meta); }
 .blocking-heading span { color: var(--muted); font-size: var(--chat-micro); }
+.blocking-notice { margin: 6px 0 0; color: var(--muted); font-size: var(--chat-micro); line-height: 1.45; }
+.blocking-request { margin-top: 6px; }
+.blocking-request-label { display: block; margin: 0 0 4px; color: var(--muted); font-size: var(--chat-micro); }
+.blocking-request .server-request { margin-top: 0; }
 .blocking-region .server-request { margin: 6px 0 0; padding: 7px; border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); border-radius: 7px; background: color-mix(in srgb, var(--panel-2) 82%, transparent); }
-.blocking-region .server-request:first-of-type { margin-top: 7px; }
+.blocking-region .server-request:first-of-type { margin-top: 0; }
+.blocking-request:first-of-type { margin-top: 7px; }
 .chat-box { margin: 0 9px 9px; padding: 10px 11px 9px; border-radius: 12px; }
 .context-chip { align-items: center; gap: 5px; padding: 6px; margin-bottom: 7px; border-radius: 8px; }
 .context-chip-heading { flex: 0 0 100%; color: var(--soft); font-size: var(--chat-micro); font-weight: 600; letter-spacing: .04em; }

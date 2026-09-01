@@ -1,31 +1,93 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { partitionPendingRequests } from "../app/codex/selectors.ts";
+import { deriveTurnPresentation, IDLE_TURN_SUBMISSION, resetTurnSubmission } from "../app/codex/turn-status.ts";
+import { beginRequestResolution, finishRequestResolution } from "../app/codex/request-state.ts";
 
 test("Codex chat separates conversation, turn work logs, and blocking requests", async () => {
-  const [page, itemCard, css] = await Promise.all([
+  const [page, itemCard, requestCard, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/codex/components/ItemCard.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/codex/components/ServerRequestCard.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
   assert.match(page, /className="thread-actions-menu"/);
   assert.match(page, /className="thread-menu-trigger"/);
+  assert.match(page, /onThreadMenuKeyDown/);
+  assert.match(page, /\["ArrowDown", "ArrowUp", "Home", "End"\]/);
   assert.match(page, /className="work-details"/);
   assert.match(page, /className="work-items"/);
   assert.match(page, /className="blocking-region"/);
-  assert.match(page, /aria-label="Agentとの会話" aria-busy=\{agentRunning\}/);
-  assert.match(page, /role="status" aria-live="polite" aria-busy=\{agentRunning\}/);
+  assert.match(page, /activePendingServerRequests\.length > 0/);
+  assert.match(page, /response\.status !== 202/);
+  assert.match(page, /phase: "accepted"/);
+  assert.match(page, /setTurnSubmission\(IDLE_TURN_SUBMISSION\)/);
+  assert.match(page, /aria-label="Agentとの会話" aria-busy=\{turnPresentation !== "idle"\}/);
+  assert.match(page, /role="status" aria-live="polite" aria-busy=\{turnPresentation !== "idle"\}/);
+  assert.match(page, /data-turn-state=\{turnPresentation\}/);
   assert.match(itemCard, /item\.output/);
   assert.match(itemCard, /item\.diff/);
   assert.match(page, /isConversationMessage/);
   assert.doesNotMatch(page, /contextSummary|agentActivity/);
 
   const messagesStart = page.indexOf('<div ref={messagesRef} className="messages"');
-  const composerStart = page.indexOf('<div className="composer-dock">', messagesStart);
+  const composerStart = page.indexOf('<div className="composer-dock"', messagesStart);
   assert.ok(messagesStart >= 0 && composerStart > messagesStart);
   assert.doesNotMatch(page.slice(messagesStart, composerStart), /className="blocking-region"/);
   assert.doesNotMatch(page.slice(messagesStart, composerStart), /ServerRequestCard/);
   assert.match(page.slice(composerStart), /aria-label="確認が必要な操作"/);
   assert.match(css, /\.chat-box \{[^}]*border-radius: 12px/s);
   assert.match(css, /\.stop-button \{ visibility: hidden;/);
+  assert.match(requestCard, /resolutionPhaseRef/);
+  assert.match(requestCard, /beginRequestResolution/);
+  assert.match(requestCard, /再試行できます/);
+});
+
+test("turn submission distinguishes acceptance from progress and resets stale acceptance", () => {
+  const accepted = { phase: "accepted", threadId: "thread-1" };
+  const submitting = { phase: "submitting", threadId: "thread-1" };
+  assert.equal(deriveTurnPresentation(submitting, "thread-1", false), "submission");
+  assert.equal(deriveTurnPresentation(submitting, "thread-2", false), "idle");
+  assert.equal(deriveTurnPresentation(accepted, "thread-1", false), "accepted");
+  assert.equal(deriveTurnPresentation(accepted, "thread-1", true), "in_progress");
+  assert.deepEqual(resetTurnSubmission(accepted, "thread-1", true, "connected"), IDLE_TURN_SUBMISSION);
+  assert.deepEqual(resetTurnSubmission(accepted, "thread-2", false, "connected"), IDLE_TURN_SUBMISSION);
+  assert.deepEqual(resetTurnSubmission({ phase: "submitting", threadId: null }, "thread-1", false, "connected"), IDLE_TURN_SUBMISSION);
+  assert.deepEqual(resetTurnSubmission(accepted, "thread-1", false, "disconnected"), IDLE_TURN_SUBMISSION);
+});
+
+test("pending request attribution keeps only the active thread in header scope", () => {
+  const request = (id, params) => ({ id, method: "item/commandExecution/requestApproval", params, createdAt: id });
+  const groups = partitionPendingRequests([
+    request("active", { threadId: "thread-1" }),
+    request("other", { threadId: "thread-2" }),
+    request("unknown", {}),
+  ], "thread-1");
+  assert.deepEqual(groups.active.map(({ id }) => id), ["active"]);
+  assert.deepEqual(groups.other.map(({ id }) => id), ["other"]);
+  assert.deepEqual(groups.unscoped.map(({ id }) => id), ["unknown"]);
+});
+
+test("request resolution guard allows one mutation and reopens after failure", () => {
+  let phase = "idle";
+  let mutationCount = 0;
+  const attempt = () => {
+    const next = beginRequestResolution(phase);
+    if (!next.started) return;
+    phase = next.phase;
+    mutationCount += 1;
+  };
+  attempt();
+  attempt();
+  assert.equal(mutationCount, 1);
+  phase = finishRequestResolution(phase, false);
+  attempt();
+  assert.equal(mutationCount, 2);
+  const started = beginRequestResolution("idle");
+  assert.deepEqual(started, { phase: "submitting", started: true });
+  assert.deepEqual(beginRequestResolution(started.phase), { phase: "submitting", started: false });
+  assert.equal(finishRequestResolution(started.phase, false), "idle");
+  assert.equal(finishRequestResolution(started.phase, true), "settled");
+  assert.equal(finishRequestResolution("settled", false), "settled");
 });
