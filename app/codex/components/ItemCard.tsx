@@ -2,22 +2,22 @@ import type { ItemState } from "../types";
 
 const labels: Record<string, string> = {
   agentMessage: "Agent",
-  userMessage: "You",
-  plan: "Plan",
-  reasoning: "Reasoning summary",
-  commandExecution: "Command",
-  fileChange: "File change",
-  mcpToolCall: "MCP tool",
-  dynamicToolCall: "Tool call",
-  collabAgentToolCall: "Sub-agent",
-  subAgentActivity: "Sub-agent activity",
-  enteredReviewMode: "Review started",
-  exitedReviewMode: "Review completed",
-  webSearch: "Web search",
-  imageView: "Image",
-  imageGeneration: "Image generation",
-  contextCompaction: "Context compaction",
-  review: "Review",
+  userMessage: "あなた",
+  plan: "計画",
+  reasoning: "推論の要約",
+  commandExecution: "コマンド",
+  fileChange: "ファイル変更",
+  mcpToolCall: "MCPツール",
+  dynamicToolCall: "ツール実行",
+  collabAgentToolCall: "サブAgent",
+  subAgentActivity: "サブAgentの作業",
+  enteredReviewMode: "レビュー開始",
+  exitedReviewMode: "レビュー完了",
+  webSearch: "Web検索",
+  imageView: "画像",
+  imageGeneration: "画像生成",
+  contextCompaction: "コンテキスト整理",
+  review: "レビュー",
 };
 const glyphs: Record<string, string> = {
   plan: "◇",
@@ -40,7 +40,7 @@ const glyphs: Record<string, string> = {
 export function ItemCard({ item }: { item: ItemState }) {
   const known = Object.hasOwn(labels, item.type);
   const isMessage = item.type === "agentMessage" || item.type === "userMessage";
-  const label = labels[item.type] ?? "Unknown item";
+  const label = labels[item.type] ?? "不明な項目";
   const summary = item.text || item.reasoning[0] || item.output.split("\n")[0] || item.diff.split("\n")[0];
   const hasWorkBody = !isMessage && Boolean(item.text || item.reasoning.length);
   const longUserMessage = item.type === "userMessage" && item.text.length > 600;
@@ -63,21 +63,21 @@ export function ItemCard({ item }: { item: ItemState }) {
       )}
       {hasWorkBody && (
         <details>
-          <summary>Details</summary>
+          <summary>詳細</summary>
           {item.reasoning.map((part, index) => <p key={index}>{part}</p>)}
           {item.text && <p className="codex-item-text">{item.text}</p>}
         </details>
       )}
       {item.output && (
         <details open={item.status === "running"}>
-          <summary>Output{item.outputTruncated ? " (latest 100 KB)" : ""}</summary>
+          <summary>出力{item.outputTruncated ? "（最新100 KB）" : ""}</summary>
           <pre>{item.output}</pre>
         </details>
       )}
       {(item.diff || item.type === "fileChange") && (
         <details>
-          <summary>Diff</summary>
-          <pre>{item.diff || "No textual diff was provided."}</pre>
+          <summary>差分</summary>
+          <pre>{item.diff || "テキスト差分はありません。"}</pre>
         </details>
       )}
       {!known && <code>{String(item.raw?._method ?? "item")} · {item.type}</code>}

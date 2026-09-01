@@ -76,29 +76,29 @@ const accents = [
 
 const parsePortableBundle = (value: unknown): PortableBundle => {
   const bundle = value as Partial<PortableBundle>;
-  if (bundle?.format !== "weave-deck" || bundle.version !== 2 || typeof bundle.css !== "string" || !bundle.deck || typeof bundle.deck.title !== "string" || typeof bundle.deck.defaultTemplateId !== "string" || !bundle.deck.defaultTemplateId || !Array.isArray(bundle.deck.slides) || !bundle.deck.slides.length || !Array.isArray(bundle.templates) || !bundle.templates.length) throw new Error("Unsupported Weave bundle.");
+  if (bundle?.format !== "weave-deck" || bundle.version !== 2 || typeof bundle.css !== "string" || !bundle.deck || typeof bundle.deck.title !== "string" || typeof bundle.deck.defaultTemplateId !== "string" || !bundle.deck.defaultTemplateId || !Array.isArray(bundle.deck.slides) || !bundle.deck.slides.length || !Array.isArray(bundle.templates) || !bundle.templates.length) throw new Error("このWeave編集用データには対応していません。");
   const ids = new Set<string>();
   const templates = bundle.templates.map((template) => {
-    if (!template || typeof template.id !== "string" || !/^[a-z0-9_-]+$/.test(template.id) || ids.has(template.id) || typeof template.name !== "string" || !template.name || typeof template.defaultLayoutId !== "string" || !template.defaultLayoutId || typeof template.masterHtml !== "string" || !template.masterHtml || !Array.isArray(template.layouts) || !template.layouts.length) throw new Error("Unsupported Weave template package.");
+    if (!template || typeof template.id !== "string" || !/^[a-z0-9_-]+$/.test(template.id) || ids.has(template.id) || typeof template.name !== "string" || !template.name || typeof template.defaultLayoutId !== "string" || !template.defaultLayoutId || typeof template.masterHtml !== "string" || !template.masterHtml || !Array.isArray(template.layouts) || !template.layouts.length) throw new Error("このWeaveテンプレートには対応していません。");
     ids.add(template.id);
     const layoutIds = new Set<string>();
     const layouts = template.layouts.map((layout) => {
-      if (!layout || typeof layout.id !== "string" || !/^[a-z0-9_-]+$/.test(layout.id) || layoutIds.has(layout.id) || typeof layout.name !== "string" || !layout.name || typeof layout.html !== "string" || !layout.html) throw new Error(`Unsupported layout package: ${template.id}`);
+      if (!layout || typeof layout.id !== "string" || !/^[a-z0-9_-]+$/.test(layout.id) || layoutIds.has(layout.id) || typeof layout.name !== "string" || !layout.name || typeof layout.html !== "string" || !layout.html) throw new Error(`対応していないレイアウトです: ${template.id}`);
       layoutIds.add(layout.id);
       return { id: layout.id, name: layout.name, html: layout.html };
     });
-    if (!layoutIds.has(template.defaultLayoutId)) throw new Error(`Unknown default layout: ${template.id}/${template.defaultLayoutId}`);
+    if (!layoutIds.has(template.defaultLayoutId)) throw new Error(`既定のレイアウトが見つかりません: ${template.id}/${template.defaultLayoutId}`);
     return { id: template.id, name: template.name, defaultLayoutId: template.defaultLayoutId, masterHtml: template.masterHtml, layouts };
   });
   const catalog = new Map(templates.map((template) => [template.id, template]));
-  if (!catalog.has(bundle.deck.defaultTemplateId)) throw new Error(`Unknown default template: ${bundle.deck.defaultTemplateId}`);
+  if (!catalog.has(bundle.deck.defaultTemplateId)) throw new Error(`既定のテンプレートが見つかりません: ${bundle.deck.defaultTemplateId}`);
   const slideIds = new Set<string>();
   const slides = bundle.deck.slides.map((slide, index) => {
-    if (!slide || typeof slide.id !== "string" || !slide.id || slideIds.has(slide.id) || typeof slide.title !== "string" || typeof slide.notes !== "string" || typeof slide.templateId !== "string" || typeof slide.layoutId !== "string" || typeof slide.accent !== "string" || !slide.accent || typeof slide.html !== "string" || !slide.html) throw new Error("Unsupported slide package.");
+    if (!slide || typeof slide.id !== "string" || !slide.id || slideIds.has(slide.id) || typeof slide.title !== "string" || typeof slide.notes !== "string" || typeof slide.templateId !== "string" || typeof slide.layoutId !== "string" || typeof slide.accent !== "string" || !slide.accent || typeof slide.html !== "string" || !slide.html) throw new Error("このスライドデータには対応していません。");
     slideIds.add(slide.id);
     const template = catalog.get(slide.templateId);
     const layout = template?.layouts.find((item) => item.id === slide.layoutId);
-    if (!template || !layout) throw new Error(`Unknown template/layout for slide ${slide.id}.`);
+    if (!template || !layout) throw new Error(`スライド${slide.id}のテンプレートまたはレイアウトが見つかりません。`);
     composeSlideHtml({ slideHtml: slide.html, masterHtml: template.masterHtml, layoutHtml: layout.html, templateId: slide.templateId, layoutId: slide.layoutId, position: index + 1, total: bundle.deck!.slides.length, accent: slide.accent, instanceId: slide.id });
     return { id: slide.id, title: slide.title, notes: slide.notes, templateId: slide.templateId, layoutId: slide.layoutId, accent: slide.accent, html: slide.html };
   });
@@ -154,20 +154,21 @@ const cssEscape = (value: string) => (typeof CSS !== "undefined" && CSS.escape ?
 /* Curated block registry: each entry is just an HTML fragment stamped into the slide.
    Adding a kind is data, not code — the natural shape once HTML is the truth. */
 const blockTemplates: Record<string, (id: string) => string> = {
-  heading: (id) => `<h1 class="heading font-semibold leading-none tracking-tight" data-weave-id="${id}">A clear, compelling headline.</h1>`,
-  paragraph: (id) => `<p class="paragraph max-w-3xl leading-normal" data-weave-id="${id}">Add supporting detail that helps your audience understand the idea.</p>`,
-  eyebrow: (id) => `<div class="eyebrow text-sm font-bold uppercase tracking-widest text-amber-400" data-weave-id="${id}">NEW SECTION</div>`,
-  note: (id) => `<div class="note mt-6 text-xs font-semibold uppercase tracking-widest text-slate-400" data-weave-id="${id}">SOURCE · INTERNAL RESEARCH</div>`,
-  metrics: (id) => `<div class="metrics grid grid-cols-4 items-center gap-x-5 mt-2" data-weave-id="${id}"><strong class="text-3xl font-semibold tracking-tight text-amber-400">24%</strong><span class="text-xs text-slate-400">growth</span><strong class="text-3xl font-semibold tracking-tight text-amber-400">8 wk</strong><span class="text-xs text-slate-400">to launch</span></div>`,
+  heading: (id) => `<h1 class="heading font-semibold leading-none tracking-tight" data-weave-id="${id}">内容が伝わる、明快な見出し</h1>`,
+  paragraph: (id) => `<p class="paragraph max-w-3xl leading-normal" data-weave-id="${id}">アイデアを理解するために役立つ補足を入力してください。</p>`,
+  eyebrow: (id) => `<div class="eyebrow text-sm font-bold uppercase tracking-widest text-amber-400" data-weave-id="${id}">新しいセクション</div>`,
+  note: (id) => `<div class="note mt-6 text-xs font-semibold uppercase tracking-widest text-slate-400" data-weave-id="${id}">出典 · 社内調査</div>`,
+  metrics: (id) => `<div class="metrics grid grid-cols-4 items-center gap-x-5 mt-2" data-weave-id="${id}"><strong class="text-3xl font-semibold tracking-tight text-amber-400">24%</strong><span class="text-xs text-slate-400">成長率</span><strong class="text-3xl font-semibold tracking-tight text-amber-400">8週</strong><span class="text-xs text-slate-400">公開まで</span></div>`,
   row: (id) => `<div class="weave-container row flex flex-row gap-4" data-weave-id="${id}"></div>`,
   column: (id) => `<div class="weave-container column flex flex-col gap-4" data-weave-id="${id}"></div>`,
   grid: (id) => `<div class="weave-container grid grid-cols-2 gap-4" data-weave-id="${id}"></div>`,
   image: (id) => `<img class="image w-full object-cover object-center aspect-video rounded-lg" src="" alt="" data-weave-id="${id}">`,
-  list: (id) => `<ul class="list list-disc pl-6 text-lg leading-normal text-slate-300" data-weave-id="${id}"><li>First point</li><li>Second point</li><li>Third point</li></ul>`,
-  table: (id) => `<table class="table w-full border-collapse text-sm" data-weave-id="${id}"><thead><tr><th class="p-2 border-b border-slate-300 text-left">Heading</th><th class="p-2 border-b border-slate-300 text-left">Heading</th></tr></thead><tbody><tr><td class="p-2 border-b border-slate-700">Value</td><td class="p-2 border-b border-slate-700">Value</td></tr><tr><td class="p-2 border-b border-slate-700">Value</td><td class="p-2 border-b border-slate-700">Value</td></tr></tbody></table>`,
+  list: (id) => `<ul class="list list-disc pl-6 text-lg leading-normal text-slate-300" data-weave-id="${id}"><li>1つ目の要点</li><li>2つ目の要点</li><li>3つ目の要点</li></ul>`,
+  table: (id) => `<table class="table w-full border-collapse text-sm" data-weave-id="${id}"><thead><tr><th class="p-2 border-b border-slate-300 text-left">項目</th><th class="p-2 border-b border-slate-300 text-left">項目</th></tr></thead><tbody><tr><td class="p-2 border-b border-slate-700">値</td><td class="p-2 border-b border-slate-700">値</td></tr><tr><td class="p-2 border-b border-slate-700">値</td><td class="p-2 border-b border-slate-700">値</td></tr></tbody></table>`,
 };
 const blockKinds = Object.keys(blockTemplates);
 const blockIcons: Record<string, string> = { eyebrow: "T", heading: "H", paragraph: "¶", metrics: "▦", note: "≡", row: "↔", column: "↕", grid: "▦", image: "▧", list: "•", table: "▤" };
+const blockLabels: Record<string, string> = { eyebrow: "小見出し", heading: "見出し", paragraph: "本文", metrics: "指標", note: "注記", row: "横並び", column: "縦並び", grid: "グリッド", image: "画像", list: "リスト", table: "表" };
 const containerClasses = new Set(["row", "column", "grid"]);
 
 /* Which axis a parent lays its children out on — the context every sizing decision resolves against. */
@@ -185,7 +186,9 @@ const relayoutForParent = (node: Element, intent: string, fromLayout: string): s
 
 type Control = { key: string; label: string; options: Array<{ label: string; className: string }> };
 const controlGroups = slideControlGroups as Record<string, { label: string; options: Array<{ label: string; className: string }> }>;
-const controlsFor = (keys: string[]): Control[] => keys.map((key) => ({ key, label: controlGroups[key].label, options: controlGroups[key].options }));
+const controlLabels: Record<string, string> = { Size: "文字サイズ", Weight: "太さ", Leading: "行間", Align: "文字揃え", Measure: "最大幅", Color: "文字色", Gap: "間隔", Padding: "内側余白", Justify: "横方向", "Align items": "縦方向", Marker: "マーカー", Fit: "表示方法", Aspect: "縦横比", Background: "背景", Border: "枠線", "Border color": "枠線色", Radius: "角丸", Shadow: "影", "Space above": "上の余白" };
+const optionLabels: Record<string, string> = { Inherit: "継承", Normal: "標準", Medium: "中", Semibold: "やや太い", Bold: "太字", Extrabold: "極太", None: "なし", Tight: "狭い", Snug: "やや狭い", Relaxed: "やや広い", Loose: "広い", Full: "最大", Amber: "アンバー", Teal: "ティール", Violet: "バイオレット", Rose: "ローズ", Emerald: "エメラルド", Start: "先頭", Center: "中央", Between: "両端", End: "末尾", Stretch: "伸ばす", Bullet: "箇条書き", Number: "番号", Cover: "切り抜く", Contain: "全体表示", Auto: "自動", White: "白", Transparent: "透明", All: "四辺", Top: "上", Bottom: "下", Large: "大" };
+const controlsFor = (keys: string[]): Control[] => keys.map((key) => ({ key, label: controlLabels[controlGroups[key].label] ?? controlGroups[key].label, options: controlGroups[key].options.map((option) => ({ ...option, label: optionLabels[option.label] ?? option.label })) }));
 const textSchema = controlsFor(textControlKeys);
 const containerSchema = controlsFor(containerControlKeys);
 const advancedSchema = controlsFor(advancedControlKeys);
@@ -211,7 +214,7 @@ const slideFromHtml = (slide: SlideDoc): SlideDoc => {
 };
 /* Slide numbering belongs to the rendered frame. Reordering therefore never mutates source HTML. */
 const renumberSlides = (slides: SlideDoc[]) => slides.map((slide) => ({ ...slide }));
-const initialSlides: SlideDoc[] = [slideFromHtml({ id: "opportunity", title: "", notes: "", templateId: "orbit", layoutId: "content", accent: "#f6b84b", html: blankSlideHtml("The opportunity") })];
+const initialSlides: SlideDoc[] = [slideFromHtml({ id: "opportunity", title: "", notes: "", templateId: "orbit", layoutId: "content", accent: "#f6b84b", html: blankSlideHtml("新しい機会") })];
 
 type OutlineItem = { id: string; label: string; kind: string; depth: number; container: boolean; locked: boolean };
 /* Where a tree row drop lands: beside the target, or as the last child when the target is a container. */
@@ -345,7 +348,7 @@ const markReorder = (session: BlockDragSession, event: { timeStamp: number; clie
 };
 
 export default function Home() {
-  const [deckTitle, setDeckTitle] = useState("Q3 Strategy Deck");
+  const [deckTitle, setDeckTitle] = useState("第3四半期 戦略デッキ");
   const [slides, setSlides] = useState<SlideDoc[]>(initialSlides);
   const [templates, setTemplates] = useState<TemplateDoc[]>([]);
   const [activeSlide, setActiveSlide] = useState(1);
@@ -362,7 +365,7 @@ export default function Home() {
   const [showVariationPrompt, setShowVariationPrompt] = useState(false);
   const [variationPreviews, setVariationPreviews] = useState<VariationPreview[] | null>(null);
   const [variationCompareLoading, setVariationCompareLoading] = useState(false);
-  const [variationPrompt, setVariationPrompt] = useState("Explore a bolder editorial hierarchy with a concise headline and stronger metric emphasis.");
+  const [variationPrompt, setVariationPrompt] = useState("見出しを簡潔にし、重要な数値を強調した大胆な構成にしてください。");
   const [openPopover, setOpenPopover] = useState<OpenPopover>(null);
   const [saved, setSaved] = useState(true);
   const [promptDraft, setPromptDraft] = useState("");
@@ -408,7 +411,7 @@ export default function Home() {
   const [inspectorView, setInspectorView] = useState<InspectorView>("layers");
   const [objectTreeOpen, setObjectTreeOpen] = useState(true);
   const [canvasFocused, setCanvasFocused] = useState(false);
-  const [announcement, setAnnouncement] = useState("Editor ready");
+  const [announcement, setAnnouncement] = useState("エディターの準備ができました");
   const [saveMessage, setSaveMessage] = useState("");
   const [defaultTemplateId, setDefaultTemplateId] = useState("");
   const [importedTemplates, setImportedTemplates] = useState<TemplateDoc[] | null>(null);
@@ -500,14 +503,14 @@ export default function Home() {
   const activeOverlayTurnIds = activeOverlayAttachment ? codexState.threads[activeOverlayAttachment.threadId]?.turnIds ?? [] : [];
   const activeOverlayTurnIndex = activeOverlayAttachment?.turnId ? activeOverlayTurnIds.indexOf(activeOverlayAttachment.turnId) : -1;
   const activeOverlayLabel = activeOverlayAttachment
-    ? `${activeOverlayTurnIndex >= 0 ? `Turn ${activeOverlayTurnIndex + 1}` : "Sent turn"} · ${activeOverlayAttachment.slideLabel}`
+    ? `${activeOverlayTurnIndex >= 0 ? `ターン ${activeOverlayTurnIndex + 1}` : "送信済みターン"} · ${activeOverlayAttachment.slideLabel}`
     : "";
   const recalledAnnotations = activeOverlayAttachment?.slideId === activeSlideId ? activeOverlayAttachment.annotations : [];
   const contextSummary = [
-    `Slide ${activeSlide}: ${slides[activeSlide - 1]?.title || "Untitled"}`,
-    selectedId ? `selected ${sel?.kind ?? "element"}` : "no element selected",
-    `${sendableAnnotations.length} annotation${sendableAnnotations.length === 1 ? "" : "s"}`,
-    `${referenceAttachments.length} reference${referenceAttachments.length === 1 ? "" : "s"}`,
+    `スライド ${activeSlide}: ${slides[activeSlide - 1]?.title || "無題"}`,
+    selectedId ? `${blockLabels[sel?.kind ?? ""] ?? "要素"}を選択中` : "要素は未選択",
+    `Agentへの指示 ${sendableAnnotations.length}件`,
+    `参照 ${referenceAttachments.length}件`,
   ].join(" · ");
 
   const showActivity = (view: ActivityView) => {
@@ -517,6 +520,15 @@ export default function Home() {
   };
 
   useEffect(() => { document.documentElement.style.setProperty("--weave-sidebar-width", `${sidebarWidth}px`); }, [sidebarWidth]);
+  useEffect(() => {
+    document.querySelectorAll<HTMLButtonElement>("button").forEach((button) => {
+      const authoredTitle = button.dataset.autoHelp === "true" ? "" : button.title.trim();
+      const help = button.dataset.help?.trim() || authoredTitle || button.getAttribute("aria-label")?.trim() || button.textContent?.replace(/\s+/g, " ").trim();
+      if (!help) return;
+      button.title = help;
+      if (!authoredTitle && !button.dataset.help) button.dataset.autoHelp = "true";
+    });
+  });
   const startSidebarResize = (event: ReactPointerEvent<HTMLDivElement>) => {
     event.preventDefault();
     const startX = event.clientX;
@@ -581,9 +593,9 @@ export default function Home() {
      derived from its Template master + selected Layout, including frame furniture and numbering. */
   const layoutFor = useCallback((slide: SlideDoc, templateOverride?: TemplateDoc, layoutOverride?: TemplateLayout) => {
     const template = templateOverride ?? templates.find((item) => item.id === slide.templateId);
-    if (!template) throw new Error(`Template reference is missing: ${slide.templateId}`);
+    if (!template) throw new Error(`テンプレートが見つかりません: ${slide.templateId}`);
     const layout = layoutOverride ?? template.layouts.find((item) => item.id === slide.layoutId);
-    if (!layout) throw new Error(`Layout reference is missing: ${slide.templateId}/${slide.layoutId}`);
+    if (!layout) throw new Error(`レイアウトが見つかりません: ${slide.templateId}/${slide.layoutId}`);
     return { template, layout };
   }, [templates]);
   const composeFor = useCallback((slide: SlideDoc, position: number, total: number, templateOverride?: TemplateDoc, layoutOverride?: TemplateLayout) => {
@@ -672,8 +684,8 @@ export default function Home() {
     reinject();
   };
   const checkpoint = () => { undoRef.current = [...undoRef.current.slice(-79), snapshot()]; redoRef.current = []; setHistoryState({ undo: undoRef.current.length, redo: 0 }); };
-  const undo = () => { const value = undoRef.current.pop(); if (!value) return; redoRef.current.push(snapshot()); restoreSnapshot(value); setHistoryState({ undo: undoRef.current.length, redo: redoRef.current.length }); setAnnouncement("Change undone"); };
-  const redo = () => { const value = redoRef.current.pop(); if (!value) return; undoRef.current.push(snapshot()); restoreSnapshot(value); setHistoryState({ undo: undoRef.current.length, redo: redoRef.current.length }); setAnnouncement("Change redone"); };
+  const undo = () => { const value = undoRef.current.pop(); if (!value) return; redoRef.current.push(snapshot()); restoreSnapshot(value); setHistoryState({ undo: undoRef.current.length, redo: redoRef.current.length }); setAnnouncement("変更を元に戻しました"); };
+  const redo = () => { const value = redoRef.current.pop(); if (!value) return; undoRef.current.push(snapshot()); restoreSnapshot(value); setHistoryState({ undo: undoRef.current.length, redo: redoRef.current.length }); setAnnouncement("変更をやり直しました"); };
 
   const deckPayload = () => ({ title: deckTitle, defaultTemplateId, slides: captureActive() });
 
@@ -709,12 +721,12 @@ export default function Home() {
   }, [quality, projectEventDiagnostics]);
 
   const activeThread = codexState.activeThreadId ? codexState.threads[codexState.activeThreadId] : null;
-  const activeThreadName = activeThread ? displayThreadName(activeThread.name) || activeThread.preview || "New conversation" : "No conversation";
+  const activeThreadName = activeThread ? displayThreadName(activeThread.name) || activeThread.preview || "新しい会話" : "会話なし";
   const selectedModelInfo = useMemo(() => codexState.catalog.models.find((model: any) => (model.id ?? model.model) === selectedModel) as any, [codexState.catalog.models, selectedModel]);
   /* Display-only fallback: a model that declares no supported efforts still gets the three
      standard choices in the picker, while `applyServerState` leaves such a model's effort alone. */
   const availableEfforts = useMemo(() => selectedModelInfo?.supportedReasoningEfforts?.map((option: any) => option.reasoningEffort) ?? ["low", "medium", "high"], [selectedModelInfo]);
-  const agentActivity = !agentReady ? codexState.connection.error ?? "Connecting to Codex…" : agentRunning ? "Codex is working…" : "Ready";
+  const agentActivity = !agentReady ? codexState.connection.error ?? "Codexへ接続中…" : agentRunning ? "Codexが作業中…" : "準備完了";
 
   /* `applyDeck` controls whether the on-disk deck replaces the editor buffer. Status-only polls
      (retrying while Codex connects) pass false so they never clobber unsaved edits — the local
@@ -763,7 +775,7 @@ export default function Home() {
     const loadState = async () => {
       try {
         const response = await fetch(`${apiBase}/state`);
-        if (!response.ok) throw new Error("Local API is unavailable.");
+        if (!response.ok) throw new Error("ローカルAPIを利用できません。");
         const state = (await response.json()) as ServerState;
         if (canceled) return;
         /* Load the deck once; later readiness retries only refresh Codex status so they
@@ -773,7 +785,7 @@ export default function Home() {
         if (!state.codex.ready) { attempts += 1; timer = setTimeout(() => void loadState(), retryDelay(attempts)); }
       } catch (error) {
         if (canceled) return;
-        dispatchCodex({ type: "connection", connection: { status: "disconnected", error: "Local API offline" } });
+        dispatchCodex({ type: "connection", connection: { status: "disconnected", error: "ローカルAPIはオフラインです" } });
         setApiError(error instanceof Error ? error.message : String(error));
         attempts += 1;
         timer = setTimeout(() => void loadState(), retryDelay(attempts));
@@ -789,7 +801,7 @@ export default function Home() {
     const connect = async () => {
       try {
         const response = await fetch(`${apiBase}/codex/events?after=${eventSequenceRef.current}`);
-        if (!response.ok || !response.body) throw new Error("Codex event stream is unavailable.");
+        if (!response.ok || !response.body) throw new Error("Codexのイベント接続を利用できません。");
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let pending = "";
@@ -823,7 +835,7 @@ export default function Home() {
                 applyServerState(state, unchanged);
                 if (!unchanged) {
                   markDirty();
-                  setApiError("The project changed on disk while you were editing. Your local edits were kept; save again to reconcile them.");
+                  setApiError("編集中にプロジェクトの保存内容が変更されました。現在の編集は保持されています。もう一度保存して統合してください。");
                 }
               }
               continue;
@@ -849,7 +861,7 @@ export default function Home() {
           const query = new URLSearchParams({ archived: String(showArchivedThreads), ...(threadSearch.trim() ? { q: threadSearch.trim() } : {}) });
           const response = await fetch(`${apiBase}/codex/threads?${query}`);
           const result = await response.json();
-          if (!response.ok) throw new Error(result.error ?? "Could not list threads.");
+          if (!response.ok) throw new Error(result.error ?? "会話一覧を取得できませんでした。");
           if (canceled) return;
           dispatchCodex({ type: "threadsLoaded", threads: result.data ?? [], archived: showArchivedThreads });
           if (!codexState.activeThreadId && result.data?.[0]) {
@@ -919,7 +931,7 @@ export default function Home() {
       if (!id) return null;
       const kind = [...child.classList].find((cls) => cls !== "weave-container" && cls !== "weave-selected") ?? child.tagName.toLowerCase();
       const locked = isTitleSlot(child);
-      return { id, label: locked ? "title" : kind, kind, depth, container: child.classList.contains("weave-container"), locked };
+      return { id, label: locked ? "タイトル" : blockLabels[kind] ?? kind, kind, depth, container: child.classList.contains("weave-container"), locked };
     };
     if (content) {
       const walk = (element: Element, depth: number) => {
@@ -1086,7 +1098,7 @@ export default function Home() {
     setOpenPopover(null);
     if (annotationMode) setSelectedAnnotationId(null);
     setAnnotationMode(!annotationMode);
-    setAnnouncement(annotationMode ? "Mark for Agent finished" : "Mark for Agent enabled. Drag over what you want the Agent to change.");
+    setAnnouncement(annotationMode ? "Mark for Agentを終了しました" : "Mark for Agentを開始しました。変更したい範囲をドラッグしてください。");
   };
 
   const updateAnnotationGesture = (event: { clientX: number; clientY: number }) => {
@@ -1144,7 +1156,7 @@ export default function Home() {
     setAnnotations((current) => current.filter((annotation) => annotation.id !== id));
     setSelectedAnnotationId((current) => current === id ? null : current);
     setFocusAnnotationId((current) => current === id ? null : current);
-    if (annotation) setAnnouncement(`Annotation ${annotation.order} deleted`);
+    if (annotation) setAnnouncement(`指示 ${annotation.order} を削除しました`);
   };
 
   const pointElement = (slideId: string, elementId: string): { annotation: Annotation; created: boolean } | null => {
@@ -1194,8 +1206,8 @@ export default function Home() {
     if (!pointed) return;
     insertPromptReference(pointed.annotation, caret, afterAtSign);
     setAnnouncement(pointed.created
-      ? `Element annotation ${pointed.annotation.order} created and referenced`
-      : `Element annotation ${pointed.annotation.order} reused`);
+      ? `要素への指示 ${pointed.annotation.order} を作成して参照しました`
+      : `要素への指示 ${pointed.annotation.order} を再利用しました`);
   };
 
   const pickPointerElement = (elementId: string) => {
@@ -1211,7 +1223,7 @@ export default function Home() {
 
   const restoreAnnotationAttachment = (attachment: SentAnnotationAttachment) => {
     if (!slidesRef.current.some((slide) => slide.id === attachment.slideId)) {
-      setApiError("The slide for this annotation attachment no longer exists.");
+      setApiError("この指示を付けたスライドはもう存在しません。");
       return;
     }
     const restoredIds = attachment.annotations.map(() => createMessageId());
@@ -1227,7 +1239,7 @@ export default function Home() {
     });
     if (attachment.annotations.some((annotation) => annotation.target.kind === "region")) setIncludeRegionAnnotations(true);
     setApiError(null);
-    setAnnouncement("Annotation attachment restored to draft");
+    setAnnouncement("Agentへの指示を下書きに戻しました");
   };
 
   const onCanvasPointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
@@ -1277,7 +1289,7 @@ export default function Home() {
       setSelectedAnnotationId(id);
       setFocusAnnotationId(id);
       setIncludeRegionAnnotations(true);
-      setAnnouncement(`Region annotation ${order} created`);
+      setAnnouncement(`範囲への指示 ${order} を作成しました`);
     }
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     annotationGestureRef.current = null;
@@ -1474,7 +1486,7 @@ export default function Home() {
     redoRef.current = [];
     setHistoryState({ undo: undoRef.current.length, redo: 0 });
     syncFromDom();
-    setAnnouncement("Block moved");
+    setAnnouncement("ブロックを移動しました");
   };
 
   const onCanvasPaste = (event: React.ClipboardEvent<HTMLDivElement>) => {
@@ -1545,7 +1557,7 @@ export default function Home() {
     animateDomReorder(() => { parent.insertBefore(node, reference); relayoutForParent(node, treeIntent, treeLayout); });
     setSelectedId(dragId);
     syncFromDom();
-    setAnnouncement("Block moved");
+    setAnnouncement("ブロックを移動しました");
   };
 
   const addBlock = (kind: string, assetPath = "", placement?: { id: string; after: boolean }) => {
@@ -1578,18 +1590,18 @@ export default function Home() {
     const replacing = replacingImageRef.current;
     const targetElementId = selectedRef.current;
     try {
-      if (file.size > 10 * 1024 * 1024) throw new Error("Image must be 10 MB or smaller.");
+      if (file.size > 10 * 1024 * 1024) throw new Error("画像は10 MB以下にしてください。");
       const dataUrl = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file); });
       const response = await fetch(`${apiBase}/assets`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ mimeType: file.type, data: dataUrl.slice(dataUrl.indexOf(",") + 1) }) });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Image import failed.");
-      if (slidesRef.current[activeRef.current - 1]?.id !== targetSlideId) throw new Error("Image imported, but the target slide changed before upload completed.");
+      if (!response.ok) throw new Error(result.error ?? "画像を読み込めませんでした。");
+      if (slidesRef.current[activeRef.current - 1]?.id !== targetSlideId) throw new Error("画像の読み込み中に対象スライドが切り替わりました。");
       const selected = targetElementId ? canvasRef.current?.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(targetElementId)}"]`) ?? null : null;
       if (replacing && selected instanceof HTMLImageElement && selectedRef.current === targetElementId) {
         checkpoint(); selected.dataset.assetPath = result.path; selected.src = `${apiBase}/${result.path}`; syncFromDom(); setSel(readSelection(selected));
-      } else if (replacing) throw new Error("Image imported, but the image selected for replacement changed before upload completed.");
+      } else if (replacing) throw new Error("画像の読み込み中に、置き換え対象の画像が変更されました。");
       else addBlock("image", result.path, placement);
-      setAnnouncement("Image imported");
+      setAnnouncement("画像を読み込みました");
       setApiError(null);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
     finally { replacingImageRef.current = false; if (imageInputRef.current) imageInputRef.current.value = ""; }
@@ -1598,11 +1610,11 @@ export default function Home() {
   const uploadReferences = useCallback(async (files: FileList | File[]) => {
     for (const file of Array.from(files)) {
       try {
-        if (file.size > 25 * 1024 * 1024) throw new Error("Reference must be 25 MB or smaller.");
+        if (file.size > 25 * 1024 * 1024) throw new Error("参照資料は25 MB以下にしてください。");
         const dataUrl = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file); });
         const response = await fetch(`${apiBase}/references`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: file.name, mimeType: file.type, data: dataUrl.slice(dataUrl.indexOf(",") + 1) }) });
         const result = await response.json();
-        if (!response.ok) throw new Error(result.error ?? "Reference import failed.");
+        if (!response.ok) throw new Error(result.error ?? "参照資料を読み込めませんでした。");
         setReferenceAttachments((current) => current.some((attachment) => attachment.path === result.path) ? current : [...current, result]);
         setReferenceShelf((current) => current.some((reference) => reference.path === result.path) ? current : [...current, { ...result, missing: false }]);
         setApiError(null);
@@ -1615,7 +1627,7 @@ export default function Home() {
     try {
       const response = await fetch(`${apiBase}/references/remove`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path }) });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Reference removal failed.");
+      if (!response.ok) throw new Error(result.error ?? "参照資料を削除できませんでした。");
       setReferenceShelf(result.references ?? []);
       setReferenceAttachments((current) => current.filter((attachment) => attachment.path !== path));
       setApiError(null);
@@ -1626,7 +1638,7 @@ export default function Home() {
     try {
       const response = await fetch(`${apiBase}/folders${path ? `?path=${encodeURIComponent(path)}` : ""}`);
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Folder browsing failed.");
+      if (!response.ok) throw new Error(result.error ?? "フォルダーを開けませんでした。");
       setFolderBrowser(result); setReferenceView("browse"); setApiError(null);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   }, []);
@@ -1637,7 +1649,7 @@ export default function Home() {
     try {
       const response = await fetch(`${apiBase}/references/folder`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ source: folderBrowser.path }) });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Folder import failed.");
+      if (!response.ok) throw new Error(result.error ?? "フォルダーを読み込めませんでした。");
       setReferenceShelf((current) => [...current, { ...result, missing: false, sourceMissing: false }]);
       setReferenceView("shelf"); setApiError(null);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
@@ -1647,7 +1659,7 @@ export default function Home() {
   const syncFolder = useCallback(async (path: string) => {
     try {
       const response = await fetch(`${apiBase}/references/folder/sync`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path }) });
-      const result = await response.json(); if (!response.ok) throw new Error(result.error ?? "Folder update failed.");
+      const result = await response.json(); if (!response.ok) throw new Error(result.error ?? "フォルダーを更新できませんでした。");
       setReferenceShelf(result.references ?? []); setApiError(null);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   }, []);
@@ -1713,9 +1725,9 @@ export default function Home() {
   const editTable = (operation: "add-row" | "remove-row" | "add-column" | "remove-column") => applyClasses((node) => {
     if (!(node instanceof HTMLTableElement)) return;
     const rows = Array.from(node.rows);
-    if (operation === "add-row") { const row = node.tBodies[0]?.insertRow(); for (let i = 0; row && i < (rows[0]?.cells.length ?? 2); i += 1) { const cell = row.insertCell(); cell.className = "p-2 border-b border-slate-700"; cell.textContent = "Value"; } }
+    if (operation === "add-row") { const row = node.tBodies[0]?.insertRow(); for (let i = 0; row && i < (rows[0]?.cells.length ?? 2); i += 1) { const cell = row.insertCell(); cell.className = "p-2 border-b border-slate-700"; cell.textContent = "値"; } }
     if (operation === "remove-row" && node.tBodies[0]?.rows.length) node.tBodies[0].deleteRow(-1);
-    if (operation === "add-column") rows.forEach((row, index) => { const cell = index === 0 ? document.createElement("th") : document.createElement("td"); cell.className = `p-2 border-b ${index === 0 ? "border-slate-300 text-left" : "border-slate-700"}`; cell.textContent = index === 0 ? "Heading" : "Value"; row.appendChild(cell); });
+    if (operation === "add-column") rows.forEach((row, index) => { const cell = index === 0 ? document.createElement("th") : document.createElement("td"); cell.className = `p-2 border-b ${index === 0 ? "border-slate-300 text-left" : "border-slate-700"}`; cell.textContent = index === 0 ? "項目" : "値"; row.appendChild(cell); });
     if (operation === "remove-column" && (rows[0]?.cells.length ?? 0) > 1) rows.forEach((row) => row.deleteCell(-1));
   });
   const formatSelection = (tag: "strong" | "span") => {
@@ -1745,7 +1757,7 @@ export default function Home() {
     if (!template || !slide) return;
     templatePreviewSourceHtmlRef.current = slide.html;
     const layout = template.layouts.find((item) => item.id === layoutId);
-    if (!layout) { setApiError(`Layout reference is missing: ${template.id}/${layoutId}`); return; }
+    if (!layout) { setApiError(`レイアウトが見つかりません: ${template.id}/${layoutId}`); return; }
     templatePreviewHtmlRef.current = composeFor({ ...slide, templateId: template.id, layoutId: layout.id }, activeRef.current, captured.length, template, layout);
     reinject();
   };
@@ -1761,7 +1773,7 @@ export default function Home() {
     if (!slide) return;
     checkpoint();
     const selectedLayout = template.layouts.find((item) => item.id === layoutId);
-    if (!selectedLayout) { setApiError(`Layout reference is missing: ${template.id}/${layoutId}`); return; }
+    if (!selectedLayout) { setApiError(`レイアウトが見つかりません: ${template.id}/${layoutId}`); return; }
     setSlidesSynced(captured.map((item, itemIndex) => itemIndex === index ? { ...item, templateId: template.id, layoutId: selectedLayout.id } : item));
     markDirty();
     dismissPopover(false);
@@ -1772,7 +1784,7 @@ export default function Home() {
     if (!root) return;
     checkpoint();
     const next = accents.find((item) => item.color === value);
-    if (!next) { setApiError(`Unknown accent: ${value}`); return; }
+    if (!next) { setApiError(`対応していないアクセントカラーです: ${value}`); return; }
     const accentClasses = accents.map((item) => item.className);
     root.querySelectorAll<HTMLElement>(accentClasses.map((item) => `.${item}`).join(",")).forEach((node) => {
       node.classList.remove(...accentClasses);
@@ -1800,7 +1812,7 @@ export default function Home() {
   const toggleAttachmentOverlay = (attachment: SentAnnotationAttachment) => {
     if (activeOverlayAttachmentId === attachment.id) {
       setActiveOverlayAttachmentId(null);
-      setAnnouncement("Annotation overlay hidden");
+      setAnnouncement("Agentへの指示を非表示にしました");
       return;
     }
     const slideIndex = slidesRef.current.findIndex((slide) => slide.id === attachment.slideId);
@@ -1808,7 +1820,7 @@ export default function Home() {
     if (mode === "code") setMode("preview");
     if (activeRef.current !== slideIndex + 1) switchSlide(slideIndex + 1);
     setActiveOverlayAttachmentId(attachment.id);
-    setAnnouncement("Annotation overlay shown");
+    setAnnouncement("Agentへの指示を表示しました");
   };
 
   const setSlideTitle = (title: string) => {
@@ -1829,7 +1841,7 @@ export default function Home() {
     const captured = captureActive();
     const template = templates.find((item) => item.id === templateId);
     const selectedLayout = template?.layouts.find((item) => item.id === layoutId);
-    if (!template || !selectedLayout) { setApiError(`Template or layout reference is missing: ${templateId}/${layoutId}`); return; }
+    if (!template || !selectedLayout) { setApiError(`テンプレートまたはレイアウトが見つかりません: ${templateId}/${layoutId}`); return; }
     const empty = '<main class="weave-slide"><section data-weave-slot="content"><h1 data-weave-slot="title" data-weave-id="title"></h1></section></main>';
     const slideId = `slide-${createMessageId().slice(6)}`;
     const html = empty.replace(/\bdata-weave-id\s*=\s*(["'])(.*?)\1/gi, (_: string, quote: string) => `data-weave-id=${quote}block-${createMessageId().slice(6)}${quote}`);
@@ -1893,7 +1905,7 @@ export default function Home() {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
       if (galleryOpen) return;
-      if (pointerPicking && event.key === "Escape") { event.preventDefault(); setPointerPicking(false); setAnnouncement("Element pointing canceled"); return; }
+      if (pointerPicking && event.key === "Escape") { event.preventDefault(); setPointerPicking(false); setAnnouncement("要素の指定をキャンセルしました"); return; }
       if (target.matches("input, textarea, [contenteditable=true]")) return;
       if (!event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "a") { event.preventDefault(); toggleAnnotationMode(); }
       else if (annotationMode && selectedAnnotationId && (event.key === "Delete" || event.key === "Backspace")) { event.preventDefault(); deleteAnnotation(selectedAnnotationId); }
@@ -1942,7 +1954,7 @@ export default function Home() {
     try {
       const response = await fetch(`${apiBase}/projects`);
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Could not load projects.");
+      if (!response.ok) throw new Error(result.error ?? "プロジェクト一覧を取得できませんでした。");
       setGalleryProjects(result.projects ?? []);
       setApiError(null);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
@@ -1985,7 +1997,7 @@ export default function Home() {
         if (result.code === "WEAVE_PROJECT_DIRTY") setGalleryDialog({ kind: "dirty", slug: target.slug, title: target.title });
         else if (result.code === "WEAVE_TURN_RUNNING") setGalleryDialog({ kind: "turn", slug: target.slug, title: target.title });
         else if (result.code === "WEAVE_PROJECT_BLOCKED") setGalleryTip(target.slug);
-        else throw new Error(result.error ?? "Could not switch projects.");
+        else throw new Error(result.error ?? "プロジェクトを切り替えられませんでした。");
         return;
       }
       applyServerState(result as ServerState);
@@ -2001,7 +2013,7 @@ export default function Home() {
       const method = action === "rename" ? "PATCH" : "POST";
       const response = await fetch(`${apiBase}/projects/${slug}${action === "rename" ? "" : `/${action}`}`, { method, headers: { "content-type": "application/json" }, body: action === "rename" ? JSON.stringify({ title }) : "{}" });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Could not update the project.");
+      if (!response.ok) throw new Error(result.error ?? "プロジェクトを更新できませんでした。");
       setGalleryProjects(result.projects ?? []);
       setGalleryDialog(null);
       setGalleryMenu(null);
@@ -2017,7 +2029,7 @@ export default function Home() {
     try {
       const response = await fetch(`${apiBase}/projects`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title, templateId: newProjectTemplate }) });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Could not create the project.");
+      if (!response.ok) throw new Error(result.error ?? "プロジェクトを作成できませんでした。");
       applyServerState(result as ServerState);
       resetProjectEditor();
       closeGallery();
@@ -2027,14 +2039,14 @@ export default function Home() {
   };
 
   const relativeProjectTime = (value: string | null) => {
-    if (!value) return "Unknown save time";
+    if (!value) return "保存日時不明";
     const days = Math.max(0, Math.floor((galleryNow - new Date(value).getTime()) / 86_400_000));
     const minutes = Math.max(0, Math.floor((galleryNow - new Date(value).getTime()) / 60_000));
-    if (minutes < 1) return "Saved just now";
-    if (minutes < 60) return `Saved ${minutes}m ago`;
-    if (days === 0) return `Saved ${Math.floor(minutes / 60)}h ago`;
-    if (days === 1) return "Saved yesterday";
-    if (days < 7) return `Saved ${days}d ago`;
+    if (minutes < 1) return "たった今保存";
+    if (minutes < 60) return `${minutes}分前に保存`;
+    if (days === 0) return `${Math.floor(minutes / 60)}時間前に保存`;
+    if (days === 1) return "昨日保存";
+    if (days < 7) return `${days}日前に保存`;
     return new Date(value).toLocaleDateString("ja-JP", { year: "numeric", month: "numeric", day: "numeric" });
   };
 
@@ -2045,13 +2057,13 @@ export default function Home() {
       const generation = editGenerationRef.current;
       const response = await fetch(`${apiBase}/save`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ deck: deckPayload(), ...(importedTemplates ? { templates: importedTemplates } : {}), message: saveMessage || deckTitle, expectedRevision: serverRevision, idempotencyKey: createMessageId() }) });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Save failed.");
+      if (!response.ok) throw new Error(result.error ?? "保存できませんでした。");
       const unchanged = generation === editGenerationRef.current;
       applyServerState(result as ServerState, unchanged);
       if (unchanged) setImportedTemplates(null);
       setSaved(unchanged);
       setSaveMessage("");
-      setAnnouncement(unchanged ? "Deck saved to history" : "Saved version recorded; newer local edits remain unsaved");
+      setAnnouncement(unchanged ? "デッキを履歴に保存しました" : "この版を履歴に保存しました。以降の編集は未保存のままです");
       setApiError(null);
       return unchanged;
     } catch (error) {
@@ -2066,7 +2078,7 @@ export default function Home() {
   };
 
   const exportDeck = async () => {
-    if (!quality.ok) { popoverTriggerRef.current = null; setOpenPopover("quality"); setApiError("Resolve quality errors before exporting."); return; }
+    if (!quality.ok) { popoverTriggerRef.current = null; setOpenPopover("quality"); setApiError("書き出す前に品質エラーを解決してください。"); return; }
     try {
       const fragments = await embedAssetReferences(exportFragments(), apiBase);
       const html = renderDeckDocument(fragments, deckCss, deckTitle);
@@ -2077,7 +2089,7 @@ export default function Home() {
       anchor.download = `${deckTitle.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "weave-deck"}.html`;
       anchor.click();
       URL.revokeObjectURL(url);
-      setAnnouncement("Offline presentation downloaded");
+      setAnnouncement("オフライン用プレゼンをダウンロードしました");
     } catch (error) {
       setApiError(error instanceof Error ? error.message : String(error));
     }
@@ -2095,9 +2107,9 @@ export default function Home() {
 
   const importBundle = async (file: File) => {
     try {
-      if (file.size > 4_000_000) throw new Error("Deck bundle must be 4 MB or smaller.");
+      if (file.size > 4_000_000) throw new Error("編集用データは4 MB以下にしてください。");
       const bundle = parsePortableBundle(JSON.parse(await file.text()));
-      if (!window.confirm(`Replace the editor buffer with “${bundle.deck.title}”? You can Undo this import.`)) return;
+      if (!window.confirm(`編集中の内容を「${bundle.deck.title}」に置き換えますか？読み込み後も元に戻せます。`)) return;
       checkpoint();
       setDeckTitle(String(bundle.deck.title));
       setDefaultTemplateId(bundle.deck.defaultTemplateId);
@@ -2110,7 +2122,7 @@ export default function Home() {
       setSelectedId(null);
       markDirty();
       reinject();
-      setAnnouncement("Portable deck imported; save to commit it");
+      setAnnouncement("編集用データを読み込みました。保存すると確定します");
     } catch (error) {
       setApiError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -2123,7 +2135,7 @@ export default function Home() {
   const printDeck = async () => {
     if (!quality.ok) { popoverTriggerRef.current = null; setOpenPopover("quality"); return; }
     const popup = window.open("", "_blank");
-    if (!popup) { setApiError("Allow pop-ups to print this deck."); return; }
+    if (!popup) { setApiError("このデッキを印刷するにはポップアップを許可してください。"); return; }
     popup.opener = null;
     try {
       const fragments = await embedAssetReferences(exportFragments(), apiBase);
@@ -2141,7 +2153,7 @@ export default function Home() {
       const endpoint = commit ? "history/checkout" : "history/main";
       const response = await fetch(`${apiBase}/${endpoint}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(commit ? { commit } : {}) });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Could not restore history.");
+      if (!response.ok) throw new Error(result.error ?? "履歴を復元できませんでした。");
       applyServerState(result as ServerState);
       setSelectedId(null);
       setApiError(null);
@@ -2154,7 +2166,7 @@ export default function Home() {
     try {
       const response = await fetch(`${apiBase}/variations/checkout`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ branch }) });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Could not switch direction.");
+      if (!response.ok) throw new Error(result.error ?? "デザイン案を切り替えられませんでした。");
       applyServerState(result as ServerState);
       setSelectedId(null);
       setApiError(null);
@@ -2169,7 +2181,7 @@ export default function Home() {
     try {
       const response = await fetch(`${apiBase}/variations/compare`);
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Could not load direction comparison.");
+      if (!response.ok) throw new Error(result.error ?? "デザイン案の比較を読み込めませんでした。");
       setVariationPreviews(result.previews ?? []);
       setApiError(null);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
@@ -2199,7 +2211,7 @@ export default function Home() {
       // Variations are branch trials, so annotations stay on the canvas instead of being consumed.
       const response = await fetch(`${apiBase}/variations/generate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt, deck: deckPayload(), clientUserMessageId: createMessageId(), model: selectedModel || undefined, effort: reasoningEffort, approvalPolicy, contextEnvelope: contextEnvelope(variationAnnotations, overflowingIds(liveOverflowMeasurements())) }) });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Could not generate direction.");
+      if (!response.ok) throw new Error(result.error ?? "デザイン案を生成できませんでした。");
       setActiveVariation(result.branch);
       dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
     } catch (error) {
@@ -2214,7 +2226,7 @@ export default function Home() {
     try {
       const response = await fetch(`${apiBase}/variations/accept`, { method: "POST" });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Could not use this direction.");
+      if (!response.ok) throw new Error(result.error ?? "このデザイン案を採用できませんでした。");
       applyServerState(result as ServerState);
       setApiError(null);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
@@ -2224,7 +2236,7 @@ export default function Home() {
     try {
       const response = await fetch(`${apiBase}/variations/archive`, { method: "POST" });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Could not archive this direction.");
+      if (!response.ok) throw new Error(result.error ?? "このデザイン案を履歴へ送れませんでした。");
       applyServerState(result as ServerState);
       setApiError(null);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
@@ -2240,14 +2252,14 @@ export default function Home() {
       if (next[caret - 1] === "@") pointerCaretRef.current = caret;
       else {
         setPointerPicking(false);
-        setAnnouncement("Element pointing canceled");
+        setAnnouncement("要素の指定をキャンセルしました");
       }
       return;
     }
     if (mode !== "preview" || annotationMode || isComposing || nativeEvent.data !== "@") return;
     pointerCaretRef.current = caret;
     setPointerPicking(true);
-    setAnnouncement("Element pointing ready");
+    setAnnouncement("参照する要素を選んでください");
   };
 
   const onPromptCompositionEnd = () => {
@@ -2282,17 +2294,17 @@ export default function Home() {
       if (!threadId) {
         const startResponse = await fetch(`${apiBase}/codex/thread/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ approvalPolicy, model: selectedModel || undefined }) });
         const started = await startResponse.json();
-        if (!startResponse.ok) throw new Error(started.error ?? "Could not start a Thread.");
+        if (!startResponse.ok) throw new Error(started.error ?? "会話を開始できませんでした。");
         threadId = started.thread.id;
         dispatchCodex({ type: "threadLoaded", thread: started.thread, activate: true });
       }
-      if (!threadId) throw new Error("Could not resolve the active Thread.");
+      if (!threadId) throw new Error("操作対象の会話を特定できませんでした。");
       const steering = agentRunning;
       const runningTurnId = codexState.activeTurnId;
       const endpoint = steering ? "codex/turn/steer" : "codex/turn/start";
       const response = await fetch(`${apiBase}/${endpoint}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId, prompt: value, clientUserMessageId: createMessageId(), selectedId, deck: requestDeck, model: selectedModel || undefined, effort: reasoningEffort, approvalPolicy, contextEnvelope: requestEnvelope, attachments: referenceAttachments }) });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Agent turn failed.");
+      if (!response.ok) throw new Error(result.error ?? "Agentへの依頼を開始できませんでした。");
       if (turnAnnotations.length > 0 && slide) {
         const turnId = steering ? runningTurnId ?? result.turn?.id ?? result.turnId ?? null : result.turn?.id ?? result.turnId ?? null;
         setAnnotationAttachments((current) => [...current, {
@@ -2300,13 +2312,13 @@ export default function Home() {
           threadId,
           turnId,
           slideId: slide.id,
-          slideLabel: `Slide ${slideNumber}${slide.title ? ` · ${slide.title}` : ""}`,
+          slideLabel: `スライド ${slideNumber}${slide.title ? ` · ${slide.title}` : ""}`,
           annotations: turnAnnotations.map(cloneAnnotation),
         }]);
         const sentIds = new Set(turnAnnotations.map((annotation) => annotation.id));
         setAnnotations((current) => current.filter((annotation) => !sentIds.has(annotation.id)));
         setSelectedAnnotationId((current) => current && sentIds.has(current) ? null : current);
-        setAnnouncement("Annotation attachment sent");
+        setAnnouncement("Agentへの指示を送信しました");
       }
       setPromptDraft("");
       setReferenceAttachments([]);
@@ -2323,7 +2335,7 @@ export default function Home() {
     try {
       const response = await fetch(`${apiBase}/codex/turn/interrupt`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: codexState.activeThreadId }) });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Could not stop the active turn.");
+      if (!response.ok) throw new Error(result.error ?? "進行中のAgentを停止できませんでした。");
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   };
 
@@ -2331,7 +2343,7 @@ export default function Home() {
     try {
       const response = await fetch(`${apiBase}/codex/thread/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ approvalPolicy, model: selectedModel || undefined }) });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Could not start a Thread.");
+      if (!response.ok) throw new Error(result.error ?? "会話を開始できませんでした。");
       dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
       setApiError(null);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
@@ -2341,7 +2353,7 @@ export default function Home() {
     try {
       const response = await fetch(`${apiBase}/codex/thread/resume`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId }) });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Could not resume the Thread.");
+      if (!response.ok) throw new Error(result.error ?? "会話を再開できませんでした。");
       dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   };
@@ -2352,7 +2364,7 @@ export default function Home() {
     try {
       const response = await fetch(`${apiBase}/codex/thread/action`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action, params: { threadId, ...params } }) });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Thread action failed.");
+      if (!response.ok) throw new Error(result.error ?? "会話を操作できませんでした。");
       if (action === "delete") dispatchCodex({ type: "activateThread", threadId: null });
       else await openThread(threadId);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
@@ -2363,7 +2375,7 @@ export default function Home() {
     try {
       const response = await fetch(`${apiBase}/codex/thread/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: codexState.activeThreadId }) });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Could not fork the Thread.");
+      if (!response.ok) throw new Error(result.error ?? "会話を複製して分岐できませんでした。");
       dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   };
@@ -2374,9 +2386,9 @@ export default function Home() {
     try {
       const response = await fetch(`${apiBase}/codex/thread/action`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "goalGet", params: { threadId } }) });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Could not read the Thread goal.");
+      if (!response.ok) throw new Error(result.error ?? "会話の目標を取得できませんでした。");
       const current = result.goal?.objective ?? result.objective ?? "";
-      const objective = window.prompt("Thread goal (leave empty to clear)", current);
+      const objective = window.prompt("会話の目標（空欄にすると解除します）", current);
       if (objective === null) return;
       await threadAction(objective.trim() ? "goalSet" : "goalClear", objective.trim() ? { objective } : {});
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
@@ -2386,14 +2398,14 @@ export default function Home() {
     try {
       const response = await fetch(`${apiBase}/codex/request/resolve`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, result }) });
       const value = await response.json();
-      if (!response.ok) throw new Error(value.error ?? "Could not answer app-server.");
+      if (!response.ok) throw new Error(value.error ?? "Codexへ回答を送れませんでした。");
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   };
   const rejectServerRequest = async (id: string | number) => {
     try {
       const response = await fetch(`${apiBase}/codex/request/reject`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, message: "Declined in Weave." }) });
       const value = await response.json();
-      if (!response.ok) throw new Error(value.error ?? "Could not decline app-server.");
+      if (!response.ok) throw new Error(value.error ?? "Codexへ拒否の回答を送れませんでした。");
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   };
 
@@ -2401,7 +2413,7 @@ export default function Home() {
     try {
       const response = await fetch(`${apiBase}/codex/skill/config`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: skill.path ?? null, name: skill.name ?? null, enabled }) });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Could not update Skill.");
+      if (!response.ok) throw new Error(result.error ?? "スキルを更新できませんでした。");
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   };
 
@@ -2409,10 +2421,10 @@ export default function Home() {
     try {
       const response = await fetch(`${apiBase}/codex/account/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(type === "apiKey" ? { type, apiKey: apiKeyDraft } : { type }) });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "Login could not start.");
+      if (!response.ok) throw new Error(result.error ?? "ログインを開始できませんでした。");
       setApiKeyDraft("");
       const loginUrl = result.authUrl ?? result.loginUrl ?? result.url;
-      if (loginUrl && window.confirm("Open the secure Codex login page in your browser?")) window.open(loginUrl, "_blank", "noopener,noreferrer");
+      if (loginUrl && window.confirm("安全なCodexログインページをブラウザーで開きますか？")) window.open(loginUrl, "_blank", "noopener,noreferrer");
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   };
 
@@ -2421,22 +2433,22 @@ export default function Home() {
       let path: string;
       let body: Record<string, unknown>;
       if (kind === "resource") {
-        const uri = window.prompt("MCP resource URI", server.resources?.[0]?.uri ?? "");
+        const uri = window.prompt("MCPリソースのURI", server.resources?.[0]?.uri ?? "");
         if (!uri) return;
         path = "resource/read";
         body = { server: server.name, uri, threadId: codexState.activeThreadId };
       } else {
-        if (!codexState.activeThreadId) throw new Error("Select a Weave Thread before calling an MCP tool.");
-        const tool = window.prompt("MCP tool name", Object.keys(server.tools ?? {})[0] ?? "");
+        if (!codexState.activeThreadId) throw new Error("MCPツールを呼び出す前にWeave会話を選択してください。");
+        const tool = window.prompt("MCPツール名", Object.keys(server.tools ?? {})[0] ?? "");
         if (!tool) return;
-        const raw = window.prompt("Tool arguments as JSON", "{}");
+        const raw = window.prompt("ツールの引数（JSON）", "{}");
         if (raw === null) return;
         path = "tool/call";
         body = { server: server.name, tool, arguments: JSON.parse(raw), threadId: codexState.activeThreadId };
       }
       const response = await fetch(`${apiBase}/codex/mcp/${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "MCP request failed.");
+      if (!response.ok) throw new Error(result.error ?? "MCPへのリクエストに失敗しました。");
       setMcpResult(JSON.stringify(result, null, 2).slice(0, 20_000));
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   };
@@ -2451,7 +2463,7 @@ export default function Home() {
   const templatePreview = (template: TemplateDoc, instanceId: string, layoutId = template.defaultLayoutId) => {
     const source = blankSlideHtml("");
     const layout = template.layouts.find((item) => item.id === layoutId);
-    if (!layout) return <span className="template-preview template-preview-empty" aria-label={`Layout reference is missing: ${template.id}/${layoutId}`} />;
+    if (!layout) return <span className="template-preview template-preview-empty" aria-label={`レイアウトが見つかりません: ${template.id}/${layoutId}`} />;
     let html = "";
     try { html = composeSlideHtml({ slideHtml: source, masterHtml: template.masterHtml, layoutHtml: layout.html, templateId: template.id, layoutId: layout.id, position: 1, total: 1, accent: "#f6b84b", instanceId: `${template.id}-${instanceId}` }); }
     catch { return <span className="template-preview template-preview-empty" />; }
@@ -2482,12 +2494,12 @@ export default function Home() {
         const slideNumber = index + 1;
         return (
           <div className="slide-entry" key={slide.id}>
-            {visibleIndex > 0 && index - visibleEntries[visibleIndex - 1].index > 1 && <button className="slide-gap" onClick={() => switchSlide(Math.max(1, slideNumber - 20))}>…</button>}
+            {visibleIndex > 0 && index - visibleEntries[visibleIndex - 1].index > 1 && <button className="slide-gap" aria-label="前のスライドを表示" onClick={() => switchSlide(Math.max(1, slideNumber - 20))}>…</button>}
             <button
               className={`slide-item ${activeSlide === slideNumber ? "active" : ""}`}
               onClick={() => switchSlide(slideNumber)}
               disabled={agentRunning}
-              title={slide.title || "Untitled"}
+              title={`${slideNumber}枚目を開く: ${slide.title || "無題"}`}
               draggable={!agentRunning}
               onDragStart={() => setDraggedSlide(index)}
               onDragOver={(event) => event.preventDefault()}
@@ -2507,31 +2519,31 @@ export default function Home() {
             >
               <span className="slide-number">{String(slideNumber).padStart(2, "0")}</span>
               {slideThumbnail(slide, index)}
-              <span className="slide-name">{slide.title || "Untitled"}</span>
+              <span className="slide-name">{slide.title || "無題"}</span>
             </button>
             <button
               className="slide-menu-trigger"
-              aria-label={`Slide ${slideNumber} actions`}
+              aria-label={`スライド${slideNumber}の操作`}
               aria-haspopup="menu"
               aria-expanded={openPopover === "slideMenu" && activeSlide === slideNumber}
               onClick={(event) => { if (activeSlide !== slideNumber) switchSlide(slideNumber); togglePopover("slideMenu", event.currentTarget); }}
               disabled={agentRunning}
             >⋯</button>
             {openPopover === "slideMenu" && activeSlide === slideNumber && <div className="slide-actions-menu" role="menu">
-              <button role="menuitem" onClick={() => { dismissPopover(false); duplicateSlide(); }}>Duplicate slide</button>
-              <button role="menuitem" onClick={() => { dismissPopover(false); moveSlide(-1); }} disabled={activeSlide === 1}>Move left</button>
-              <button role="menuitem" onClick={() => { dismissPopover(false); moveSlide(1); }} disabled={activeSlide === slides.length}>Move right</button>
-              <button role="menuitem" className="danger" onClick={() => { dismissPopover(false); deleteSlide(); }} disabled={slides.length <= 1}>Delete slide</button>
+              <button role="menuitem" onClick={() => { dismissPopover(false); duplicateSlide(); }}>スライドを複製</button>
+              <button role="menuitem" onClick={() => { dismissPopover(false); moveSlide(-1); }} disabled={activeSlide === 1}>左へ移動</button>
+              <button role="menuitem" onClick={() => { dismissPopover(false); moveSlide(1); }} disabled={activeSlide === slides.length}>右へ移動</button>
+              <button role="menuitem" className="danger" onClick={() => { dismissPopover(false); deleteSlide(); }} disabled={slides.length <= 1}>スライドを削除</button>
             </div>}
           </div>
         );
       })}
       <span className="new-slide-wrap">
-        <button className="new-slide" onClick={(event) => togglePopover("newSlide", event.currentTarget)} disabled={agentRunning || !templates.length} aria-label="New slide" title="New slide">＋</button>
+        <button className="new-slide" onClick={(event) => togglePopover("newSlide", event.currentTarget)} disabled={agentRunning || !templates.length} aria-label="新しいスライド" title="新しいスライドを追加します">＋</button>
         {openPopover === "newSlide" && (
           <>
             <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
-            <div className="template-options new-slide-options" role="listbox" aria-label="New slide layout">
+            <div className="template-options new-slide-options" role="listbox" aria-label="新しいスライドのレイアウト">
               {templates.map((template) => (
                 <div className="template-group" key={template.id}>
                   <strong className="template-group-name">{template.name}</strong>
@@ -2562,52 +2574,52 @@ export default function Home() {
   });
 
   const historySidebar = (
-    <section className="activity-panel history-panel" aria-label="Version history">
-      <header className="activity-panel-heading"><span>VERSION HISTORY</span><button className="panel-close" aria-label="Close version history" onClick={() => setLeftPanelOpen(false)}>×</button></header>
+    <section className="activity-panel history-panel" aria-label="バージョン履歴">
+      <header className="activity-panel-heading"><span>バージョン履歴</span><button className="panel-close" aria-label="バージョン履歴を閉じる" onClick={() => setLeftPanelOpen(false)}>×</button></header>
       <div className="activity-panel-body">
         <div className="repository-summary">
-          <span><i className={saved ? "clean" : "dirty"} />{saved ? "Everything is saved" : "You have unsaved changes"}</span>
-          {project && <details className="version-details"><summary>Technical details</summary><small>{project.branch} · {project.commit}</small></details>}
+          <span><i className={saved ? "clean" : "dirty"} />{saved ? "すべて保存済みです" : "未保存の変更があります"}</span>
+          {project && <details className="version-details"><summary>技術情報</summary><small>{project.branch} · {project.commit}</small></details>}
         </div>
-        <label className="save-message"><span>Version name</span><input value={saveMessage} onChange={(event) => setSaveMessage(event.target.value)} placeholder={deckTitle} /></label>
-        <button className="sidebar-primary-action" onClick={() => void saveProject()} disabled={saved || agentRunning}>{saved ? "Current version saved" : "Save current version"}</button>
-        {project?.branch === "detached" && <button className="return-latest" onClick={() => void restoreHistory()} disabled={agentRunning}>Return to latest version</button>}
-        <div className="activity-section-label">SAVED VERSIONS</div>
+        <label className="save-message"><span>バージョン名</span><input value={saveMessage} onChange={(event) => setSaveMessage(event.target.value)} placeholder={deckTitle} /></label>
+        <button className="sidebar-primary-action" onClick={() => void saveProject()} disabled={saved || agentRunning}>{saved ? "現在のバージョンは保存済み" : "現在のバージョンを保存"}</button>
+        {project?.branch === "detached" && <button className="return-latest" onClick={() => void restoreHistory()} disabled={agentRunning}>最新バージョンへ戻る</button>}
+        <div className="activity-section-label">保存済みバージョン</div>
         <div className="history-list">
           {history.map((entry, index) => (
             <div className="history-entry" key={entry.id}>
               <button onClick={() => void restoreHistory(entry.id)} disabled={!saved || agentRunning}>
                 <i className={index === 0 ? "current" : ""} /><span><strong>{entry.message}</strong><small>{new Date(entry.date).toLocaleString()}</small></span>
               </button>
-              <details className="version-details"><summary>Details</summary><small>{entry.shortId}</small></details>
+              <details className="version-details"><summary>詳細</summary><small>{entry.shortId}</small></details>
             </div>
           ))}
         </div>
-        {!saved && <p className="activity-warning">Save the current edit before restoring a version.</p>}
+        {!saved && <p className="activity-warning">履歴を復元する前に、現在の編集内容を保存してください。</p>}
       </div>
     </section>
   );
 
   const shortcutsSidebar = (
-    <section className="activity-panel shortcuts-panel" aria-label="Keyboard shortcuts">
-      <header className="activity-panel-heading"><span>KEYBOARD SHORTCUTS</span><button className="panel-close" aria-label="Close keyboard shortcuts" onClick={() => setLeftPanelOpen(false)}>×</button></header>
-      <div className="activity-panel-body"><dl><dt>← / →</dt><dd>Previous / next slide</dd><dt>Double-click or Enter</dt><dd>Edit selected text</dd><dt>@</dt><dd>Point to an element from the message composer</dd><dt>A</dt><dd>Toggle Mark for Agent</dd><dt>Esc</dt><dd>Finish editing, label a marked area, or close presentation</dd><dt>⌘/Ctrl Z</dt><dd>Undo</dd><dt>⌘/Ctrl Shift Z</dt><dd>Redo</dd><dt>?</dt><dd>Open this view</dd></dl></div>
+    <section className="activity-panel shortcuts-panel" aria-label="キーボードショートカット">
+      <header className="activity-panel-heading"><span>キーボードショートカット</span><button className="panel-close" aria-label="ショートカットを閉じる" onClick={() => setLeftPanelOpen(false)}>×</button></header>
+      <div className="activity-panel-body"><dl><dt>← / →</dt><dd>前／次のスライド</dd><dt>ダブルクリック／Enter</dt><dd>選択したテキストを編集</dd><dt>@</dt><dd>メッセージ欄から要素をAgentへ示す</dd><dt>A</dt><dd>Mark for Agentを切り替え</dd><dt>Esc</dt><dd>編集や範囲指定、プレゼンを終了</dd><dt>⌘/Ctrl Z</dt><dd>元に戻す</dd><dt>⌘/Ctrl Shift Z</dt><dd>やり直す</dd><dt>?</dt><dd>この画面を開く</dd></dl></div>
     </section>
   );
 
   const settingsSidebar = (
-    <section className="activity-panel settings-panel" aria-label="Settings">
-      <header className="activity-panel-heading"><span>SETTINGS</span><button className="panel-close" aria-label="Close settings" onClick={() => setLeftPanelOpen(false)}>×</button></header>
+    <section className="activity-panel settings-panel" aria-label="設定">
+      <header className="activity-panel-heading"><span>設定</span><button className="panel-close" aria-label="設定を閉じる" onClick={() => setLeftPanelOpen(false)}>×</button></header>
       <div className="activity-panel-body settings-sidebar">
-        <section><h3>Appearance</h3><label><span>Color mode</span><select value={theme} onChange={(event) => setTheme(event.target.value as "dark" | "light")}><option value="dark">Dark</option><option value="light">Light</option></select></label><label><span>Slide navigator</span><select value={slideNav} onChange={(event) => slideNavStore.write(event.target.value as SlideNav)}><option value="filmstrip">Filmstrip</option><option value="rail">Rail</option></select></label></section>
+        <section><h3>表示</h3><label><span>カラーモード</span><select value={theme} onChange={(event) => setTheme(event.target.value as "dark" | "light")}><option value="dark">ダーク</option><option value="light">ライト</option></select></label><label><span>スライド一覧</span><select value={slideNav} onChange={(event) => slideNavStore.write(event.target.value as SlideNav)}><option value="filmstrip">フィルムストリップ</option><option value="rail">サイドレール</option></select></label></section>
         <section><h3>Agent</h3>
-          <label><span>Approvals</span><select value={approvalPolicy} onChange={(event) => setApprovalPolicy(event.target.value)}><option value="never">Never</option><option value="on-request">Ask when needed</option><option value="untrusted">Untrusted commands</option></select></label>
+          <label><span>承認方法</span><select value={approvalPolicy} onChange={(event) => setApprovalPolicy(event.target.value)}><option value="never">確認しない</option><option value="on-request">必要なとき確認</option><option value="untrusted">未確認コマンドのみ</option></select></label>
           {codexState.catalog.modelProvider && <pre className="settings-output">{JSON.stringify(codexState.catalog.modelProvider, null, 2)}</pre>}
         </section>
-        <section><h3>Account</h3>{codexState.catalog.account ? <div className="setting-row"><span>{String(codexState.catalog.account.type ?? "Signed in")}</span><button onClick={() => { void fetch(`${apiBase}/codex/account/logout`, { method: "POST" }).catch((error) => setApiError(error.message)); }}>Log out</button></div> : <><button onClick={() => void login("chatgpt")}>Sign in with ChatGPT</button><div className="api-key-row"><input type="password" value={apiKeyDraft} onChange={(event) => setApiKeyDraft(event.target.value)} placeholder="API key" /><button disabled={!apiKeyDraft} onClick={() => void login("apiKey")}>Use key</button></div></>}</section>
-        <section><h3>Skills</h3>{codexState.catalog.skills.flatMap((entry: any) => entry.skills ?? [entry]).map((skill: any) => <label className="setting-row" key={skill.path ?? skill.name}><span>{skill.name ?? skill.path}</span><input type="checkbox" checked={skill.enabled !== false} onChange={(event) => void updateSkill(skill, event.target.checked)} /></label>)}</section>
-        <section><h3>Hooks</h3>{codexState.catalog.hooks.flatMap((entry: any) => entry.hooks ?? [entry]).map((hook: any, index: number) => <div className="setting-row" key={hook.name ?? hook.event ?? index}><span>{hook.name ?? hook.event ?? "Configured hook"}</span><small>{hook.enabled === false ? "disabled" : "enabled"}</small></div>)}</section>
-        <section><h3>MCP servers</h3>{codexState.catalog.mcpServers.map((server: any) => <div className="setting-row" key={server.name}><span>{server.name}</span><small>{server.status ?? server.authStatus ?? "configured"}</small>{server.resources?.length > 0 && <button onClick={() => void invokeMcp(server, "resource")}>Resource</button>}{Object.keys(server.tools ?? {}).length > 0 && <button disabled={!codexState.activeThreadId} onClick={() => void invokeMcp(server, "tool")}>Tool</button>}<button onClick={() => { void fetch(`${apiBase}/codex/mcp/oauth`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: server.name }) }).then(async (response) => { const result = await response.json(); if (!response.ok) throw new Error(result.error); const url = result.authorizationUrl ?? result.url; if (url && window.confirm(`Open OAuth for ${server.name}?`)) window.open(url, "_blank", "noopener,noreferrer"); }).catch((error) => setApiError(error.message)); }}>OAuth</button></div>)}</section>
+        <section><h3>アカウント</h3>{codexState.catalog.account ? <div className="setting-row"><span>{String(codexState.catalog.account.type ?? "サインイン済み")}</span><button onClick={() => { void fetch(`${apiBase}/codex/account/logout`, { method: "POST" }).catch((error) => setApiError(error.message)); }}>ログアウト</button></div> : <><button onClick={() => void login("chatgpt")}>ChatGPTでサインイン</button><div className="api-key-row"><input type="password" value={apiKeyDraft} onChange={(event) => setApiKeyDraft(event.target.value)} placeholder="APIキー" /><button disabled={!apiKeyDraft} onClick={() => void login("apiKey")}>キーを使用</button></div></>}</section>
+        <section><h3>スキル</h3>{codexState.catalog.skills.flatMap((entry: any) => entry.skills ?? [entry]).map((skill: any) => <label className="setting-row" key={skill.path ?? skill.name}><span>{skill.name ?? skill.path}</span><input type="checkbox" checked={skill.enabled !== false} onChange={(event) => void updateSkill(skill, event.target.checked)} /></label>)}</section>
+        <section><h3>フック</h3>{codexState.catalog.hooks.flatMap((entry: any) => entry.hooks ?? [entry]).map((hook: any, index: number) => <div className="setting-row" key={hook.name ?? hook.event ?? index}><span>{hook.name ?? hook.event ?? "設定済みフック"}</span><small>{hook.enabled === false ? "無効" : "有効"}</small></div>)}</section>
+        <section><h3>MCPサーバー</h3>{codexState.catalog.mcpServers.map((server: any) => <div className="setting-row" key={server.name}><span>{server.name}</span><small>{server.status ?? server.authStatus ?? "設定済み"}</small>{server.resources?.length > 0 && <button onClick={() => void invokeMcp(server, "resource")}>リソース</button>}{Object.keys(server.tools ?? {}).length > 0 && <button disabled={!codexState.activeThreadId} onClick={() => void invokeMcp(server, "tool")}>ツール</button>}<button onClick={() => { void fetch(`${apiBase}/codex/mcp/oauth`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: server.name }) }).then(async (response) => { const result = await response.json(); if (!response.ok) throw new Error(result.error); const url = result.authorizationUrl ?? result.url; if (url && window.confirm(`${server.name}のOAuth認証ページを開きますか？`)) window.open(url, "_blank", "noopener,noreferrer"); }).catch((error) => setApiError(error.message)); }}>OAuth</button></div>)}</section>
         {mcpResult && <pre className="settings-output">{mcpResult}</pre>}
       </div>
     </section>
@@ -2617,94 +2629,94 @@ export default function Home() {
     <main className={`weave-app ${theme}`} style={{ "--accent": accent } as React.CSSProperties}>
       <header className="topbar">
         <div className="traffic-lights" aria-hidden="true"><span /><span /><span /></div>
-        <button ref={projectSwitcherRef} className="project-switcher" aria-label="Open projects" aria-expanded={galleryOpen} aria-haspopup="dialog" onClick={openGallery}>
+        <button ref={projectSwitcherRef} className="project-switcher" aria-label="プロジェクトを開く" aria-expanded={galleryOpen} aria-haspopup="dialog" onClick={openGallery} data-help="プロジェクトの作成・切り替え・管理を開きます">
           <span className="project-mark">W</span>
-          <span><strong>{deckTitle}</strong><small>{project?.root.split("/").pop() ?? "Local project"}</small></span>
+          <span><strong>{deckTitle}</strong><small>{project?.root.split("/").pop() ?? "ローカルプロジェクト"}</small></span>
           <span className="chevron">⌄</span>
         </button>
         <div className="document-title">
           <span className="document-title-field" data-unsaved={!saved ? "true" : undefined}>
-            <input aria-label="Deck title" value={deckTitle} onChange={(event) => { setDeckTitle(event.target.value); markDirty(); }} />
+            <input aria-label="資料タイトル" value={deckTitle} onChange={(event) => { setDeckTitle(event.target.value); markDirty(); }} />
             {!saved && <i className="unsaved-dot" aria-hidden="true" />}
-            {!saved && <span className="sr-only">Unsaved changes</span>}
+            {!saved && <span className="sr-only">未保存の変更あり</span>}
           </span>
-          <small>Slide {activeSlide} of {slides.length}</small>
+          <small>{activeSlide} / {slides.length} 枚目</small>
         </div>
         <div className="top-actions">
-          <button className="delivery-button" onClick={(event) => togglePopover("delivery", event.currentTarget)} aria-expanded={openPopover === "delivery"} aria-haspopup="menu">Present &amp; export <span aria-hidden="true">⌄</span></button>
+          <button className="delivery-button" onClick={(event) => togglePopover("delivery", event.currentTarget)} aria-expanded={openPopover === "delivery"} aria-haspopup="menu" data-help="プレゼン表示、書き出し、印刷を選びます">プレゼン・書き出し <span aria-hidden="true">⌄</span></button>
           <input ref={importRef} className="sr-only" type="file" accept=".json,.weave.json,application/json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importBundle(file); }} />
-          <button className="save-button" onClick={() => void saveProject()} disabled={agentRunning}><span>{saved ? "✓" : "↑"}</span> {saved ? "Saved" : "Save"}</button>
+          <button className="save-button" onClick={() => void saveProject()} disabled={agentRunning} data-help={saved ? "現在の内容は保存済みです" : "現在の編集内容を新しいバージョンとして保存します"}><span>{saved ? "✓" : "↑"}</span> {saved ? "保存済み" : "保存"}</button>
         </div>
       </header>
 
       {openPopover === "delivery" && (
         <>
           <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
-          <div className="topbar-popover delivery-menu" role="menu" aria-label="Presentation and export actions">
-            <button role="menuitem" onClick={() => { dismissPopover(false); openPresenter(); }}><span>Present</span><small>Open the full-screen presenter</small></button>
-            <button role="menuitem" onClick={() => { dismissPopover(false); exportDeck(); }}><span>Export HTML</span><small>Download an offline presentation</small></button>
-            <button role="menuitem" onClick={() => { dismissPopover(false); printDeck(); }}><span>Print / PDF</span><small>Open the system print workflow</small></button>
-            <button role="menuitem" onClick={() => { dismissPopover(false); downloadBundle(); }}><span>Download bundle</span><small>Save an editable Weave project</small></button>
+          <div className="topbar-popover delivery-menu" role="menu" aria-label="プレゼンと書き出し">
+            <button role="menuitem" onClick={() => { dismissPopover(false); openPresenter(); }}><span>プレゼンを開始</span><small>全画面のプレゼン画面を開きます</small></button>
+            <button role="menuitem" onClick={() => { dismissPopover(false); exportDeck(); }}><span>HTMLを書き出す</span><small>オフラインで使える資料を保存します</small></button>
+            <button role="menuitem" onClick={() => { dismissPopover(false); printDeck(); }}><span>印刷／PDF</span><small>システムの印刷画面を開きます</small></button>
+            <button role="menuitem" onClick={() => { dismissPopover(false); downloadBundle(); }}><span>編集用データを保存</span><small>編集可能なWeaveプロジェクトを保存します</small></button>
           </div>
         </>
       )}
 
       <div className="workspace" data-slide-nav={slideNav} data-inspector={inspectorOpen ? "open" : "closed"} data-agent={leftPanelOpen ? "open" : "closed"} data-mobile-view={mobileView} data-focus={canvasFocused ? "canvas" : "workspace"}>
-        <nav className="activity-rail" aria-label="Primary navigation">
+        <nav className="activity-rail" aria-label="メインナビゲーション">
           <div className="activity-top">
             <button className={`activity-button ${activityView === "agent" ? "active" : ""}`} aria-label="Agent" aria-pressed={activityView === "agent"} onClick={() => showActivity("agent")}>◇</button>
-            <button className={`activity-button ${activityView === "history" ? "active" : ""}`} aria-label="Version history" aria-pressed={activityView === "history"} onClick={() => showActivity("history")}>↶</button>
-            <button className={`activity-button ${activityView === "shortcuts" ? "active" : ""}`} aria-label="Keyboard shortcuts" aria-pressed={activityView === "shortcuts"} onClick={() => showActivity("shortcuts")}>⌨</button>
+            <button className={`activity-button ${activityView === "history" ? "active" : ""}`} aria-label="バージョン履歴" aria-pressed={activityView === "history"} onClick={() => showActivity("history")}>↶</button>
+            <button className={`activity-button ${activityView === "shortcuts" ? "active" : ""}`} aria-label="キーボードショートカット" aria-pressed={activityView === "shortcuts"} onClick={() => showActivity("shortcuts")}>⌨</button>
           </div>
           <div className="activity-bottom">
             <div className="avatar">FK</div>
-            <button className={`activity-button ${activityView === "settings" ? "active" : ""}`} aria-label="Settings" aria-pressed={activityView === "settings"} onClick={() => showActivity("settings")}>⚙</button>
+            <button className={`activity-button ${activityView === "settings" ? "active" : ""}`} aria-label="設定" aria-pressed={activityView === "settings"} onClick={() => showActivity("settings")}>⚙</button>
           </div>
         </nav>
 
-        {slideNav === "rail" && <nav className="slide-nav slide-rail" aria-label="Slides">{slideNavigator}</nav>}
+        {slideNav === "rail" && <nav className="slide-nav slide-rail" aria-label="スライド一覧">{slideNavigator}</nav>}
 
         {leftPanelOpen ? <aside className="left-panel">
-          <div className="panel-resizer" role="separator" aria-orientation="vertical" aria-label="Resize sidebar" aria-valuenow={sidebarWidth} aria-valuemin={280} aria-valuemax={560} tabIndex={0} onPointerDown={startSidebarResize} onKeyDown={(event) => { if (event.key === "ArrowLeft") { event.preventDefault(); adjustSidebarWidth(-16); } if (event.key === "ArrowRight") { event.preventDefault(); adjustSidebarWidth(16); } }} />
+          <div className="panel-resizer" role="separator" aria-orientation="vertical" aria-label="サイドバーの幅を変更" aria-valuenow={sidebarWidth} aria-valuemin={280} aria-valuemax={560} tabIndex={0} onPointerDown={startSidebarResize} onKeyDown={(event) => { if (event.key === "ArrowLeft") { event.preventDefault(); adjustSidebarWidth(-16); } if (event.key === "ArrowRight") { event.preventDefault(); adjustSidebarWidth(16); } }} />
           {activityView === "agent" ? <section className="agent-panel">
             <div className="agent-heading">
               <span><i aria-hidden="true" className={`agent-status ${agentReady ? "" : "offline"}`} /> AGENT</span>
-              <button className="thread-switcher" onClick={(event) => togglePopover("threads", event.currentTarget)} aria-expanded={openPopover === "threads"} aria-haspopup="listbox" title="Switch conversation"><span>{activeThreadName}</span><em aria-hidden="true">⌄</em></button>
-              <button onClick={() => void newThread()} aria-label="New conversation" title="New conversation" disabled={agentRunning}>＋</button>
-              <button className="panel-close" onClick={() => setLeftPanelOpen(false)} aria-label="Close Agent panel" title="Close Agent panel">×</button>
+              <button className="thread-switcher" onClick={(event) => togglePopover("threads", event.currentTarget)} aria-expanded={openPopover === "threads"} aria-haspopup="listbox" title="会話を切り替えます"><span>{activeThreadName}</span><em aria-hidden="true">⌄</em></button>
+              <button onClick={() => void newThread()} aria-label="新しい会話" title="新しい会話を開始します" disabled={agentRunning}>＋</button>
+              <button className="panel-close" onClick={() => setLeftPanelOpen(false)} aria-label="Agentパネルを閉じる" title="Agentパネルを閉じます">×</button>
             </div>
             {openPopover === "threads" && (
               <>
                 <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
                 <div className="thread-popover">
                   <div className="thread-controls">
-                    <input type="search" value={threadSearch} onChange={(event) => setThreadSearch(event.target.value)} placeholder="Search Threads" aria-label="Search Threads" />
-                    <button className={showArchivedThreads ? "active" : ""} onClick={() => setShowArchivedThreads((value) => !value)}>{showArchivedThreads ? "Active" : "Archive"}</button>
+                    <input type="search" value={threadSearch} onChange={(event) => setThreadSearch(event.target.value)} placeholder="会話を検索" aria-label="会話を検索" />
+                    <button className={showArchivedThreads ? "active" : ""} onClick={() => setShowArchivedThreads((value) => !value)}>{showArchivedThreads ? "使用中" : "アーカイブ"}</button>
                   </div>
-                  <div className="thread-list" aria-label="Threads">
+                  <div className="thread-list" aria-label="会話一覧">
                     {codexState.threadOrder.map((id) => codexState.threads[id]).filter((thread) => thread && thread.archived === showArchivedThreads).slice(0, 12).map((thread) => (
                       <button key={thread.id} className={codexState.activeThreadId === thread.id ? "active" : ""} onClick={() => { dismissPopover(false); void openThread(thread.id); }}>
-                        <strong>{displayThreadName(thread.name) || thread.preview || "New conversation"}</strong>
+                        <strong>{displayThreadName(thread.name) || thread.preview || "新しい会話"}</strong>
                         <small>{thread.status}</small>
                       </button>
                     ))}
                   </div>
                   {codexState.activeThreadId && (
                     <div className="thread-actions">
-                      <button onClick={() => { const name = window.prompt("Thread name", displayThreadName(codexState.threads[codexState.activeThreadId!]?.name) ?? ""); if (name !== null) void threadAction("name", { name }); }}>Rename</button>
-                      <button onClick={() => void forkThread()}>Fork</button>
-                      <button onClick={() => void manageGoal()}>Goal</button>
-                      <button onClick={() => void threadAction("compact")}>Compact</button>
-                      <button onClick={() => void threadAction(showArchivedThreads ? "unarchive" : "archive")}>{showArchivedThreads ? "Unarchive" : "Archive"}</button>
-                      <button onClick={() => { if (window.confirm("Delete this Weave Thread permanently?")) void threadAction("delete"); }}>Delete</button>
+                      <button onClick={() => { const name = window.prompt("会話名", displayThreadName(codexState.threads[codexState.activeThreadId!]?.name) ?? ""); if (name !== null) void threadAction("name", { name }); }}>名前を変更</button>
+                      <button onClick={() => void forkThread()}>複製して分岐</button>
+                      <button onClick={() => void manageGoal()}>ゴール</button>
+                      <button onClick={() => void threadAction("compact")}>履歴を整理</button>
+                      <button onClick={() => void threadAction(showArchivedThreads ? "unarchive" : "archive")}>{showArchivedThreads ? "元に戻す" : "アーカイブ"}</button>
+                      <button onClick={() => { if (window.confirm("このWeave会話を完全に削除しますか？")) void threadAction("delete"); }}>削除</button>
                     </div>
                   )}
                 </div>
               </>
             )}
-            <div ref={messagesRef} className="messages" role="log" aria-live="polite" aria-relevant="additions text" aria-label="Conversation with Agent" onScroll={(event) => { const element = event.currentTarget; shouldAutoScrollRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48; }}>
-              {!codexState.activeThreadId && <p className="empty-thread">Start or select a conversation.</p>}
-              {activeTurns.length > visibleTurns.length && <p className="trimmed-log">Showing the latest {visibleTurns.length} turns.</p>}
+            <div ref={messagesRef} className="messages" role="log" aria-live="polite" aria-relevant="additions text" aria-label="Agentとの会話" onScroll={(event) => { const element = event.currentTarget; shouldAutoScrollRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48; }}>
+              {!codexState.activeThreadId && <p className="empty-thread">会話を開始するか、既存の会話を選んでください。</p>}
+              {activeTurns.length > visibleTurns.length && <p className="trimmed-log">最新{visibleTurns.length}ターンを表示しています。</p>}
               {visibleTurns.map((turn) => (
                 <section className="turn-group" key={turn.id}>
                   {selectTurnItems(codexState, turn.id).map((item) => <ItemCard key={item.id} item={item} />)}
@@ -2718,7 +2730,7 @@ export default function Home() {
                     onRestore={() => restoreAnnotationAttachment(attachment)}
                     onToggleOverlay={() => toggleAttachmentOverlay(attachment)}
                   />)}
-                  {(turn.status !== "completed" || turn.diff) && <footer><span>{turn.status}</span>{turn.diff && <details><summary>Turn diff</summary><pre>{turn.diff}</pre></details>}</footer>}
+                  {(turn.status !== "completed" || turn.diff) && <footer><span>{turn.status}</span>{turn.diff && <details><summary>ターンの差分</summary><pre>{turn.diff}</pre></details>}</footer>}
                 </section>
               ))}
               {unmatchedAttachments.map((attachment) => <AnnotationAttachment
@@ -2743,33 +2755,33 @@ export default function Home() {
             >
               {openPopover === "references" && <>
                 <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
-                <aside className="reference-popover" aria-label="Reference shelf">
-                  <header><strong>{referenceView === "browse" ? "Add folder" : "Reference shelf"}</strong><button type="button" onClick={() => dismissPopover()}>×</button></header>
+                <aside className="reference-popover" aria-label="参照資料">
+                  <header><strong>{referenceView === "browse" ? "フォルダーを追加" : "参照資料"}</strong><button type="button" aria-label="参照資料を閉じる" onClick={() => dismissPopover()}>×</button></header>
                   {referenceView === "browse" && folderBrowser ? <>
                     <div className="reference-breadcrumbs">{folderBrowser.breadcrumbs.map((crumb, index) => <span key={crumb.path}>{index > 0 && " / "}<button type="button" onClick={() => void browseFolders(crumb.path)}>{crumb.name}</button></span>)}</div>
-                    <div className="reference-folder-list">{folderBrowser.parent && <button type="button" onClick={() => void browseFolders(folderBrowser.parent ?? undefined)}>↑ Parent folder</button>}{folderBrowser.folders.map((folder) => <button type="button" key={folder.path} onClick={() => void browseFolders(folder.path)}>📁 {folder.name}</button>)}</div>
-                    <footer className="reference-browser-footer"><span>{folderBrowser.folderCount.toLocaleString()} folders · {folderBrowser.fileCount.toLocaleString()} files here</span><button type="button" onClick={() => void importFolder()} disabled={folderImporting}>{folderImporting ? "Importing…" : "Import folder"}</button></footer>
+                    <div className="reference-folder-list">{folderBrowser.parent && <button type="button" onClick={() => void browseFolders(folderBrowser.parent ?? undefined)}>↑ 親フォルダー</button>}{folderBrowser.folders.map((folder) => <button type="button" key={folder.path} onClick={() => void browseFolders(folder.path)}>📁 {folder.name}</button>)}</div>
+                    <footer className="reference-browser-footer"><span>フォルダー {folderBrowser.folderCount.toLocaleString()}件 · この場所のファイル {folderBrowser.fileCount.toLocaleString()}件</span><button type="button" onClick={() => void importFolder()} disabled={folderImporting}>{folderImporting ? "読み込み中…" : "フォルダーを追加"}</button></footer>
                   </> : <>
                   <section className="reference-shelf-section" aria-labelledby="reference-folders-heading">
-                    <h4 id="reference-folders-heading">FOLDERS</h4>
+                    <h4 id="reference-folders-heading">フォルダー</h4>
                     <div className="reference-shelf-list">
                     {referenceShelf.filter((reference) => reference.kind === "folder").map((reference) => {
                       const attached = referenceAttachments.some((attachment) => attachment.path === reference.path);
                       return <div className={`reference-shelf-item${reference.missing ? " missing" : ""}`} key={reference.path}>
-                        <label title={`${reference.path}\nSource: ${reference.source ?? "Unknown"}`}>
+                        <label title={`${reference.path}\n参照元: ${reference.source ?? "不明"}`}>
                           <input type="checkbox" checked={attached} disabled={reference.missing} onChange={() => setReferenceAttachments((current) => attached ? current.filter((item) => item.path !== reference.path) : [...current, reference])} />
                           <span className="reference-shelf-name">{reference.name}</span>
-                          <small>{reference.missing ? "Missing" : `${reference.files ?? 0} files · ${formatBytes(reference.size)}`}</small>
+                          <small>{reference.missing ? "見つかりません" : `${reference.files ?? 0}ファイル · ${formatBytes(reference.size)}`}</small>
                         </label>
-                        <button type="button" aria-label={`Update ${reference.name}`} disabled={reference.sourceMissing} onClick={() => void syncFolder(reference.path)}>↻</button>
-                        <button type="button" aria-label={`Remove ${reference.name} from shelf`} onClick={() => void removeShelfReference(reference.path)}>×</button>
+                        <button type="button" aria-label={`${reference.name}を更新`} disabled={reference.sourceMissing} onClick={() => void syncFolder(reference.path)}>↻</button>
+                        <button type="button" aria-label={`${reference.name}を参照資料から削除`} onClick={() => void removeShelfReference(reference.path)}>×</button>
                       </div>;
                     })}
                     </div>
-                    <button className="reference-add" type="button" onClick={() => void browseFolders()}>+ Add folder</button>
+                    <button className="reference-add" type="button" onClick={() => void browseFolders()}>＋ フォルダーを追加</button>
                   </section>
                   <section className="reference-shelf-section" aria-labelledby="reference-files-heading">
-                    <h4 id="reference-files-heading">FILES</h4>
+                    <h4 id="reference-files-heading">ファイル</h4>
                     <div className="reference-shelf-list">
                     {referenceShelf.filter((reference) => reference.kind === "file").map((reference) => {
                       const attached = referenceAttachments.some((attachment) => attachment.path === reference.path);
@@ -2777,86 +2789,86 @@ export default function Home() {
                         <label title={reference.path}>
                           <input type="checkbox" checked={attached} disabled={reference.missing} onChange={() => setReferenceAttachments((current) => attached ? current.filter((item) => item.path !== reference.path) : [...current, reference])} />
                           <span className="reference-shelf-name">{reference.name}</span>
-                          <small>{reference.missing ? "Missing" : formatBytes(reference.size)}</small>
+                          <small>{reference.missing ? "見つかりません" : formatBytes(reference.size)}</small>
                         </label>
-                        <button type="button" aria-label={`Remove ${reference.name} from shelf`} onClick={() => void removeShelfReference(reference.path)}>×</button>
+                        <button type="button" aria-label={`${reference.name}を参照資料から削除`} onClick={() => void removeShelfReference(reference.path)}>×</button>
                       </div>;
                     })}
                     </div>
-                    <button className="reference-add" type="button" onClick={() => referenceInputRef.current?.click()}>+ Add files</button>
+                    <button className="reference-add" type="button" onClick={() => referenceInputRef.current?.click()}>＋ ファイルを追加</button>
                   </section>
                   </>}
                 </aside>
               </>}
-              <div className="context-chip" role="group" aria-label="Editor context">
+              <div className="context-chip" role="group" aria-label="編集コンテキスト">
                 <span className="context-summary" role="status"><span className="context-icon" aria-hidden="true">◎</span> {contextSummary} · {agentActivity}</span>
-                {activeElementAnnotations.length > 0 && <span className="context-annotation-count">{activeElementAnnotations.length} element{activeElementAnnotations.length === 1 ? "" : "s"}</span>}
+                {activeElementAnnotations.length > 0 && <span className="context-annotation-count">要素 {activeElementAnnotations.length}件</span>}
                 {activeRegionAnnotations.length > 0 && <button
                   type="button"
                   className={regionsWillSend ? "active" : "held"}
                   aria-pressed={regionsWillSend}
                   disabled={referencedRegions.length > 0}
-                  title={referencedRegions.length > 0 ? "Referenced regions must be included" : "Toggle region annotations for the next turn"}
+                  title={referencedRegions.length > 0 ? "本文から参照している範囲は送信対象から外せません" : "次の送信に指示範囲を含めるか切り替えます"}
                   onClick={() => setIncludeRegionAnnotations((current) => !current)}
-                >{activeRegionAnnotations.length} region{activeRegionAnnotations.length === 1 ? "" : "s"} · {regionsWillSend ? "Send" : "Held"}</button>}
+                >指示範囲 {activeRegionAnnotations.length}件 · {regionsWillSend ? "送信する" : "保留"}</button>}
                 {activeAnnotations.length > 0 && <AnnotationLegend annotations={activeAnnotations} />}
               </div>
-              {referenceAttachments.length > 0 && <div className="reference-attachments" role="list" aria-label="Attached files">
+              {referenceAttachments.length > 0 && <div className="reference-attachments" role="list" aria-label="添付ファイル">
                 {referenceAttachments.map((attachment) => <div className="context-chip reference-attachment" role="listitem" key={attachment.path}>
                   <span className="context-icon" aria-hidden="true">📎</span>
                   <span className="reference-attachment-name" title={attachment.name}>{attachment.name}</span>
                   <span>{formatBytes(attachment.size)}</span>
-                  <button type="button" aria-label={`Remove ${attachment.name}`} onClick={() => setReferenceAttachments((current) => current.filter((item) => item.path !== attachment.path))}>×</button>
+                  <button type="button" aria-label={`${attachment.name}を添付から外す`} onClick={() => setReferenceAttachments((current) => current.filter((item) => item.path !== attachment.path))}>×</button>
                 </div>)}
               </div>}
-              <textarea ref={promptRef} value={promptDraft} onChange={onPromptChange} onCompositionStart={() => { compositionRef.current = true; }} onCompositionEnd={onPromptCompositionEnd} onKeyDown={onPromptKeyDown} placeholder={agentReady ? "Ask Agent to edit this slide…" : "Waiting for local Codex…"} aria-label="Message Agent" maxLength={20000} disabled={!agentReady} />
+              <textarea ref={promptRef} value={promptDraft} onChange={onPromptChange} onCompositionStart={() => { compositionRef.current = true; }} onCompositionEnd={onPromptCompositionEnd} onKeyDown={onPromptKeyDown} placeholder={agentReady ? "Agentにこのスライドの編集を依頼…" : "Codexへの接続を待っています…"} aria-label="Agentへのメッセージ" maxLength={20000} disabled={!agentReady} />
               <div className="chat-actions">
                 <span>⌘ / Ctrl ↵</span>
                 {codexState.catalog.models.length > 0 && selectedModelInfo && (
                   <div className="agent-model-control">
-                    <button className="agent-model-button" type="button" onClick={(event) => togglePopover("agentModel", event.currentTarget)} disabled={agentRunning} aria-expanded={openPopover === "agentModel"} aria-haspopup="menu" title="Choose model and reasoning"><span>{selectedModelInfo.displayName ?? selectedModelInfo.name ?? selectedModelInfo.id ?? selectedModelInfo.model} · {reasoningEffort}</span><b aria-hidden="true">⌄</b></button>
+                    <button className="agent-model-button" type="button" onClick={(event) => togglePopover("agentModel", event.currentTarget)} disabled={agentRunning} aria-expanded={openPopover === "agentModel"} aria-haspopup="menu" title="Agentのモデルと推論レベルを選びます"><span>{selectedModelInfo.displayName ?? selectedModelInfo.name ?? selectedModelInfo.id ?? selectedModelInfo.model} · {reasoningEffort}</span><b aria-hidden="true">⌄</b></button>
                     {openPopover === "agentModel" && (
                       <>
                         <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
-                        <div className="agent-model-popover" role="menu" aria-label="Agent model and reasoning">
-                          <section role="group" aria-label="Model"><strong>Model</strong>{codexState.catalog.models.map((model: any) => { const modelId = model.id ?? model.model; return <button key={modelId} role="menuitemradio" aria-checked={selectedModel === modelId} className={selectedModel === modelId ? "active" : ""} onClick={() => { const nextEffort = model.supportedReasoningEfforts?.map((option: any) => option.reasoningEffort).includes(reasoningEffort) ? reasoningEffort : model.defaultReasoningEffort ?? model.supportedReasoningEfforts?.[0]?.reasoningEffort ?? reasoningEffort; agentModelStore.write({ model: modelId, effort: nextEffort }); dismissPopover(false); }}><span>{model.displayName ?? model.name ?? model.id ?? model.model}</span>{selectedModel === modelId && <b aria-hidden="true">✓</b>}</button>; })}</section>
-                          <section role="group" aria-label="Reasoning"><strong>Reasoning</strong>{availableEfforts.map((effort: string) => <button key={effort} role="menuitemradio" aria-checked={reasoningEffort === effort} className={reasoningEffort === effort ? "active" : ""} onClick={() => { agentModelStore.write({ model: selectedModel, effort }); dismissPopover(false); }}><span>{effort}</span>{reasoningEffort === effort && <b aria-hidden="true">✓</b>}</button>)}</section>
+                        <div className="agent-model-popover" role="menu" aria-label="Agentのモデルと推論レベル">
+                          <section role="group" aria-label="モデル"><strong>モデル</strong>{codexState.catalog.models.map((model: any) => { const modelId = model.id ?? model.model; return <button key={modelId} role="menuitemradio" aria-checked={selectedModel === modelId} className={selectedModel === modelId ? "active" : ""} onClick={() => { const nextEffort = model.supportedReasoningEfforts?.map((option: any) => option.reasoningEffort).includes(reasoningEffort) ? reasoningEffort : model.defaultReasoningEffort ?? model.supportedReasoningEfforts?.[0]?.reasoningEffort ?? reasoningEffort; agentModelStore.write({ model: modelId, effort: nextEffort }); dismissPopover(false); }}><span>{model.displayName ?? model.name ?? model.id ?? model.model}</span>{selectedModel === modelId && <b aria-hidden="true">✓</b>}</button>; })}</section>
+                          <section role="group" aria-label="推論レベル"><strong>推論レベル</strong>{availableEfforts.map((effort: string) => <button key={effort} role="menuitemradio" aria-checked={reasoningEffort === effort} className={reasoningEffort === effort ? "active" : ""} onClick={() => { agentModelStore.write({ model: selectedModel, effort }); dismissPopover(false); }}><span>{effort}</span>{reasoningEffort === effort && <b aria-hidden="true">✓</b>}</button>)}</section>
                         </div>
                       </>
                     )}
                   </div>
                 )}
                 <input ref={referenceInputRef} className="sr-only" type="file" multiple onChange={(event) => { if (event.target.files) void uploadReferences(event.target.files); }} />
-                <button className={`attach-button${openPopover === "references" ? " active" : ""}`} type="button" onClick={(event) => togglePopover("references", event.currentTarget)} disabled={!agentReady} aria-expanded={openPopover === "references"} aria-haspopup="dialog" aria-label="Reference shelf" title="Reference shelf">📎</button>
-                {agentRunning && <button className="stop-button" onClick={() => void interruptAgent()} aria-label="Stop Agent" title="Stop Agent">■</button>}
-                <button className="send-button" onClick={() => void sendMessage()} disabled={!agentReady || !(canSendTurn(promptDraft, sendableAnnotations) || referenceAttachments.length > 0) || turnSubmitting} aria-label="Send message">↑</button>
+                <button className={`attach-button${openPopover === "references" ? " active" : ""}`} type="button" onClick={(event) => togglePopover("references", event.currentTarget)} disabled={!agentReady} aria-expanded={openPopover === "references"} aria-haspopup="dialog" aria-label="参照資料" title="Agentへ渡すファイルやフォルダーを選びます">📎</button>
+                {agentRunning && <button className="stop-button" onClick={() => void interruptAgent()} aria-label="Agentを停止" title="実行中のAgentを停止します">■</button>}
+                <button className="send-button" onClick={() => void sendMessage()} disabled={!agentReady || !(canSendTurn(promptDraft, sendableAnnotations) || referenceAttachments.length > 0) || turnSubmitting} aria-label="メッセージを送信" data-help="入力内容と選択中の編集コンテキストをAgentへ送信します">↑</button>
               </div>
             </div>
           </section> : activityView === "history" ? historySidebar : activityView === "shortcuts" ? shortcutsSidebar : settingsSidebar}
-        </aside> : <button className="open-agent-panel" onClick={() => setLeftPanelOpen(true)}>Open {activityView === "history" ? "version history" : activityView === "shortcuts" ? "shortcuts" : activityView}</button>}
+        </aside> : <button className="open-agent-panel" onClick={() => setLeftPanelOpen(true)}>{activityView === "history" ? "バージョン履歴" : activityView === "shortcuts" ? "ショートカット" : activityView === "settings" ? "設定" : "Agent"}を開く</button>}
 
         <section className="center-stage">
           <div className="editor-tabs">
             <div className="variation-tabs">
-              {variations.length > 0 && <button className={activeVariation === "main" ? "active" : ""} onClick={() => void checkoutVariation("main")} disabled={agentRunning}><span className="variation-dot dot-0" />Original</button>}
+              {variations.length > 0 && <button className={activeVariation === "main" ? "active" : ""} onClick={() => void checkoutVariation("main")} disabled={agentRunning}><span className="variation-dot dot-0" />元の案</button>}
               {variations.map((variation, index) => (
                 <button key={variation.branch} className={activeVariation === variation.branch ? "active" : ""} onClick={() => void checkoutVariation(variation.branch)} disabled={agentRunning}>
-                  <span className={`variation-dot dot-${index + 1}`} />{variation.label}<small>{variation.status === "ready" ? "Ready" : "Generating"}</small>
+                  <span className={`variation-dot dot-${index + 1}`} />{variation.label}<small>{variation.status === "ready" ? "準備完了" : "生成中"}</small>
                 </button>
               ))}
-              <button className="add-variation" onClick={() => setShowVariationPrompt(!showVariationPrompt)} aria-label="Add direction" disabled={agentRunning}>＋</button>
-              {variations.length > 0 && <button className="compare-variations" onClick={() => void openVariationCompare()} disabled={agentRunning || variationCompareLoading}>{variationCompareLoading ? "Loading…" : "Compare"}</button>}
+              <button className="add-variation" onClick={() => setShowVariationPrompt(!showVariationPrompt)} aria-label="別案を追加" disabled={agentRunning}>＋</button>
+              {variations.length > 0 && <button className="compare-variations" onClick={() => void openVariationCompare()} disabled={agentRunning || variationCompareLoading}>{variationCompareLoading ? "読み込み中…" : "比較"}</button>}
             </div>
             <div className="editor-tab-actions">
               {activeVariation.startsWith("weave/variation/") && (
                 <>
-                  <button className="archive-direction" onClick={() => void archiveVariation()} disabled={agentRunning}>Send to history</button>
-                  <button className="use-direction" onClick={() => void acceptVariation()} disabled={agentRunning}>Use this direction</button>
+                  <button className="archive-direction" onClick={() => void archiveVariation()} disabled={agentRunning}>履歴へ送る</button>
+                  <button className="use-direction" onClick={() => void acceptVariation()} disabled={agentRunning}>この案を採用</button>
                 </>
               )}
-              <div className="view-toggle" role="group" aria-label="Editor view">
-                <button className={mode === "preview" ? "active" : ""} onClick={() => { if (mode === "code") reinject(); setMode("preview"); }}>▣ <span>Preview</span></button>
-                <button className={mode === "code" ? "active" : ""} onClick={() => { setSlidesSynced(captureActive()); setSelectedAnnotationId(null); setPointerPicking(false); if (annotationMode) setAnnouncement("Mark for Agent finished"); setAnnotationMode(false); setMode("code"); }}>‹› <span>Source</span></button>
+              <div className="view-toggle" role="group" aria-label="編集表示">
+                <button className={mode === "preview" ? "active" : ""} onClick={() => { if (mode === "code") reinject(); setMode("preview"); }}>▣ <span>プレビュー</span></button>
+                <button className={mode === "code" ? "active" : ""} onClick={() => { setSlidesSynced(captureActive()); setSelectedAnnotationId(null); setPointerPicking(false); if (annotationMode) setAnnouncement("Mark for Agentを終了しました"); setAnnotationMode(false); setMode("code"); }}>‹› <span>ソース</span></button>
               </div>
             </div>
           </div>
@@ -2864,16 +2876,16 @@ export default function Home() {
           <div className="canvas-area">
             {showVariationPrompt && (
               <div className="variation-prompt">
-                <div><span>NEW DIRECTION</span><button onClick={() => setShowVariationPrompt(false)}>×</button></div>
-                <label htmlFor="variation-prompt">How should this direction feel?</label>
+                <div><span>新しいデザイン案</span><button aria-label="デザイン案の作成を閉じる" onClick={() => setShowVariationPrompt(false)}>×</button></div>
+                <label htmlFor="variation-prompt">どのような雰囲気にしますか？</label>
                 <textarea id="variation-prompt" value={variationPrompt} maxLength={16000} onChange={(event) => setVariationPrompt(event.target.value)} />
-                <button onClick={() => void generateVariation()} disabled={!agentReady || agentRunning}><span>✦</span> Generate direction</button>
-                <small>Generated sequentially from the latest saved version.</small>
+                <button onClick={() => void generateVariation()} disabled={!agentReady || agentRunning}><span>✦</span> デザイン案を生成</button>
+                <small>最新の保存済みバージョンから順番に生成します。</small>
               </div>
             )}
             {variationPreviews ? (
-              <section className="variation-compare" aria-label="Direction comparison">
-                <header><span><strong>Compare directions</strong><small>Slide {activeSlide} shown side by side</small></span><button onClick={() => setVariationPreviews(null)}>Close comparison</button></header>
+              <section className="variation-compare" aria-label="デザイン案の比較">
+                <header><span><strong>デザイン案を比較</strong><small>スライド{activeSlide}を横並びで表示</small></span><button onClick={() => setVariationPreviews(null)}>比較を閉じる</button></header>
                 <div className="variation-compare-grid">
                   {variationPreviews.map((preview) => {
                     const previewSlide = preview.deck.slides[Math.min(activeSlide - 1, preview.deck.slides.length - 1)];
@@ -2881,7 +2893,7 @@ export default function Home() {
                     try { html = previewSlide ? composeFor(previewSlide, Math.min(activeSlide, preview.deck.slides.length), preview.deck.slides.length) : ""; } catch { html = ""; }
                     return <article key={preview.branch} className={preview.branch === activeVariation ? "active" : ""}>
                       <div className="variation-card-preview"><style>{preview.css}</style><div dangerouslySetInnerHTML={{ __html: displayAssetHtml(html) }} /></div>
-                      <footer><span><strong>{preview.label}</strong><small>{previewSlide?.title || "Untitled"}</small></span><button onClick={async () => { setVariationPreviews(null); await checkoutVariation(preview.branch); }}>Open</button></footer>
+                      <footer><span><strong>{preview.branch === "main" ? "元の案" : preview.label}</strong><small>{previewSlide?.title || "無題"}</small></span><button onClick={async () => { setVariationPreviews(null); await checkoutVariation(preview.branch); }}>開く</button></footer>
                     </article>;
                   })}
                 </div>
@@ -2893,12 +2905,12 @@ export default function Home() {
                 <style>{deckCss}</style>
                 <div className={`canvas-interaction-status ${pointerPicking ? "picking" : annotationMode ? "annotating" : recalledAnnotations.length > 0 ? "recalling" : draggedId ? "dragging" : editingId ? "editing" : selectedId ? "selected" : ""}`} role="status">
                   {pointerPicking
-                    ? "Pointing · click an element to reference it · Esc to cancel"
+                    ? "要素を指定中 · Agentへ示す要素をクリック · Escでキャンセル"
                     : annotationMode
-                    ? `Marking for Agent · drag over what you want changed${recalledAnnotations.length > 0 ? ` · Comparing ${activeOverlayLabel}` : ""}`
+                    ? `Mark for Agent · 変更したい範囲をドラッグ${recalledAnnotations.length > 0 ? ` · ${activeOverlayLabel}と比較中` : ""}`
                     : recalledAnnotations.length > 0
-                      ? `Comparing sent annotations · ${activeOverlayLabel}`
-                      : draggedId ? "Moving block · release to place" : editingId ? "Editing text · Esc to finish" : selectedId ? "Selected · drag to reorder" : "Click a block to select it"}
+                      ? `送信済みの指示と比較中 · ${activeOverlayLabel}`
+                      : draggedId ? "ブロックを移動中 · 離して配置" : editingId ? "テキストを編集中 · Escで終了" : selectedId ? "選択中 · ドラッグで並べ替え" : "ブロックをクリックして選択"}
                 </div>
                 <div
                   className="slide-viewport"
@@ -2936,7 +2948,7 @@ export default function Home() {
                     scrollRef={annotationScrollRef}
                     onFocusHandled={() => setFocusAnnotationId(null)}
                     onPointerPick={pickPointerElement}
-                    onPointerPickCancel={() => { setPointerPicking(false); setAnnouncement("Element pointing canceled"); }}
+                    onPointerPickCancel={() => { setPointerPicking(false); setAnnouncement("要素の指定をキャンセルしました"); }}
                     onSelect={setSelectedAnnotationId}
                     onLabelChange={(id, label) => setAnnotations((current) => current.map((annotation) => annotation.id === id ? { ...annotation, label } : annotation))}
                     onDelete={deleteAnnotation}
@@ -2946,46 +2958,46 @@ export default function Home() {
                   />
                 </div>
                 {changedReview.length > 0 && <div className="changed-review" role="status">
-                  <span><strong>Agent changes</strong><small>{changedReviewIndex + 1} of {changedReview.length}</small></span>
-                  <button onClick={() => reviewChangedTarget(changedReviewIndex - 1)} aria-label="Previous changed element">←</button>
-                  <button onClick={() => reviewChangedTarget(changedReviewIndex + 1)} aria-label="Next changed element">→</button>
-                  <button onClick={() => { setChangedReview([]); setSelectedId(null); }}>Done</button>
+                  <span><strong>Agentの変更</strong><small>{changedReviewIndex + 1} / {changedReview.length}</small></span>
+                  <button onClick={() => reviewChangedTarget(changedReviewIndex - 1)} aria-label="前の変更箇所">←</button>
+                  <button onClick={() => reviewChangedTarget(changedReviewIndex + 1)} aria-label="次の変更箇所">→</button>
+                  <button onClick={() => { setChangedReview([]); setSelectedId(null); }}>確認完了</button>
                 </div>}
-                {selectedId && sel && !annotationMode && <div className="selection-toolbar" role="toolbar" aria-label="Selected element actions">
-                  {!sel.container && sel.kind !== "image" && <button onClick={beginEditSelected}>Edit</button>}
+                {selectedId && sel && !annotationMode && <div className="selection-toolbar" role="toolbar" aria-label="選択した要素の操作">
+                  {!sel.container && sel.kind !== "image" && <button onClick={beginEditSelected}>編集</button>}
                   {agentReady && <button onClick={referenceSelectedElement}>@ Agent</button>}
-                  {!outline.some((item) => item.id === selectedId && item.locked) && <button onClick={duplicateSelected}>Duplicate</button>}
-                  {outline.length > 1 && !outline.some((item) => item.id === selectedId && item.locked) && <button className="danger" onClick={deleteSelected}>Delete</button>}
+                  {!outline.some((item) => item.id === selectedId && item.locked) && <button onClick={duplicateSelected}>複製</button>}
+                  {outline.length > 1 && !outline.some((item) => item.id === selectedId && item.locked) && <button className="danger" onClick={deleteSelected}>削除</button>}
                 </div>}
                 <div className="canvas-toolbar">
-                  <div className="canvas-tool-group history-tools" role="group" aria-label="Edit history">
-                    <button onClick={undo} disabled={annotationMode || historyState.undo === 0} aria-label="Undo" title="Undo">↶</button>
-                    <button onClick={redo} disabled={annotationMode || historyState.redo === 0} aria-label="Redo" title="Redo">↷</button>
+                  <div className="canvas-tool-group history-tools" role="group" aria-label="編集履歴">
+                    <button onClick={undo} disabled={annotationMode || historyState.undo === 0} aria-label="元に戻す" title="直前の編集を元に戻します">↶</button>
+                    <button onClick={redo} disabled={annotationMode || historyState.redo === 0} aria-label="やり直す" title="元に戻した編集をやり直します">↷</button>
                   </div>
-                  <div className="canvas-tool-group content-tools" role="group" aria-label="Slide content">
-                    <button onClick={(event) => togglePopover("addBlock", event.currentTarget)} className={openPopover === "addBlock" ? "active" : ""} aria-expanded={openPopover === "addBlock"} aria-haspopup="menu" disabled={annotationMode}>＋ Add block</button>
+                  <div className="canvas-tool-group content-tools" role="group" aria-label="スライド内容">
+                    <button onClick={(event) => togglePopover("addBlock", event.currentTarget)} className={openPopover === "addBlock" ? "active" : ""} aria-expanded={openPopover === "addBlock"} aria-haspopup="menu" disabled={annotationMode}>＋ ブロックを追加</button>
                     <input ref={imageInputRef} className="sr-only" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml,image/gif" onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadImage(file); }} />
                   </div>
-                  <div className="canvas-tool-group zoom-tools" role="group" aria-label="Canvas zoom">
-                    <button aria-label="Zoom out" onClick={() => setManualZoom(Math.max(.25, zoomLevel - .1))}>−</button>
+                  <div className="canvas-tool-group zoom-tools" role="group" aria-label="キャンバスの拡大率">
+                    <button aria-label="縮小" onClick={() => setManualZoom(Math.max(.25, zoomLevel - .1))}>−</button>
                     <b>{Math.round(zoomLevel * 100)}%</b>
-                    <button aria-label="Zoom in" onClick={() => setManualZoom(Math.min(4, zoomLevel + .1))}>＋</button>
-                    <button aria-label="Reset zoom to 100%" onClick={() => setManualZoom(defaultCanvasZoom)}>100</button>
-                    <button aria-label="Fit to screen" onClick={() => setManualZoom(null)}>⊡</button>
+                    <button aria-label="拡大" onClick={() => setManualZoom(Math.min(4, zoomLevel + .1))}>＋</button>
+                    <button aria-label="拡大率を100%に戻す" onClick={() => setManualZoom(defaultCanvasZoom)}>100</button>
+                    <button aria-label="画面に合わせる" onClick={() => setManualZoom(null)}>⊡</button>
                     <button
                       className={canvasFocused ? "active" : ""}
-                      aria-label={canvasFocused ? "Exit canvas focus" : "Focus canvas"}
+                      aria-label={canvasFocused ? "集中表示を終了" : "キャンバスに集中"}
                       aria-pressed={canvasFocused}
-                      title={canvasFocused ? "Show editor panels" : "Hide panels and focus the canvas"}
+                      title={canvasFocused ? "編集パネルを表示します" : "パネルを隠してキャンバスを広く表示します"}
                       onClick={() => setCanvasFocused((value) => !value)}
                     >⛶</button>
                   </div>
-                  <div className="canvas-tool-group annotation-tools" role="group" aria-label="Annotations">
+                  <div className="canvas-tool-group annotation-tools" role="group" aria-label="Agentへの範囲指定">
                     <button
                       className={annotationMode ? "active" : ""}
                       aria-pressed={annotationMode}
                       aria-keyshortcuts="A"
-                      title="Toggle Mark for Agent (A)"
+                      title="変更したい範囲を囲んでAgentへ指示します（A）"
                       onClick={toggleAnnotationMode}
                     >▱ <span>Mark for Agent</span></button>
                   </div>
@@ -2994,11 +3006,11 @@ export default function Home() {
                   <>
                     <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
                     <div className="block-picker" role="menu">
-                      <small>{sel?.container ? `INSERT INTO ${sel.kind.toUpperCase()}` : "INSERT BLOCK"}</small>
+                      <small>{sel?.container ? `${blockLabels[sel.kind] ?? sel.kind}の中に追加` : "ブロックを追加"}</small>
                       {blockKinds.map((kind) => (
                         <button key={kind} role="menuitem" onClick={() => addBlock(kind)}>
                           <i>{blockIcons[kind]}</i>
-                          <span><strong>{kind === "paragraph" ? "Body text" : kind[0].toUpperCase() + kind.slice(1)}</strong><small>{sel?.container ? "Add inside this container" : "Add to slide flow"}</small></span>
+                          <span><strong>{blockLabels[kind]}</strong><small>{sel?.container ? "選択中のコンテナ内へ追加" : "スライドの流れへ追加"}</small></span>
                         </button>
                       ))}
                     </div>
@@ -3017,19 +3029,19 @@ export default function Home() {
             )}
           </div>
 
-          {slideNav === "filmstrip" && <nav className="slide-nav filmstrip" aria-label="Slides">{slideNavigator}</nav>}
+          {slideNav === "filmstrip" && <nav className="slide-nav filmstrip" aria-label="スライド一覧">{slideNavigator}</nav>}
         </section>
 
         {inspectorOpen ? <aside className="inspector">
-          <div className="inspector-heading"><span>INSPECTOR</span><button aria-label="Close inspector" onClick={() => setInspectorOpen(false)}>×</button></div>
-          <div className="inspector-tabs" role="tablist" aria-label="Inspector sections">
-            <button role="tab" aria-selected={inspectorView === "layers"} className={inspectorView === "layers" ? "active" : ""} onClick={() => setInspectorView("layers")}>Layers</button>
-            <button role="tab" aria-selected={inspectorView === "design"} className={inspectorView === "design" ? "active" : ""} onClick={() => setInspectorView("design")}>Design</button>
+          <div className="inspector-heading"><span>インスペクター</span><button aria-label="インスペクターを閉じる" onClick={() => setInspectorOpen(false)}>×</button></div>
+          <div className="inspector-tabs" role="tablist" aria-label="インスペクターの表示">
+            <button role="tab" aria-selected={inspectorView === "layers"} className={inspectorView === "layers" ? "active" : ""} onClick={() => setInspectorView("layers")}>レイヤー</button>
+            <button role="tab" aria-selected={inspectorView === "design"} className={inspectorView === "design" ? "active" : ""} onClick={() => setInspectorView("design")}>デザイン</button>
           </div>
-          {inspectorView === "layers" && <><div className="selection-path"><span>content</span><b>›</b><strong>{sel ? `${sel.kind}.${sel.id}` : "no selection"}</strong></div>
+          {inspectorView === "layers" && <><div className="selection-path"><span>コンテンツ</span><b>›</b><strong>{sel ? `${blockLabels[sel.kind] ?? sel.kind}.${sel.id}` : "未選択"}</strong></div>
           <section className="layer-tree">
             <button type="button" className="property-heading" aria-expanded={objectTreeOpen} onClick={() => setObjectTreeOpen((open) => !open)}>
-              <span>OBJECT TREE</span><span className="tree-heading-summary"><span>{outline.length}</span><span className="tree-toggle-glyph" aria-hidden="true">⌃</span></span>
+              <span>オブジェクト一覧</span><span className="tree-heading-summary"><span>{outline.length}</span><span className="tree-toggle-glyph" aria-hidden="true">⌃</span></span>
             </button>
             {objectTreeOpen && <div className={`layer-tree-body ${treeDragId ? "dragging-tree" : ""}`} onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setTreeDrop(null); }}>
               <span
@@ -3049,14 +3061,14 @@ export default function Home() {
                   onDrop={(event) => onTreeDrop(event, item)}
                   onDragEnd={() => { setTreeDragId(null); setTreeDrop(null); }}
                 >
-                  <i>{blockIcons[item.kind] ?? "▦"}</i><span>{item.label}</span><small>{item.kind}</small>
+                  <i>{blockIcons[item.kind] ?? "▦"}</i><span>{item.label}</span><small>{item.locked ? "固定" : item.container ? "コンテナ" : "ブロック"}</small>
                 </button>
               ))}
             </div>}
           </section></>}
           {inspectorView === "design" && <>
-          <div className="selection-path"><span>content</span><b>›</b><strong>{sel ? `${sel.kind}.${sel.id}` : "slide"}</strong></div>
-          {annotationMode && <div className="annotation-inspector-notice" role="status">Mark for Agent creates marked areas only. Editing is off while marking.</div>}
+          <div className="selection-path"><span>コンテンツ</span><b>›</b><strong>{sel ? `${blockLabels[sel.kind] ?? sel.kind}.${sel.id}` : "スライド"}</strong></div>
+          {annotationMode && <div className="annotation-inspector-notice" role="status">Mark for Agentでは範囲だけを指定できます。指定中は通常編集が無効になります。</div>}
           <fieldset className="inspector-editing" disabled={annotationMode}>
           {sel && (
             <>
@@ -3064,22 +3076,22 @@ export default function Home() {
                   heading or a row, so its width and its place in the parent come first. Details a
                   choice here calls for follow it inline, where the choice is still in view. */}
               <section className="property-section">
-                <div className="property-heading"><span>BLOCK</span><span>{sel.kind}</span></div>
+                <div className="property-heading"><span>ブロック</span><span>{blockLabels[sel.kind] ?? sel.kind}</span></div>
                 {sel.read.parentLayout !== "grid" && (
                   <div className="property-row">
-                    <span>Width</span>
+                    <span>幅</span>
                     <div className="scale-options">
                       {sizeIntents.filter((opt: { value: string }) => opt.value !== "ratio" || sel.read.parentLayout === "row").map((opt: { value: string; label: string }) => (
-                        <button key={opt.value} className={sel.read.size === opt.value ? "active" : ""} onClick={() => setSize(opt.value)}>{opt.label}</button>
+                        <button key={opt.value} className={sel.read.size === opt.value ? "active" : ""} onClick={() => setSize(opt.value)}>{({ Fill: "広げる", Hug: "内容に合わせる", Fixed: "固定", Ratio: "比率" } as Record<string, string>)[opt.label]}</button>
                       ))}
                     </div>
                   </div>
                 )}
                 {sel.read.size === "ratio" && sel.read.parentLayout === "row" && (
-                  <div className="property-row"><span>Ratio</span><div className="scale-options">{ratioOptions.map((opt: { value: string; label: string }) => <button key={opt.value} className={sel.read.ratio === opt.value ? "active" : ""} onClick={() => setRatio(opt.value)}>{opt.label}</button>)}</div></div>
+                  <div className="property-row"><span>比率</span><div className="scale-options">{ratioOptions.map((opt: { value: string; label: string }) => <button key={opt.value} className={sel.read.ratio === opt.value ? "active" : ""} onClick={() => setRatio(opt.value)}>{opt.label}</button>)}</div></div>
                 )}
                 {sel.read.parentLayout === "grid" && (
-                  <div className="property-row"><span>Span</span><div className="scale-options">{[{ value: "", label: "1" }, { value: "col-span-2", label: "Col 2" }, { value: "col-span-3", label: "Col 3" }, { value: "row-span-2", label: "Row 2" }].map((opt) => <button key={opt.value || "one"} className={sel.read.span === opt.value ? "active" : ""} onClick={() => setSpan(opt.value)}>{opt.label}</button>)}</div></div>
+                  <div className="property-row"><span>占有範囲</span><div className="scale-options">{[{ value: "", label: "1" }, { value: "col-span-2", label: "列 2" }, { value: "col-span-3", label: "列 3" }, { value: "row-span-2", label: "行 2" }].map((opt) => <button key={opt.value || "one"} className={sel.read.span === opt.value ? "active" : ""} onClick={() => setSpan(opt.value)}>{opt.label}</button>)}</div></div>
                 )}
                 {/* Measure is the number Fixed stops at, so it belongs directly under the choice
                     that calls for it — not filed away somewhere the trigger cannot be seen. */}
@@ -3088,10 +3100,10 @@ export default function Home() {
                     Row that is the parent's Justify, which lives under the parent's own heading. */}
                 {sel.read.parentLayout === "column" && sel.read.size !== "fill" && (
                   <div className="property-row">
-                    <span>Position</span>
+                    <span>位置</span>
                     <div className="scale-options">
                       {blockPositionOptions.map((opt: { value: string; label: string }) => (
-                        <button key={opt.value} className={sel.read.blockPosition === opt.value ? "active" : ""} onClick={() => setBlockPosition(opt.value)}>{opt.label}</button>
+                        <button key={opt.value} className={sel.read.blockPosition === opt.value ? "active" : ""} onClick={() => setBlockPosition(opt.value)}>{optionLabels[opt.label]}</button>
                       ))}
                     </div>
                   </div>
@@ -3101,43 +3113,43 @@ export default function Home() {
               {/* What this kind of block can do that others cannot — arrange children, or set type.
                   Position and Align items stay under separate headings, as they must. */}
               <section className="property-section">
-                <div className="property-heading"><span>{containerLike ? "CONTAINER" : sel.kind === "image" ? "IMAGE SIZE" : "TEXT"}</span></div>
+                <div className="property-heading"><span>{containerLike ? "コンテナ" : sel.kind === "image" ? "画像サイズ" : "テキスト"}</span></div>
                 {containerLike && (
                   <div className="property-row">
-                    <span>Direction</span>
+                    <span>方向</span>
                     <div className="scale-options">
-                      {[{ label: "Row", value: "row" }, { label: "Column", value: "column" }, { label: "Grid", value: "grid" }].map((opt) => (
+                      {[{ label: "横並び", value: "row" }, { label: "縦並び", value: "column" }, { label: "グリッド", value: "grid" }].map((opt) => (
                         <button key={opt.value} className={(sel.read.direction || "row") === opt.value ? "active" : ""} onClick={() => setDirection(opt.value)}>{opt.label}</button>
                       ))}
                     </div>
                   </div>
                 )}
-                {containerLike && sel.read.direction === "grid" && <div className="property-row"><span>Columns</span><div className="scale-options">{[2, 3, 4].map((count) => <button key={count} className={sel.read.columns === `grid-cols-${count}` ? "active" : ""} onClick={() => setColumns(`grid-cols-${count}`)}>{count}</button>)}</div></div>}
+                {containerLike && sel.read.direction === "grid" && <div className="property-row"><span>列数</span><div className="scale-options">{[2, 3, 4].map((count) => <button key={count} className={sel.read.columns === `grid-cols-${count}` ? "active" : ""} onClick={() => setColumns(`grid-cols-${count}`)}>{count}</button>)}</div></div>}
                 {propertyRows(containerLike ? containerSchema : sel.kind === "image" ? [] : textSchema)}
                 {sel.kind === "list" && propertyRows(listSchema)}
-                {!containerLike && sel.kind !== "image" && <div className="property-row"><span>Selection</span><div className="scale-options"><button onMouseDown={(event) => event.preventDefault()} onClick={() => formatSelection("strong")}>Bold</button><button onMouseDown={(event) => event.preventDefault()} onClick={() => formatSelection("span")}>Accent</button></div></div>}
+                {!containerLike && sel.kind !== "image" && <div className="property-row"><span>選択範囲</span><div className="scale-options"><button onMouseDown={(event) => event.preventDefault()} onClick={() => formatSelection("strong")}>太字</button><button onMouseDown={(event) => event.preventDefault()} onClick={() => formatSelection("span")}>アクセント</button></div></div>}
               </section>
-              {sel.kind === "image" && <section className="property-section"><div className="property-heading"><span>IMAGE</span></div>{propertyRows(imageSchema)}<label><span>Alt text</span><input value={sel.read.alt} onChange={(event) => setAlt(event.target.value)} /></label><button className="inspector-action" onClick={() => { replacingImageRef.current = true; imageInputRef.current?.click(); }}>Replace image</button></section>}
-              {containerLike && <section className="property-section"><div className="property-heading"><span>DECORATION</span></div>{propertyRows(decorationSchema)}</section>}
-              {sel.kind === "table" && <section className="property-section"><div className="property-heading"><span>TABLE</span></div><div className="table-actions"><button onClick={() => editTable("add-row")}>＋ Row</button><button onClick={() => editTable("remove-row")}>− Row</button><button onClick={() => editTable("add-column")}>＋ Column</button><button onClick={() => editTable("remove-column")}>− Column</button></div></section>}
+              {sel.kind === "image" && <section className="property-section"><div className="property-heading"><span>画像</span></div>{propertyRows(imageSchema)}<label><span>代替テキスト</span><input value={sel.read.alt} onChange={(event) => setAlt(event.target.value)} /></label><button className="inspector-action" onClick={() => { replacingImageRef.current = true; imageInputRef.current?.click(); }}>画像を置き換え</button></section>}
+              {containerLike && <section className="property-section"><div className="property-heading"><span>装飾</span></div>{propertyRows(decorationSchema)}</section>}
+              {sel.kind === "table" && <section className="property-section"><div className="property-heading"><span>表</span></div><div className="table-actions"><button onClick={() => editTable("add-row")}>＋ 行</button><button onClick={() => editTable("remove-row")}>− 行</button><button onClick={() => editTable("add-column")}>＋ 列</button><button onClick={() => editTable("remove-column")}>− 列</button></div></section>}
             </>
           )}
           <section className="property-section">
-            <div className="property-heading"><span>SLIDE</span><span>⌃</span></div>
-            <label><span>Title</span><input value={titleDraft ?? slides[activeSlide - 1]?.title ?? ""} onFocus={(event) => setTitleDraft(event.currentTarget.value)} onChange={(event) => { setTitleDraft(event.target.value); setSlideTitle(event.target.value); }} onBlur={() => setTitleDraft(null)} /></label>
-            <label><span>Speaker notes</span><textarea value={slides[activeSlide - 1]?.notes ?? ""} onChange={(event) => setSlideNotes(event.target.value)} /></label>
+            <div className="property-heading"><span>スライド</span><span>⌃</span></div>
+            <label><span>タイトル</span><input value={titleDraft ?? slides[activeSlide - 1]?.title ?? ""} onFocus={(event) => setTitleDraft(event.currentTarget.value)} onChange={(event) => { setTitleDraft(event.target.value); setSlideTitle(event.target.value); }} onBlur={() => setTitleDraft(null)} /></label>
+            <label><span>発表者ノート</span><textarea value={slides[activeSlide - 1]?.notes ?? ""} onChange={(event) => setSlideNotes(event.target.value)} /></label>
           </section>
           <section className="property-section layout-section">
-            <div className="property-heading"><span>SLIDE LAYOUT</span><span>⌃</span></div>
+            <div className="property-heading"><span>スライドレイアウト</span><span>⌃</span></div>
             <button className="layout-select" onClick={(event) => togglePopover("layouts", event.currentTarget)} aria-expanded={openPopover === "layouts"} aria-haspopup="listbox">
               {currentTemplate && currentLayout ? templatePreview(currentTemplate, "current-layout", currentLayout.id) : <span className="template-preview template-preview-empty" />}
-              <span><strong>{currentLayout?.name ?? currentTemplate?.name ?? "Custom"}</strong><small>{currentTemplate ? currentTemplate.name : "No matching template"}</small></span>
+              <span><strong>{currentLayout?.name ?? currentTemplate?.name ?? "カスタム"}</strong><small>{currentTemplate ? currentTemplate.name : "一致するテンプレートなし"}</small></span>
               <b>⌄</b>
             </button>
             {openPopover === "layouts" && (
               <>
                 <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
-                <div className="template-options layout-options" role="listbox" aria-label="Slide layout">
+                <div className="template-options layout-options" role="listbox" aria-label="スライドレイアウト">
                   {templates.map((template) => (
                     <div className="template-group" key={template.id}>
                       <strong className="template-group-name">{template.name}</strong>
@@ -3158,72 +3170,72 @@ export default function Home() {
             )}
           </section>
           <section className="accent-section">
-            <span>ACCENT</span>
-            <div>{accents.map((item) => <button key={item.color} style={{ background: item.color }} className={accent === item.color ? "active" : ""} onClick={() => setSlideAccent(item.color)} aria-label={`Use accent ${item.color}`} />)}</div>
+            <span>アクセントカラー</span>
+            <div>{accents.map((item) => <button key={item.color} style={{ background: item.color }} className={accent === item.color ? "active" : ""} onClick={() => setSlideAccent(item.color)} aria-label={`アクセントカラーを${item.color}に変更`} />)}</div>
           </section>
-          {sel && outline.length > 1 && !outline.some((item) => item.id === selectedId && item.locked) && <button className="delete-block" onClick={deleteSelected}>Delete selected block</button>}
+          {sel && outline.length > 1 && !outline.some((item) => item.id === selectedId && item.locked) && <button className="delete-block" onClick={deleteSelected}>選択中のブロックを削除</button>}
           </fieldset>
           </>}
-        </aside> : <button className="open-inspector" onClick={() => setInspectorOpen(true)}>Inspector</button>}
-        <nav className="mobile-tabs" aria-label="Workspace views">
-          <button className={mobileView === "canvas" ? "active" : ""} aria-pressed={mobileView === "canvas"} onClick={() => setMobileView("canvas")}>Canvas</button>
+        </aside> : <button className="open-inspector" onClick={() => setInspectorOpen(true)}>インスペクター</button>}
+        <nav className="mobile-tabs" aria-label="作業画面">
+          <button className={mobileView === "canvas" ? "active" : ""} aria-pressed={mobileView === "canvas"} onClick={() => setMobileView("canvas")}>キャンバス</button>
           <button className={mobileView === "agent" ? "active" : ""} aria-pressed={mobileView === "agent"} onClick={() => { setActivityView("agent"); setLeftPanelOpen(true); setMobileView("agent"); }}>Agent</button>
-          <button className={mobileView === "history" ? "active" : ""} aria-pressed={mobileView === "history"} onClick={() => { setActivityView("history"); setLeftPanelOpen(true); setMobileView("history"); }}>History</button>
-          <button className={mobileView === "shortcuts" ? "active" : ""} aria-pressed={mobileView === "shortcuts"} onClick={() => { setActivityView("shortcuts"); setLeftPanelOpen(true); setMobileView("shortcuts"); }}>Keys</button>
-          <button className={mobileView === "slides" ? "active" : ""} aria-pressed={mobileView === "slides"} onClick={() => setMobileView("slides")}>Slides</button>
-          <button className={mobileView === "inspector" ? "active" : ""} aria-pressed={mobileView === "inspector"} onClick={() => { setInspectorOpen(true); setMobileView("inspector"); }}>Inspector</button>
-          <button className={mobileView === "settings" ? "active" : ""} aria-pressed={mobileView === "settings"} onClick={() => { setActivityView("settings"); setLeftPanelOpen(true); setMobileView("settings"); }}>Settings</button>
+          <button className={mobileView === "history" ? "active" : ""} aria-pressed={mobileView === "history"} onClick={() => { setActivityView("history"); setLeftPanelOpen(true); setMobileView("history"); }}>履歴</button>
+          <button className={mobileView === "shortcuts" ? "active" : ""} aria-pressed={mobileView === "shortcuts"} onClick={() => { setActivityView("shortcuts"); setLeftPanelOpen(true); setMobileView("shortcuts"); }}>キー</button>
+          <button className={mobileView === "slides" ? "active" : ""} aria-pressed={mobileView === "slides"} onClick={() => setMobileView("slides")}>スライド</button>
+          <button className={mobileView === "inspector" ? "active" : ""} aria-pressed={mobileView === "inspector"} onClick={() => { setInspectorOpen(true); setMobileView("inspector"); }}>詳細</button>
+          <button className={mobileView === "settings" ? "active" : ""} aria-pressed={mobileView === "settings"} onClick={() => { setActivityView("settings"); setLeftPanelOpen(true); setMobileView("settings"); }}>設定</button>
         </nav>
-        <nav className="mobile-slide-panel slide-nav" aria-label="Slides">{slideNavigator}</nav>
+        <nav className="mobile-slide-panel slide-nav" aria-label="スライド一覧">{slideNavigator}</nav>
       </div>
 
       {galleryOpen && (
         <div ref={galleryRef} className="gallery" role="dialog" aria-modal="true" aria-labelledby="gallery-title" tabIndex={-1} onPointerDown={() => setGalleryMenu(null)}>
           <header className="gallery-head">
-            {galleryView === "new" ? <button className="back-link" onClick={() => setGalleryView("list")}>← Projects</button> : <h3 id="gallery-title">Projects <span className="count">{galleryLoading ? "Loading…" : galleryProjects.length}</span></h3>}
-            {galleryView === "new" && <h3 id="gallery-title">New project</h3>}
-            {galleryView === "list" && <button className="ghost-button" onClick={() => importRef.current?.click()}>Import bundle</button>}
+            {galleryView === "new" ? <button className="back-link" onClick={() => setGalleryView("list")}>← プロジェクト</button> : <h3 id="gallery-title">プロジェクト <span className="count">{galleryLoading ? "読み込み中…" : galleryProjects.length}</span></h3>}
+            {galleryView === "new" && <h3 id="gallery-title">新しいプロジェクト</h3>}
+            {galleryView === "list" && <button className="ghost-button" onClick={() => importRef.current?.click()}>編集用データを読み込む</button>}
             {apiError && <span className="gallery-error">{apiError}</span>}
-            <button className="close-x" aria-label="Close project gallery" onClick={closeGallery}>×</button>
+            <button className="close-x" aria-label="プロジェクト一覧を閉じる" onClick={closeGallery}>×</button>
           </header>
           {galleryView === "new" ? (
             <div className="new-flow">
               <div className="template-row">
                 {templates.map((template) => <div className={`project-card ${newProjectTemplate === template.id ? "selected" : ""}`} key={template.id}>
-                  <button className="project-thumb" onClick={() => setNewProjectTemplate(template.id)} aria-label={`Choose ${template.name} template`}>{templateThumbnail(template, template.name)}</button>
-                  <div className="card-meta"><strong>{template.name}</strong><small>{template.layouts.length} layouts</small></div>
+                  <button className="project-thumb" onClick={() => setNewProjectTemplate(template.id)} aria-label={`${template.name}テンプレートを選択`}>{templateThumbnail(template, template.name)}</button>
+                  <div className="card-meta"><strong>{template.name}</strong><small>レイアウト {template.layouts.length}件</small></div>
                 </div>)}
               </div>
               <div className="name-row">
-                <label htmlFor="new-project-title">Name</label>
+                <label htmlFor="new-project-title">名前</label>
                 <input id="new-project-title" className="name-field" value={newProjectTitle} onChange={(event) => setNewProjectTitle(event.target.value)} autoFocus />
                 <code>workspaces/{projectSlug(newProjectTitle)}</code>
-                <button className="ghost-button" onClick={() => setGalleryView("list")}>Cancel</button>
-                <button className="primary-button" disabled={!newProjectTitle.trim() || newProjectCreating} onClick={() => void createProject()}>{newProjectCreating ? "Creating…" : "Create and open"}</button>
+                <button className="ghost-button" onClick={() => setGalleryView("list")}>キャンセル</button>
+                <button className="primary-button" disabled={!newProjectTitle.trim() || newProjectCreating} onClick={() => void createProject()}>{newProjectCreating ? "作成中…" : "作成して開く"}</button>
               </div>
             </div>
           ) : (
             <div className="gallery-body" onPointerDown={(event) => { if (event.target === event.currentTarget) setGalleryMenu(null); }}>
-              {galleryLoading ? <p className="gallery-empty">Loading…</p> : <>
-                {galleryProjects.length === 0 && <div className="gallery-empty"><strong>No projects yet</strong><span>Create a project to get started.</span></div>}
+              {galleryLoading ? <p className="gallery-empty">読み込み中…</p> : <>
+                {galleryProjects.length === 0 && <div className="gallery-empty"><strong>プロジェクトがありません</strong><span>新しいプロジェクトを作成してください。</span></div>}
                 <div className="gallery-grid">
-                  <button className="new-project-card" onClick={() => { setGalleryView("new"); setGalleryMenu(null); setGalleryTip(null); }}><b>＋</b><span>New project</span></button>
+                  <button className="new-project-card" onClick={() => { setGalleryView("new"); setGalleryMenu(null); setGalleryTip(null); }}><b>＋</b><span>新しいプロジェクト</span></button>
                   {galleryProjects.map((item) => <div key={item.slug} className="project-card-wrap">
-                    <button className={`project-card ${item.current ? "current" : ""} ${item.blocked ? "blocked" : ""}`} onClick={() => void switchProject(item)} disabled={!!gallerySwitching} aria-label={`Open ${item.title}`}>
+                    <button className={`project-card ${item.current ? "current" : ""} ${item.blocked ? "blocked" : ""}`} onClick={() => void switchProject(item)} disabled={!!gallerySwitching} aria-label={`${item.title}を開く`}>
                       <span className="project-thumb">
-                        {gallerySwitching === item.slug ? <span className="thumb-loading">Loading…</span> : thumbHtml(item.thumbnailHtml, item.css, item.title)}
-                        {item.current && <span className="card-pill">Open</span>}
-                        {item.blocked && <span className="card-pill warn">Directions pending</span>}
+                        {gallerySwitching === item.slug ? <span className="thumb-loading">読み込み中…</span> : thumbHtml(item.thumbnailHtml, item.css, item.title)}
+                        {item.current && <span className="card-pill">開いています</span>}
+                        {item.blocked && <span className="card-pill warn">未処理の別案あり</span>}
                       </span>
-                      <span className="card-meta"><strong>{item.title}</strong><small>{item.current && !saved ? "Unsaved changes" : `${item.slideCount} slides · ${relativeProjectTime(item.updatedAt)}`}</small></span>
+                      <span className="card-meta"><strong>{item.title}</strong><small>{item.current && !saved ? "未保存の変更あり" : `${item.slideCount}枚 · ${relativeProjectTime(item.updatedAt)}`}</small></span>
                     </button>
-                    <button className="kebab" aria-label={`${item.title} menu`} aria-haspopup="menu" aria-expanded={galleryMenu === item.slug} onPointerDown={(event) => event.stopPropagation()} onClick={() => { setGalleryTip(null); setGalleryMenu((current) => current === item.slug ? null : item.slug); }}>⋯</button>
+                    <button className="kebab" aria-label={`${item.title}のメニュー`} aria-haspopup="menu" aria-expanded={galleryMenu === item.slug} onPointerDown={(event) => event.stopPropagation()} onClick={() => { setGalleryTip(null); setGalleryMenu((current) => current === item.slug ? null : item.slug); }}>⋯</button>
                     {galleryMenu === item.slug && <div className="card-menu" role="menu" onPointerDown={(event) => event.stopPropagation()}>
-                      <button role="menuitem" onClick={() => { setRenameDraft(item.title); setGalleryDialog({ kind: "rename", slug: item.slug, title: item.title }); setGalleryMenu(null); }}><span>Rename</span><small>Change the display name</small></button>
-                      <button role="menuitem" onClick={() => void galleryMutation(item.slug, "duplicate")}><span>Duplicate</span><small>Save as a new project</small></button>
-                      {!item.current && <button className="danger" role="menuitem" onClick={() => { setGalleryDialog({ kind: "archive", slug: item.slug, title: item.title }); setGalleryMenu(null); }}><span>Archive</span><small>Move out of this list</small></button>}
+                      <button role="menuitem" onClick={() => { setRenameDraft(item.title); setGalleryDialog({ kind: "rename", slug: item.slug, title: item.title }); setGalleryMenu(null); }}><span>名前を変更</span><small>表示名を変更します</small></button>
+                      <button role="menuitem" onClick={() => void galleryMutation(item.slug, "duplicate")}><span>複製</span><small>新しいプロジェクトとして保存します</small></button>
+                      {!item.current && <button className="danger" role="menuitem" onClick={() => { setGalleryDialog({ kind: "archive", slug: item.slug, title: item.title }); setGalleryMenu(null); }}><span>アーカイブ</span><small>この一覧から移動します</small></button>}
                     </div>}
-                    {galleryTip === item.slug && <div className="card-tip"><strong>Cannot open yet</strong><p>{item.blockedCount} generated direction{item.blockedCount === 1 ? " is" : "s are"} still pending. Use, archive, or discard them before switching.</p></div>}
+                    {galleryTip === item.slug && <div className="card-tip"><strong>まだ開けません</strong><p>生成した別案が{item.blockedCount}件未処理です。切り替える前に採用、履歴へ送る、または破棄してください。</p></div>}
                   </div>)}
                 </div>
               </>}
@@ -3231,11 +3243,11 @@ export default function Home() {
           )}
           {galleryDialog && <><div className="scrim" onClick={() => setGalleryDialog(null)} />
             <div className="dialog" role="alertdialog" aria-modal="true">
-              {galleryDialog.kind === "rename" && <><div className="dialog-body"><strong>Rename project</strong><input className="name-field" autoFocus value={renameDraft} onChange={(event) => setRenameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void galleryMutation(galleryDialog.slug, "rename", renameDraft); }} /></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>Cancel</button><button className="primary-button" onClick={() => void galleryMutation(galleryDialog.slug, "rename", renameDraft)}>Save</button></div></>}
-              {galleryDialog.kind === "archive" && <><div className="dialog-body"><strong>Archive “{galleryDialog.title}”?</strong><p>The project is not deleted; it moves out of this list.</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>Cancel</button><button className="primary-button" onClick={() => void galleryMutation(galleryDialog.slug, "archive")}>Archive</button></div></>}
-              {galleryDialog.kind === "dirty" && <><div className="dialog-body"><strong>Save before switching</strong><p>“{deckTitle}” has unsaved changes. In-progress edits and undo history do not carry between projects.</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>Cancel</button><button className="primary-button" onClick={async () => { const target = galleryProjects.find((item) => item.slug === galleryDialog.slug); setGalleryDialog(null); if (await saveProject() && target) void switchProject(target, false, true); }}>Save and open “{galleryDialog.title}”</button></div></>}
-              {galleryDialog.kind === "create" && <><div className="dialog-body"><strong>Save before creating</strong><p>“{deckTitle}” has unsaved changes. We will save it before opening a new project.</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>Cancel</button><button className="primary-button" onClick={async () => { setGalleryDialog(null); if (await saveProject()) void createProject(true); }}>Save and create</button></div></>}
-              {galleryDialog.kind === "turn" && <><div className="dialog-body"><strong>Stop generation and switch?</strong><p>Stopping the current Agent generation discards incomplete changes.</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>Cancel</button><button className="primary-button" onClick={() => { const target = galleryProjects.find((item) => item.slug === galleryDialog.slug); setGalleryDialog(null); if (target) void switchProject(target, true); }}>Stop and switch</button></div></>}
+              {galleryDialog.kind === "rename" && <><div className="dialog-body"><strong>プロジェクト名を変更</strong><input className="name-field" autoFocus value={renameDraft} onChange={(event) => setRenameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void galleryMutation(galleryDialog.slug, "rename", renameDraft); }} /></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>キャンセル</button><button className="primary-button" onClick={() => void galleryMutation(galleryDialog.slug, "rename", renameDraft)}>保存</button></div></>}
+              {galleryDialog.kind === "archive" && <><div className="dialog-body"><strong>「{galleryDialog.title}」をアーカイブしますか？</strong><p>プロジェクトは削除されず、この一覧から移動します。</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>キャンセル</button><button className="primary-button" onClick={() => void galleryMutation(galleryDialog.slug, "archive")}>アーカイブ</button></div></>}
+              {galleryDialog.kind === "dirty" && <><div className="dialog-body"><strong>切り替える前に保存</strong><p>「{deckTitle}」に未保存の変更があります。編集中の内容と操作履歴は別のプロジェクトに引き継がれません。</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>キャンセル</button><button className="primary-button" onClick={async () => { const target = galleryProjects.find((item) => item.slug === galleryDialog.slug); setGalleryDialog(null); if (await saveProject() && target) void switchProject(target, false, true); }}>保存して「{galleryDialog.title}」を開く</button></div></>}
+              {galleryDialog.kind === "create" && <><div className="dialog-body"><strong>作成する前に保存</strong><p>「{deckTitle}」に未保存の変更があります。保存してから新しいプロジェクトを開きます。</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>キャンセル</button><button className="primary-button" onClick={async () => { setGalleryDialog(null); if (await saveProject()) void createProject(true); }}>保存して作成</button></div></>}
+              {galleryDialog.kind === "turn" && <><div className="dialog-body"><strong>生成を止めて切り替えますか？</strong><p>進行中のAgent生成を止めると、未完成の変更は破棄されます。</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>キャンセル</button><button className="primary-button" onClick={() => { const target = galleryProjects.find((item) => item.slug === galleryDialog.slug); setGalleryDialog(null); if (target) void switchProject(target, true); }}>停止して切り替え</button></div></>}
             </div>
           </>}
         </div>
@@ -3243,24 +3255,24 @@ export default function Home() {
 
       <footer className="statusbar">
         <div>
-          <button className={`quality-button ${qualityReport.ok ? "ok" : "error"}`} onClick={(event) => togglePopover("quality", event.currentTarget)} aria-expanded={openPopover === "quality"}>Quality {qualityReport.ok ? (qualityReport.warnings ? `${qualityReport.warnings} warnings` : "✓") : `${qualityReport.errors} errors`}</button>
-          <span>{saved ? "Everything saved" : "Unsaved changes"}</span>
+          <button className={`quality-button ${qualityReport.ok ? "ok" : "error"}`} onClick={(event) => togglePopover("quality", event.currentTarget)} aria-expanded={openPopover === "quality"}>品質 {qualityReport.ok ? (qualityReport.warnings ? `警告 ${qualityReport.warnings}件` : "✓") : `エラー ${qualityReport.errors}件`}</button>
+          <span>{saved ? "すべて保存済み" : "未保存の変更あり"}</span>
           {apiError && <span className="status-error">{apiError}</span>}
         </div>
-        <div><span>HTML</span><span>UTF-8</span><span>Spaces: 2</span><button className={`connection ${agentReady ? "" : "offline"}`} onClick={() => setConnectionEpoch((value) => value + 1)} title="Reconnect"><i /> {agentReady ? "Agent connected" : "Reconnect Agent"}</button></div>
+        <div><span>HTML</span><span>UTF-8</span><span>スペース: 2</span><button className={`connection ${agentReady ? "" : "offline"}`} onClick={() => setConnectionEpoch((value) => value + 1)} title="Agentへの接続をやり直す"><i /> {agentReady ? "Agent接続済み" : "Agentへ再接続"}</button></div>
       </footer>
 
       {openPopover === "quality" && (
         <>
           <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
-          <aside className="quality-popover" aria-label="Deck quality report">
-            <header><strong>Deck quality</strong><button onClick={() => dismissPopover()}>×</button></header>
-            {qualityReport.ok && <p className="quality-empty">No blocking quality issues.</p>}
+          <aside className="quality-popover" aria-label="デッキの品質レポート">
+            <header><strong>デッキの品質</strong><button aria-label="品質レポートを閉じる" onClick={() => dismissPopover()}>×</button></header>
+            {qualityReport.ok && <p className="quality-empty">作業を妨げる品質上の問題はありません。</p>}
             {quality.diagnostics.map((item: any, index: number) => (
               <div key={`${item.code}-${index}`} className="quality-row"><i className={item.severity === "warning" ? "warning" : "error"} /><span><strong>{item.message}</strong><small>{item.code} · {item.source}</small></span></div>
             ))}
             {projectEventDiagnostics.length > 0 && <>
-              <div className="quality-report-heading">Last Agent output rejected</div>
+              <div className="quality-report-heading">直前のAgent出力は反映されませんでした</div>
               {projectEventDiagnostics.map((item, index) => (
                 <div key={`agent-${item.code ?? "diagnostic"}-${index}`} className="quality-row"><i className={item.severity === "warning" ? "warning" : "error"} /><span><strong>{item.message}</strong><small>{item.code ?? "agent quality gate"} · {item.source ?? "html"}</small></span></div>
               ))}
@@ -3269,7 +3281,7 @@ export default function Home() {
         </>
       )}
       {showPresenter && (
-        <div className="presenter" role="dialog" aria-modal="true" aria-label="Presentation mode" tabIndex={-1} ref={presenterRef} onKeyDown={(event) => {
+        <div className="presenter" role="dialog" aria-modal="true" aria-label="プレゼンモード" tabIndex={-1} ref={presenterRef} onKeyDown={(event) => {
           if (["ArrowRight", "PageDown", " "].includes(event.key)) setPresentSlide((value) => Math.min(slides.length, value + 1));
           if (["ArrowLeft", "PageUp"].includes(event.key)) setPresentSlide((value) => Math.max(1, value - 1));
           if (event.key === "Escape") setShowPresenter(false);
@@ -3277,12 +3289,12 @@ export default function Home() {
           <style>{deckCss}</style>
           <div className="presenter-stage" style={{ "--slide-scale": presenterScale } as React.CSSProperties} dangerouslySetInnerHTML={{ __html: displayAssetHtml((() => { const slide = slides[presentSlide - 1]; if (!slide) return ""; try { return composeFor(slide, presentSlide, slides.length); } catch (error) { return error instanceof Error ? error.message : String(error); } })()) }} />
           <footer>
-            <button onClick={() => setPresentSlide((value) => Math.max(1, value - 1))}>← Previous</button>
+            <button onClick={() => setPresentSlide((value) => Math.max(1, value - 1))}>← 前へ</button>
             <span>{presentSlide} / {slides.length}</span>
-            <button onClick={() => setPresentSlide((value) => Math.min(slides.length, value + 1))}>Next →</button>
-            <small>{slides[presentSlide - 1]?.notes || "No speaker notes"}</small>
-            <button onClick={() => document.documentElement.requestFullscreen?.()}>Fullscreen</button>
-            <button onClick={() => setShowPresenter(false)}>Exit</button>
+            <button onClick={() => setPresentSlide((value) => Math.min(slides.length, value + 1))}>次へ →</button>
+            <small>{slides[presentSlide - 1]?.notes || "発表者ノートはありません"}</small>
+            <button onClick={() => document.documentElement.requestFullscreen?.()}>全画面</button>
+            <button onClick={() => setShowPresenter(false)}>終了</button>
           </footer>
         </div>
       )}

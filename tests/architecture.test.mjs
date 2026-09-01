@@ -202,7 +202,7 @@ test("commands are grouped by editing, project, and delivery intent", async () =
   assert.match(page, /className="project-switcher"[^>]*aria-haspopup="dialog"/);
   assert.match(page, /className="gallery" role="dialog"/);
   assert.match(page, /className="topbar-popover delivery-menu"/);
-  assert.match(page, /<h3>Appearance<\/h3>/);
+  assert.match(page, /<h3>表示<\/h3>/);
   assert.doesNotMatch(page, /className="icon-button"/);
   assert.doesNotMatch(page, /className="share-button"/);
   assert.match(css, /\.canvas-tool-group \+ \.canvas-tool-group/);
@@ -248,11 +248,11 @@ test("the slide canvas opens at 100% zoom", async () => {
   assert.match(page, /const slideScale = fitScale \* zoomLevel;/);
   assert.match(page, /data-zoom-mode=\{zoomLevel <= defaultCanvasZoom \? "fit" : "manual"\}/);
   assert.match(page, /Math\.round\(zoomLevel \* 100\)/);
-  assert.match(page, /aria-label="Reset zoom to 100%" onClick=\{\(\) => setManualZoom\(defaultCanvasZoom\)\}/);
-  assert.match(page, /aria-label="Fit to screen" onClick=\{\(\) => setManualZoom\(null\)\}/);
+  assert.match(page, /aria-label="拡大率を100%に戻す" onClick=\{\(\) => setManualZoom\(defaultCanvasZoom\)\}/);
+  assert.match(page, /aria-label="画面に合わせる" onClick=\{\(\) => setManualZoom\(null\)\}/);
   assert.match(page, /const \[inspectorOpen, setInspectorOpen\] = useState\(true\)/);
   assert.match(page, /data-focus=\{canvasFocused \? "canvas" : "workspace"\}/);
-  assert.match(page, /aria-label=\{canvasFocused \? "Exit canvas focus" : "Focus canvas"\}/);
+  assert.match(page, /aria-label=\{canvasFocused \? "集中表示を終了" : "キャンバスに集中"\}/);
   assert.match(css, /\.canvas-area \{[^}]*container-type: size/);
   assert.match(css, /\.slide-shell \{[^}]*width: min\(calc\(100cqw - 24px\), calc\(177\.7778cqh - 131\.5556px\), 1280px\)/);
   assert.match(css, /\.canvas-interaction-status \{[^}]*bottom: calc\(95% \+ 1px\)/);
@@ -268,7 +268,7 @@ test("block dragging previews reordering and separates move from text editing", 
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
-  for (const behavior of ["onCanvasDragOver", "REORDER_HYSTERESIS_PX", "nearestContainerChild", "animateDomReorder", "onCanvasDragEnd", "originParent", "Moving block · release to place", "Editing text · Esc to finish"]) assert.match(page, new RegExp(behavior.replace(/[·]/g, "·")));
+  for (const behavior of ["onCanvasDragOver", "REORDER_HYSTERESIS_PX", "nearestContainerChild", "animateDomReorder", "onCanvasDragEnd", "originParent", "ブロックを移動中 · 離して配置", "テキストを編集中 · Escで終了"]) assert.match(page, new RegExp(behavior.replace(/[·]/g, "·")));
   for (const affordance of [".canvas-interaction-status", ".weave-dragging", ".weave-drop-before", ".weave-drop-after"]) assert.equal(css.includes(affordance), true, `missing drag affordance: ${affordance}`);
   assert.match(css, /\.weave-dragging[^}]*pointer-events: none/);
   // Containers nest: nothing may exclude a dragged container from a container drop target.
@@ -298,17 +298,29 @@ test("issue 3 keeps every primary surface reachable and removes implementation-f
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
   ]);
-  for (const view of ["Canvas", "Agent", "History", "Keys", "Slides", "Inspector", "Settings"]) assert.match(page, new RegExp(`>${view}<\\/button>`));
+  for (const view of ["キャンバス", "Agent", "履歴", "キー", "スライド", "詳細", "設定"]) assert.match(page, new RegExp(`>${view}<\\/button>`));
   assert.match(css, /@media \(max-width: 900px\)[\s\S]*\.mobile-tabs/);
   assert.match(page, /className="slide-thumbnail"[\s\S]*dangerouslySetInnerHTML/);
   assert.doesNotMatch(page, /mini-[1-4]|Working tree clean|Unsaved editor changes|Commit label|Return to latest on main|>Code</);
   assert.match(page, /className="document-title-field" data-unsaved=/);
   assert.doesNotMatch(css, /unsaved-dot::after/);
   assert.match(page, /sel\.container && sel\.kind !== "metrics"/);
-  assert.match(page, /Compare directions/);
-  assert.match(page, /Agent changes/);
-  assert.match(layout, /<html lang="en">/);
+  assert.match(page, /デザイン案を比較/);
+  assert.match(page, /Agentの変更/);
+  assert.match(layout, /<html lang="ja">/);
   assert.match(css, /font-family: var\(--font-geist-sans\)/);
+});
+
+test("the primary interface is Japanese and every button receives hover help", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  for (const label of ["プレゼン・書き出し", "バージョン履歴", "キーボードショートカット", "インスペクター", "すべて保存済み"]) {
+    assert.match(page, new RegExp(label));
+  }
+  assert.match(page, /document\.querySelectorAll<HTMLButtonElement>\("button"\)/);
+  assert.match(page, /button\.dataset\.help/);
+  assert.match(page, /button\.getAttribute\("aria-label"\)/);
+  assert.match(page, /button\.title = help/);
+  assert.match(page, /data-help="プロジェクトの作成・切り替え・管理を開きます"/);
 });
 
 test("pointer tabs stay persistent only when a frame needs an outside target", async () => {
@@ -336,7 +348,7 @@ test("annotation mode draws regions without selecting or pointing at elements", 
   assert.doesNotMatch(gestureType, /elementId/);
   assert.doesNotMatch(annotationPointerDown, /readSelection|setSelectedId/);
   assert.doesNotMatch(annotationPointerEnd, /pointElement|target: \{ kind: "element" \}/);
-  for (const wording of ["Marking for Agent · drag over what you want changed", "Mark for Agent creates marked areas only", "Point to an element from the message composer"]) assert.match(page, new RegExp(wording));
+  for (const wording of ["Mark for Agent · 変更したい範囲をドラッグ", "Mark for Agentでは範囲だけを指定できます", "メッセージ欄から要素をAgentへ示す"]) assert.match(page, new RegExp(wording));
   assert.doesNotMatch(page, /Rough/);
   /* The UI names the act; the umbrella term stays in the data vocabulary only (D10). */
   assert.doesNotMatch(page, /Annotation mode/);
@@ -354,7 +366,7 @@ test("Mark for Agent shows what it can do before anything is drawn", async () =>
   assert.match(overlay, /annotation-empty-state" aria-hidden="true"/);
   assert.match(css, /\.annotation-empty-state \{[^}]*pointer-events: none/);
   /* The label teaches by example rather than naming the field. */
-  assert.match(overlay, /placeholder="Tell the Agent what to change"/);
+  assert.match(overlay, /placeholder="Agentへの変更指示を入力"/);
   /* The paper belongs to the drafting layer: recall reads the result, so it is never veiled. */
   assert.match(css, /\.annotation-overlay-layer\.interactive \{[^}]*backdrop-filter/);
   assert.doesNotMatch(css, /\.annotation-recall-layer[^\n]*backdrop-filter/);

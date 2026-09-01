@@ -19,7 +19,7 @@ export function ServerRequestCard({ request, onResolve, onReject }: Props) {
     const questions = (params.questions ?? []).slice(0, 3);
     return (
       <article className="server-request">
-        <strong>Codex needs more information</strong>
+        <strong>Codexから確認があります</strong>
         {questions.map((question: any) => (
           <label className="server-question" key={question.id}>
             <span>{question.header || question.question}</span>
@@ -29,7 +29,7 @@ export function ServerRequestCard({ request, onResolve, onReject }: Props) {
                 value={answers[question.id] ?? ""}
                 onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))}
               >
-                <option value="">Choose…</option>
+                <option value="">選択してください…</option>
                 {question.options.map((option: any) => (
                   <option key={option.label} value={option.label}>{option.label}</option>
                 ))}
@@ -39,7 +39,7 @@ export function ServerRequestCard({ request, onResolve, onReject }: Props) {
               type={question.isSecret ? "password" : "text"}
               value={answers[question.id] ?? ""}
               onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))}
-              placeholder={question.isOther ? "Type an answer" : "Answer"}
+              placeholder={question.isOther ? "回答を入力" : "回答"}
             />
           </label>
         ))}
@@ -51,9 +51,9 @@ export function ServerRequestCard({ request, onResolve, onReject }: Props) {
             ),
           })}
         >
-          Submit answers
+          回答を送信
         </button>
-        <button onClick={() => onReject(request.id)}>Cancel</button>
+        <button onClick={() => onReject(request.id)}>キャンセル</button>
       </article>
     );
   }
@@ -64,11 +64,11 @@ export function ServerRequestCard({ request, onResolve, onReject }: Props) {
     );
     return (
       <article className="server-request">
-        <strong>Additional permissions</strong>
-        <p>{String(params.reason ?? "Codex requested additional project permissions.")}</p>
-        <button onClick={() => onResolve(request.id, { permissions, scope: "turn" })}>Allow for turn</button>
-        <button onClick={() => onResolve(request.id, { permissions, scope: "session" })}>Allow for session</button>
-        <button onClick={() => onReject(request.id)}>Decline</button>
+        <strong>追加の権限が必要です</strong>
+        <p>{String(params.reason ?? "Codexがプロジェクトへの追加権限を求めています。")}</p>
+        <button onClick={() => onResolve(request.id, { permissions, scope: "turn" })}>今回のみ許可</button>
+        <button onClick={() => onResolve(request.id, { permissions, scope: "session" })}>このセッションで許可</button>
+        <button onClick={() => onReject(request.id)}>許可しない</button>
       </article>
     );
   }
@@ -76,21 +76,21 @@ export function ServerRequestCard({ request, onResolve, onReject }: Props) {
   if (request.method === "mcpServer/elicitation/request") {
     return (
       <article className="server-request">
-        <strong>{params.serverName ?? "MCP server"}</strong>
-        <p>{String(params.message ?? "The MCP server needs a response.")}</p>
+        <strong>{params.serverName ?? "MCPサーバー"}</strong>
+        <p>{String(params.message ?? "MCPサーバーから回答を求められています。")}</p>
         {params.mode === "url" ? (
           <>
             <button onClick={() => {
-              if (window.confirm("Open this external authorization page?")) {
+              if (window.confirm("外部の認証ページを開きますか？")) {
                 window.open(String(params.url), "_blank", "noopener,noreferrer");
               }
-            }}>Open URL</button>
-            <button onClick={() => onResolve(request.id, { action: "accept", content: null, _meta: params._meta ?? null })}>Continue</button>
+            }}>認証ページを開く</button>
+            <button onClick={() => onResolve(request.id, { action: "accept", content: null, _meta: params._meta ?? null })}>続ける</button>
           </>
         ) : (
           <>
             <label className="server-question">
-              <span>Form response</span>
+              <span>フォームへの回答</span>
               <textarea value={mcpContent} onChange={(event) => setMcpContent(event.target.value)} />
             </label>
             <button onClick={() => {
@@ -101,12 +101,12 @@ export function ServerRequestCard({ request, onResolve, onReject }: Props) {
                   _meta: params._meta ?? null,
                 });
               } catch {
-                setMcpContent('{"error":"Enter valid JSON"}');
+                setMcpContent('{"error":"正しいJSONを入力してください"}');
               }
-            }}>Submit form</button>
+            }}>フォームを送信</button>
           </>
         )}
-        <button onClick={() => onResolve(request.id, { action: "decline", content: null, _meta: null })}>Decline</button>
+        <button onClick={() => onResolve(request.id, { action: "decline", content: null, _meta: null })}>許可しない</button>
       </article>
     );
   }
@@ -115,13 +115,19 @@ export function ServerRequestCard({ request, onResolve, onReject }: Props) {
     ? ["accept", "acceptForSession", "decline", "cancel"]
     : ["accept", "acceptForSession", "decline", "cancel"];
   const decisions = Array.isArray(params.availableDecisions) ? params.availableDecisions : generatedDecisions;
+  const decisionLabels: Record<string, string> = {
+    accept: "許可",
+    acceptForSession: "このセッションで許可",
+    decline: "許可しない",
+    cancel: "キャンセル",
+  };
   return (
     <article className="server-request">
       <strong>{request.method}</strong>
-      <p>{String(params.reason ?? params.message ?? params.command ?? "Codex needs your approval.")}</p>
+      <p>{String(params.reason ?? params.message ?? params.command ?? "Codexが許可を求めています。")}</p>
       {decisions.map((decision: any) => {
         const value = typeof decision === "string" ? decision : decision.decision;
-        return <button key={value} onClick={() => onResolve(request.id, { decision: value })}>{value}</button>;
+        return <button key={value} onClick={() => onResolve(request.id, { decision: value })}>{decisionLabels[value] ?? value}</button>;
       })}
     </article>
   );
