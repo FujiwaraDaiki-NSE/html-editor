@@ -147,6 +147,12 @@ Make focused changes that answer the user. Read-only git (log, show, diff) is fi
 history; never commit, checkout, or otherwise change the repository — Weave formats and commits the turn.
 If no file change is needed, respond with a concise explanation.
 
+When the human asks you to remember something or to turn instructions into a skill (including
+“覚えて” or “スキル化”), create or update the requested project skill at
+.codex/skills/<lowercase-kebab-name>/SKILL.md. Keep the file's YAML frontmatter name and
+description required, and put the instructions in its body. These embedded-agent-created skills
+belong to the current project; do not save them in the common user skill directory.
+
 Files under references/ are materials brought in by a human through chat. Open and read the paths
 provided in the envelope's attachments yourself. pptx, docx, and xlsx files are zip archives, so
 extract them to read their XML. The references/index.json file is the catalogue of materials in the
@@ -898,7 +904,7 @@ export async function assertCommittable(root = currentProjectRoot) {
 
 /* Clean checks cover only what Weave commits; status accepts missing pathspecs, while add does not. */
 /* Keep optional paths in status so a tracked-but-deleted assets or templates directory remains dirty. */
-const managedPaths = [".weave/deck.json", "slides", "styles", "AGENTS.md", "assets", "templates", "references/index.json"];
+const managedPaths = [".weave/deck.json", "slides", "styles", "AGENTS.md", ".codex/skills", "assets", "templates", "references/index.json"];
 
 function managedStatus(root = currentProjectRoot) {
   return runGit(["status", "--porcelain", "--", ...managedPaths], { cwd: root });
@@ -982,7 +988,7 @@ export async function checkoutHistory(commit) {
   runGit(["cat-file", "-e", `${commit}^{commit}`]);
   if (runGit(["branch", "--show-current"]) !== "main") runGit(["checkout", "main"]);
   runGit(["restore", "--source", commit, "--staged", "--worktree", "--", ".weave/deck.json", "slides", "styles", "AGENTS.md"]);
-  for (const path of ["assets", "templates"]) {
+  for (const path of [".codex/skills", "assets", "templates"]) {
     if (runGit(["ls-tree", "-d", "--name-only", commit, path])) {
       runGit(["restore", "--source", commit, "--staged", "--worktree", "--", path]);
     } else {
@@ -1047,7 +1053,7 @@ export function discardVariation(branch, root = currentProjectRoot) {
   if (!/^weave\/variation\/[a-z]+$/.test(branch)) return;
   if (runGit(["branch", "--show-current"], { cwd: root }) === branch) {
     runGit(["restore", "--staged", "--worktree", "."], { cwd: root });
-    runGit(["clean", "-fd", "--", ".weave", "slides", "styles"], { cwd: root });
+    runGit(["clean", "-fd", "--", ".weave", "slides", "styles", ".codex/skills"], { cwd: root });
     runGit(["checkout", "main"], { cwd: root });
   }
   if (getVariations(root).some((item) => item.branch === branch)) runGit(["branch", "-D", branch], { cwd: root });

@@ -43,6 +43,18 @@ import {
   runProjectExclusive,
   saveProject,
 } from "./project.mjs";
+import {
+  createSkill,
+  createProjectSkillSnapshot,
+  deleteSkill,
+  demoteSkill,
+  discardProjectSkillSnapshot,
+  listSkills,
+  promoteSkill,
+  restoreProjectSkillSnapshot,
+  updateSkill,
+  uploadSkill,
+} from "./skills.mjs";
 import { CodexService } from "./codex/service.mjs";
 import { annotationPromptRules, canSendTurn } from "../shared/annotation.mjs";
 import { contextPromptRules, editorEnvelope } from "../shared/context.mjs";
@@ -77,7 +89,7 @@ function hasAllowedOrigin(request) {
 function corsHeaders(request) {
   const origin = request.headers.origin;
   const headers = {
-    "access-control-allow-methods": "GET, POST, PATCH, OPTIONS",
+    "access-control-allow-methods": "GET, POST, PATCH, DELETE, OPTIONS",
     "access-control-allow-headers": "content-type",
     vary: "Origin",
   };
@@ -140,8 +152,28 @@ async function statePayload() {
       activeTurns: Object.fromEntries(codex.activeTurns),
       pendingRequests: codex.router.list(),
     },
+    skills: await listSkills(projectRoot()),
     migrationNotice,
   };
+}
+
+async function refreshSkillCatalog() {
+  if (!codex.ready) return;
+  try {
+    await codex.refreshCatalog();
+  } catch {
+    // Skill files remain authoritative even when the optional Codex catalog is offline.
+  }
+}
+
+async function runSkillMutation(operation) {
+  return enqueueProjectSwitch(async () => {
+    if (activeProjectTurn()) throw Object.assign(new Error("Finish the running Agent turn before changing skills."), { code: "WEAVE_TURN_RUNNING" });
+    const root = projectRoot();
+    const skill = await operation(root);
+    await refreshSkillCatalog();
+    return { skill, skills: await listSkills(root), project: projectState().project };
+  });
 }
 
 async function retargetCodex() {
@@ -163,6 +195,14 @@ function requireText(value, name, limit = 20_000) {
   if (!text) throw new Error(`${name} is required.`);
   if (text.length > limit) throw new Error(`${name} must be ${limit.toLocaleString()} characters or fewer.`);
   return text;
+}
+
+function decodeSkillName(value) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    throw Object.assign(new Error("Skill name is invalid."), { code: "WEAVE_SKILL_INVALID" });
+  }
 }
 
 function requireTurnPrompt(payload) {
@@ -193,15 +233,17 @@ async function startEditorTurn(payload, { variation = false } = {}) {
   let branch = null;
   let registeredPending = null;
   let registeredThreadId = null;
+  let projectSkillSnapshot = null;
   if (variation) branch = createVariationBranch();
   try {
     const deck = await writeProject(payload.deck, null, root);
     const preTurnCss = await readDeckCss(root);
+    projectSkillSnapshot = await createProjectSkillSnapshot(root);
     const thread = await codex.startThread({
       approvalPolicy: payload.approvalPolicy ?? "never",
       model: payload.model,
     });
-    registeredPending = pendingTurn({ prompt, branch, variation, deckTitle: deck.title, root, preTurnDeck: deck, preTurnCss });
+    registeredPending = pendingTurn({ prompt, branch, variation, deckTitle: deck.title, root, preTurnDeck: deck, preTurnCss, projectSkillSnapshot });
     registeredThreadId = thread.id;
     pendingTurns.set(thread.id, registeredPending);
     const context = `${variation ? "Create a meaningfully different, polished direction. " : ""}User request: ${prompt}
@@ -220,6 +262,7 @@ Do not commit; Weave will commit after this turn.${serializeEditorContext(payloa
     return { thread, turn: result.turn, branch };
   } catch (error) {
     if (registeredPending && registeredThreadId) finishPendingTurn(registeredThreadId, registeredPending);
+    await discardProjectSkillSnapshot(projectSkillSnapshot);
     if (variation && branch) discardVariation(branch, root);
     throw error;
   }
@@ -233,6 +276,7 @@ async function restoreFailedTurn(pending) {
     }
     await writeProjectUnlocked(pending.preTurnDeck, null, pending.root);
     await restoreDeckCss(pending.preTurnCss, pending.root);
+    await restoreProjectSkillSnapshot(pending.root, pending.projectSkillSnapshot);
   }, pending.root);
 }
 
@@ -256,6 +300,7 @@ codex.on("notification", (message) => {
         ...(cleanupError ? { error: `Could not restore the project after the Agent turn: ${cleanupError.message}` } : {}),
         ...(cleanupError ? { cleanupError: cleanupError.message } : {}),
       });
+      await discardProjectSkillSnapshot(pending.projectSkillSnapshot);
       finishPendingTurn(threadId, pending);
       return;
     }
@@ -292,6 +337,7 @@ codex.on("notification", (message) => {
         ...(cleanupError ? { cleanupError: cleanupError.message } : {}),
       });
     } finally {
+      await discardProjectSkillSnapshot(pending.projectSkillSnapshot);
       finishPendingTurn(threadId, pending);
     }
   })();
@@ -323,6 +369,10 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET" && url.pathname === "/api/projects") {
       return sendJson(request, response, 200, { projects: await listProjects() });
+    }
+    if (request.method === "GET" && url.pathname === "/api/skills") {
+      const scope = url.searchParams.has("scope") ? url.searchParams.get("scope") : undefined;
+      return sendJson(request, response, 200, { skills: await listSkills(projectRoot(), scope) });
     }
     if (request.method === "GET" && url.pathname === "/api/folders") {
       return sendJson(request, response, 200, await listFolders(url.searchParams.get("path") || undefined));
@@ -359,7 +409,7 @@ const server = createServer(async (request, response) => {
       }));
     }
 
-    if (request.method !== "GET" && request.method !== "POST" && request.method !== "PATCH") return sendJson(request, response, 404, { error: "Not found." });
+    if (request.method !== "GET" && request.method !== "POST" && request.method !== "PATCH" && request.method !== "DELETE") return sendJson(request, response, 404, { error: "Not found." });
     const payload = await readJson(request, url.pathname === "/api/assets" ? 14_000_000 : url.pathname === "/api/references" ? 36_000_000 : url.pathname === "/api/save" ? 5_000_000 : 1_500_000);
 
     if (request.method === "POST" && url.pathname === "/api/projects") {
@@ -403,6 +453,40 @@ const server = createServer(async (request, response) => {
     if (projectMatch && request.method === "POST" && projectMatch[2] === "archive") {
       await archiveProject(projectMatch[1]);
       return sendJson(request, response, 200, { projects: await listProjects() });
+    }
+
+    if (activeProjectTurn() && request.method !== "GET" && /^\/api\/skills(?:\/|$)/.test(url.pathname)) {
+      return sendJson(request, response, 409, { error: "Finish the running Agent turn before changing skills.", code: "WEAVE_TURN_RUNNING" });
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/skills") {
+      return sendJson(request, response, 201, await runSkillMutation((root) => createSkill(root, payload)));
+    }
+    if (request.method === "POST" && url.pathname === "/api/skills/upload") {
+      return sendJson(request, response, 201, await runSkillMutation((root) => uploadSkill(root, payload)));
+    }
+    if (request.method === "POST" && ["/api/skills/promote", "/api/skills/demote"].includes(url.pathname)) {
+      return sendJson(request, response, 200, await runSkillMutation((root) => url.pathname.endsWith("/promote") ? promoteSkill(root, payload.name) : demoteSkill(root, payload.name)));
+    }
+    const scopedSkillAction = url.pathname.match(/^\/api\/skills\/(project|common)\/([^/]+)\/(promote|demote)$/);
+    if (request.method === "POST" && scopedSkillAction) {
+      const [, sourceScope, encodedName, action] = scopedSkillAction;
+      const name = decodeSkillName(encodedName);
+      if ((action === "promote" && sourceScope !== "project") || (action === "demote" && sourceScope !== "common")) throw Object.assign(new Error("Skill action does not match its scope."), { code: "WEAVE_SKILL_INVALID" });
+      return sendJson(request, response, 200, await runSkillMutation((root) => action === "promote"
+        ? promoteSkill(root, name)
+        : demoteSkill(root, name)));
+    }
+    const scopedSkill = url.pathname.match(/^\/api\/skills\/(project|common)\/([^/]+)$/);
+    if (scopedSkill) {
+      const [, scope, encodedName] = scopedSkill;
+      const name = decodeSkillName(encodedName);
+      if (request.method === "PATCH") {
+        return sendJson(request, response, 200, await runSkillMutation((root) => updateSkill(root, { ...payload, scope, currentName: name })));
+      }
+      if (request.method === "DELETE") {
+        return sendJson(request, response, 200, await runSkillMutation((root) => deleteSkill(root, scope, name)));
+      }
     }
 
     if (url.pathname === "/api/assets") {
@@ -490,13 +574,15 @@ const server = createServer(async (request, response) => {
       const root = projectRoot();
       const deck = payload.deck ? await writeProject(payload.deck, null, root) : await readProject(root);
       const preTurnCss = await readDeckCss(root);
-      const pending = pendingTurn({ prompt, branch: null, variation: false, root, preTurnDeck: deck, preTurnCss, deckTitle: deck.title });
+      const projectSkillSnapshot = await createProjectSkillSnapshot(root);
+      const pending = pendingTurn({ prompt, branch: null, variation: false, root, preTurnDeck: deck, preTurnCss, projectSkillSnapshot, deckTitle: deck.title });
       pendingTurns.set(payload.threadId, pending);
       try {
         const result = await codex.startTurn({ ...payload, prompt: `${prompt}${serializeEditorContext(payload)}` });
         return sendJson(request, response, 202, result);
       } catch (error) {
         finishPendingTurn(payload.threadId, pending);
+        await discardProjectSkillSnapshot(projectSkillSnapshot);
         throw error;
       }
     }
@@ -552,11 +638,13 @@ const server = createServer(async (request, response) => {
     return sendJson(request, response, 404, { error: "Not found." });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const status = error?.code === "WEAVE_REVISION_CONFLICT" ? 409
+    const status = ["WEAVE_REVISION_CONFLICT", "WEAVE_SKILL_CONFLICT", "WEAVE_TURN_RUNNING"].includes(error?.code) ? 409
+      : error?.code === "WEAVE_SKILL_NOT_FOUND" ? 404
+      : error?.code === "WEAVE_SKILL_INVALID" ? 400
       : error?.code === "WEAVE_REQUEST_TOO_LARGE" ? 413
       : error?.code === "WEAVE_INVALID_JSON" ? 400
       : ["WEAVE_QUALITY_FAILED", "WEAVE_CONTENT_POLICY"].includes(error?.code) ? 422
-      : ["WEAVE_PROJECT_DIRTY", "WEAVE_PROJECT_BLOCKED", "WEAVE_TURN_RUNNING"].includes(error?.code) ? 409
+      : ["WEAVE_PROJECT_DIRTY", "WEAVE_PROJECT_BLOCKED"].includes(error?.code) ? 409
       : /required|invalid|unknown|not offered|exceeds|already exists/i.test(message) ? 400
       : /owned|running|save|proposal branch|cannot be archived/i.test(message) ? 409 : 500;
     return sendJson(request, response, status, { error: message, code: error?.code, diagnostics: error?.diagnostics });

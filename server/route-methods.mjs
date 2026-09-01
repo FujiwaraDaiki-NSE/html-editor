@@ -1,6 +1,11 @@
 const ROUTE_METHODS = [
   [/^\/healthz$/, ["GET"]],
   [/^\/api\/(?:state|variations\/compare|codex\/events|codex\/threads)$/, ["GET"]],
+  [/^\/api\/skills$/, ["GET", "POST"]],
+  [/^\/api\/skills\/upload$/, ["POST"]],
+  [/^\/api\/skills\/(?:promote|demote)$/, ["POST"]],
+  [/^\/api\/skills\/(?:project|common)\/[^/]+$/, ["PATCH", "DELETE"]],
+  [/^\/api\/skills\/(?:project|common)\/[^/]+\/(?:promote|demote)$/, ["POST"]],
   [/^\/api\/folders$/, ["GET"]],
   [/^\/api\/(?:assets|projects\/[^/]+\/assets)\//, ["GET"]],
   [/^\/api\/projects$/, ["GET", "POST"]],

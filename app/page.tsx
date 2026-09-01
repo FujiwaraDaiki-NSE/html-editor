@@ -37,8 +37,13 @@ type ReferenceShelfEntry = ReferenceAttachment & { hash?: string; addedAt?: stri
 type FolderBrowser = { path: string; parent: string | null; breadcrumbs: Array<{ name: string; path: string }>; folders: Array<{ name: string; path: string }>; folderCount: number; fileCount: number };
 
 type SlideNav = "filmstrip" | "rail";
-type ActivityView = "agent" | "history" | "shortcuts" | "settings";
-type MobileView = "canvas" | "agent" | "history" | "shortcuts" | "slides" | "inspector" | "settings";
+type SkillScope = "project" | "common";
+type SkillEntry = { name: string; description: string; body: string; content: string; frontmatter: string | null; scope: SkillScope; location: SkillScope; path: string; filePath: string; valid: boolean; error: string | null };
+type SkillDraft = { scope: SkillScope; name: string; description: string; body: string; frontmatter: string };
+type SkillDialog = { mode: "create" | "edit"; source: SkillEntry | null };
+type SkillStatus = { state: "idle" | "busy" | "success" | "error"; message: string };
+type ActivityView = "agent" | "history" | "shortcuts" | "skills" | "settings";
+type MobileView = "canvas" | "agent" | "history" | "shortcuts" | "skills" | "slides" | "inspector" | "settings";
 type InspectorView = "layers" | "design";
 type OpenPopover = "delivery" | "threads" | "addBlock" | "layouts" | "newSlide" | "slideMenu" | "quality" | "agentModel" | "references" | null;
 type VariationPreview = { branch: string; label: string; css: string; deck: ServerState["deck"] };
@@ -60,6 +65,7 @@ type ServerState = {
     activeTurns: Record<string, string>;
     pendingRequests: Array<{ id: string | number; method: string; params: Record<string, any>; createdAt: number }>;
   };
+  skills: SkillEntry[];
   migrationNotice: string;
 };
 
@@ -380,6 +386,13 @@ export default function Home() {
   const [showArchivedThreads, setShowArchivedThreads] = useState(false);
   const [threadMenuOpen, setThreadMenuOpen] = useState(false);
   const [activityView, setActivityView] = useState<ActivityView>("agent");
+  const [skills, setSkills] = useState<SkillEntry[]>([]);
+  const [skillScope, setSkillScope] = useState<SkillScope>("project");
+  const [skillSearch, setSkillSearch] = useState("");
+  const [skillDialog, setSkillDialog] = useState<SkillDialog | null>(null);
+  const [skillDraft, setSkillDraft] = useState<SkillDraft>({ scope: "project", name: "", description: "", body: "", frontmatter: "" });
+  const [skillStatus, setSkillStatus] = useState<SkillStatus>({ state: "idle", message: "" });
+  const [skillBusyKey, setSkillBusyKey] = useState<string | null>(null);
   const agentModel = useSyncExternalStore(agentModelStore.subscribe, agentModelStore.read, agentModelStore.serverRead);
   const selectedModel = agentModel.model;
   const reasoningEffort = agentModel.effort;
@@ -460,6 +473,9 @@ export default function Home() {
   const importRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const referenceInputRef = useRef<HTMLInputElement>(null);
+  const skillInputRef = useRef<HTMLInputElement>(null);
+  const skillDialogRef = useRef<HTMLFormElement>(null);
+  const skillDialogTriggerRef = useRef<HTMLElement | null>(null);
   const replacingImageRef = useRef(false);
   const messagesRef = useRef<HTMLDivElement>(null);
   const promptRef = useRef<HTMLTextAreaElement>(null);
@@ -470,6 +486,7 @@ export default function Home() {
   const shouldAutoScrollRef = useRef(true);
   const eventSequenceRef = useRef(0);
   const editGenerationRef = useRef(0);
+  const browserDirtyRef = useRef(false);
   const undoRef = useRef<Snapshot[]>([]);
   const deckLoadedRef = useRef(false);
   const redoRef = useRef<Snapshot[]>([]);
@@ -486,7 +503,7 @@ export default function Home() {
   // Preview stays outside slide state so save, sync, and undo cannot observe a candidate frame.
   const templatePreviewHtmlRef = useRef<string | null>(null);
   const templatePreviewSourceHtmlRef = useRef<string | null>(null);
-  const markDirty = () => { editGenerationRef.current += 1; setSaved(false); };
+  const markDirty = () => { editGenerationRef.current += 1; browserDirtyRef.current = true; setSaved(false); };
 
   const agentReady = codexState.connection.status === "connected";
   const agentRunning = selectThreadRunning(codexState, codexState.activeThreadId);
@@ -518,10 +535,25 @@ export default function Home() {
     ? `${activeOverlayTurnIndex >= 0 ? `ターン ${activeOverlayTurnIndex + 1}` : "送信済みターン"} · ${activeOverlayAttachment.slideLabel}`
     : "";
   const recalledAnnotations = activeOverlayAttachment?.slideId === activeSlideId ? activeOverlayAttachment.annotations : [];
+  const loadSkills = useCallback(async () => {
+    setSkillStatus({ state: "busy", message: "スキルを読み込み中…" });
+    try {
+      const response = await fetch(`${apiBase}/skills`);
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "スキルを読み込めませんでした。");
+      if (!Array.isArray(result?.skills)) throw new Error("スキルの応答が不正です。");
+      setSkills(result.skills);
+      setSkillStatus({ state: "idle", message: "" });
+    } catch (error) {
+      setSkillStatus({ state: "error", message: error instanceof Error ? error.message : String(error) });
+    }
+  }, []);
+
   const showActivity = (view: ActivityView) => {
     setActivityView(view);
     setLeftPanelOpen(true);
     setMobileView(view);
+    if (view === "skills") void loadSkills();
   };
 
   useEffect(() => { document.documentElement.style.setProperty("--weave-sidebar-width", `${sidebarWidth}px`); }, [sidebarWidth]);
@@ -812,6 +844,15 @@ export default function Home() {
     if (codexState.activeTurnId) return { kind: "running", label: "別の会話で実行中…" };
     return null;
   })();
+  const catalogSkills = useMemo(() => codexState.catalog.skills.flatMap((entry: any) => entry?.skills ?? [entry]).filter(Boolean), [codexState.catalog.skills]);
+  const catalogSkillFor = (skill: SkillEntry) => {
+    const pathMatch = catalogSkills.find((entry: any) => typeof entry.path === "string" && entry.path === skill.filePath);
+    if (pathMatch) return pathMatch;
+    const nameMatches = catalogSkills.filter((entry: any) => entry.name === skill.name && (typeof entry.path !== "string" || !entry.path.trim()));
+    return nameMatches.length === 1 ? nameMatches[0] : undefined;
+  };
+  const visibleSkills = useMemo(() => skills.filter((skill) => skill.scope === skillScope && (!skillSearch.trim() || `${skill.name} ${skill.description}`.toLowerCase().includes(skillSearch.trim().toLowerCase()))), [skillScope, skillSearch, skills]);
+  const activityLabel = activityView === "history" ? "バージョン履歴" : activityView === "shortcuts" ? "ショートカット" : activityView === "skills" ? "スキル" : activityView === "settings" ? "設定" : "Agent";
 
   /* `applyDeck` controls whether the on-disk deck replaces the editor buffer. Status-only polls
      (retrying while Codex connects) pass false so they never clobber unsaved edits — the local
@@ -829,11 +870,13 @@ export default function Home() {
       setDeckCss(defaultDeckCss);
       setTemplates(state.templates ?? []);
       setImportedTemplates(null);
+      browserDirtyRef.current = false;
       setSaved(state.project.clean);
       reinject();
     }
     setHistory(state.history);
     setReferenceShelf(state.references ?? []);
+    setSkills(state.skills ?? []);
     setVariations(state.variations ?? []);
     setProject(state.project);
     setServerRevision(state.project.revision ?? state.project.commit);
@@ -1116,6 +1159,13 @@ export default function Home() {
     if (first) first.focus();
     else threadDialogRef.current?.focus();
   }, [openPopover]);
+
+  const skillDialogOpen = skillDialog !== null;
+  useEffect(() => {
+    if (!skillDialogOpen) return;
+    const trigger = skillDialogTriggerRef.current;
+    return () => trigger?.focus();
+  }, [skillDialogOpen]);
 
   /* --- Live-DOM editing on the canvas -------------------------------------------------- */
 
@@ -2175,6 +2225,7 @@ export default function Home() {
       const unchanged = generation === editGenerationRef.current;
       applyServerState(result as ServerState, unchanged);
       if (unchanged) setImportedTemplates(null);
+      if (unchanged) browserDirtyRef.current = false;
       setSaved(unchanged);
       setSaveMessage("");
       setAnnouncement(unchanged ? "デッキを履歴に保存しました" : "この版を履歴に保存しました。以降の編集は未保存のままです");
@@ -2587,11 +2638,110 @@ export default function Home() {
   };
 
   const updateSkill = async (skill: any, enabled: boolean) => {
+    const path = typeof skill?.path === "string" ? skill.path : null;
+    const name = typeof skill?.name === "string" ? skill.name : null;
+    if (path === null && name === null) {
+      setSkillStatus({ state: "error", message: "This catalog entry cannot be configured." });
+      return;
+    }
+    setSkillBusyKey(`catalog:${path ?? name}`);
+    setSkillStatus({ state: "busy", message: "Updating Codex skill…" });
     try {
-      const response = await fetch(`${apiBase}/codex/skill/config`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: skill.path ?? null, name: skill.name ?? null, enabled }) });
+      const response = await fetch(`${apiBase}/codex/skill/config`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path, name, enabled }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "スキルを更新できませんでした。");
-    } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
+      setSkillStatus({ state: "success", message: "Codexでのスキル設定を更新しました。" });
+    } catch (error) {
+      setSkillStatus({ state: "error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setSkillBusyKey(null);
+    }
+  };
+
+  const setSkillMutationStateFromResponse = (result: any) => {
+    if (!Array.isArray(result?.skills)) throw new Error("スキルの応答が不正です。");
+    if (!result?.project || typeof result.project.clean !== "boolean") throw new Error("スキルの応答にプロジェクト状態がありません。");
+    setSkills(result.skills);
+    setProject(result.project);
+    setSaved(!browserDirtyRef.current && result.project.clean);
+    setServerRevision(result.project.revision ?? result.project.commit);
+  };
+
+  const runSkillMutation = async (key: string, operation: () => Promise<Response>, successMessage: string) => {
+    setSkillBusyKey(key);
+    setSkillStatus({ state: "busy", message: "スキルを保存中…" });
+    try {
+      const response = await operation();
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "スキルの変更を保存できませんでした。");
+      setSkillMutationStateFromResponse(result);
+      setSkillStatus({ state: "success", message: successMessage });
+      return true;
+    } catch (error) {
+      setSkillStatus({ state: "error", message: error instanceof Error ? error.message : String(error) });
+      return false;
+    } finally {
+      setSkillBusyKey(null);
+    }
+  };
+
+  const openNewSkillDialog = () => {
+    skillDialogTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setSkillDraft({ scope: skillScope, name: "", description: "", body: "", frontmatter: "" });
+    setSkillDialog({ mode: "create", source: null });
+    setSkillStatus({ state: "idle", message: "" });
+  };
+
+  const openEditSkillDialog = (skill: SkillEntry) => {
+    skillDialogTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setSkillDraft({ scope: skill.scope, name: skill.name, description: skill.valid ? skill.description : "", body: skill.valid ? skill.body : skill.content, frontmatter: skill.frontmatter ?? "" });
+    setSkillDialog({ mode: "edit", source: skill });
+    setSkillStatus({ state: "idle", message: "" });
+  };
+
+  const saveSkill = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!skillDialog) return;
+    const { scope, name, description, body, frontmatter } = skillDraft;
+    const source = skillDialog.source;
+    const effectiveScope = source ? source.scope : scope;
+    const payload: Record<string, unknown> = { scope: effectiveScope, name, description, body, frontmatter: frontmatter.trim() ? frontmatter : null };
+    const key = `${effectiveScope}:${source ? source.name : name}`;
+    const ok = await runSkillMutation(key, () => source
+      ? fetch(`${apiBase}/skills/${effectiveScope}/${encodeURIComponent(source.name)}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) })
+      : fetch(`${apiBase}/skills`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload) }), source ? "スキルを更新しました。" : "スキルを作成しました。");
+    if (ok) {
+      setSkillDialog(null);
+    }
+  };
+
+  const deleteManagedSkill = async (skill: SkillEntry) => {
+    if (!window.confirm(`スキル「${skill.name}」を削除しますか？`)) return;
+    await runSkillMutation(`${skill.scope}:${skill.name}`, () => fetch(`${apiBase}/skills/${skill.scope}/${encodeURIComponent(skill.name)}`, { method: "DELETE" }), "スキルを削除しました。");
+  };
+
+  const moveManagedSkill = async (skill: SkillEntry) => {
+    const action = skill.scope === "project" ? "promote" : "demote";
+    await runSkillMutation(`${skill.scope}:${skill.name}`, () => fetch(`${apiBase}/skills/${action}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: skill.name }) }), skill.scope === "project" ? "共通スキルに格上げしました。" : "プロジェクト固有へ格下げしました。");
+  };
+
+  const uploadManagedSkill = async (file: File) => {
+    const scope = skillScope;
+    setSkillBusyKey(`upload:${scope}`);
+    setSkillStatus({ state: "busy", message: "SKILL.mdをアップロード中…" });
+    try {
+      const content = await file.text();
+      const response = await fetch(`${apiBase}/skills/upload`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ scope, filename: file.name, content }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "SKILL.mdをアップロードできませんでした。");
+      setSkillMutationStateFromResponse(result);
+      setSkillStatus({ state: "success", message: "SKILL.mdをアップロードしました。" });
+    } catch (error) {
+      setSkillStatus({ state: "error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setSkillBusyKey(null);
+      if (skillInputRef.current) skillInputRef.current.value = "";
+    }
   };
 
   const login = async (type: "chatgpt" | "apiKey") => {
@@ -2777,6 +2927,41 @@ export default function Home() {
     </section>
   );
 
+  const skillsSidebar = (
+    <section className="activity-panel skills-panel" aria-label="スキルライブラリ">
+      <header className="activity-panel-heading"><span>スキル</span><small>{skills.length}件</small><button className="panel-close" aria-label="スキルを閉じる" onClick={() => setLeftPanelOpen(false)}>×</button></header>
+      <div className="activity-panel-body skills-sidebar">
+        <div className="skills-intro"><strong>再利用できる指示</strong><p>Codexが使うプロジェクト固有・共通スキルを管理します。</p></div>
+        <div className="skills-actions">
+          <button className="sidebar-primary-action" type="button" onClick={openNewSkillDialog} disabled={skillBusyKey !== null || agentRunning}>新しいスキル</button>
+          <input ref={skillInputRef} className="sr-only" type="file" accept="SKILL.md,.md,text/markdown" onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadManagedSkill(file); }} />
+          <button className="skills-upload-button" type="button" onClick={() => skillInputRef.current?.click()} disabled={skillBusyKey !== null || agentRunning}>SKILL.mdをアップロード</button>
+        </div>
+        {agentRunning && <p className="activity-warning">Agentの処理が完了してからスキルを変更してください。</p>}
+        <div className="skills-tabs" role="tablist" aria-label="スキルの適用範囲">
+          {(["project", "common"] as SkillScope[]).map((scope) => <button key={scope} type="button" role="tab" aria-selected={skillScope === scope} className={skillScope === scope ? "active" : ""} onClick={() => { setSkillScope(scope); setSkillDraft((current) => ({ ...current, scope })); }}>{scope === "project" ? "プロジェクト固有" : "共通"}<small>{skills.filter((skill) => skill.scope === scope).length}</small></button>)}
+        </div>
+        <label className="skills-search"><span className="sr-only">スキルを絞り込む</span><input type="search" value={skillSearch} onChange={(event) => setSkillSearch(event.target.value)} placeholder="スキルを検索" aria-label="スキルを絞り込む" /></label>
+        {skillStatus.state !== "idle" && <div className={`skill-status ${skillStatus.state}`} role={skillStatus.state === "error" ? "alert" : "status"} aria-live="polite" aria-busy={skillStatus.state === "busy"}>{skillStatus.message}</div>}
+        <div className="skill-card-list">
+          {visibleSkills.map((skill) => {
+            const catalogSkill = catalogSkillFor(skill);
+            const supportsToggle = skill.valid && typeof catalogSkill?.enabled === "boolean";
+            const key = `${skill.scope}:${skill.name}`;
+            return <article className="skill-card" key={key} aria-busy={skillBusyKey === key}>
+              <div className="skill-card-head"><div><strong>{skill.name}</strong><span className={`skill-scope-badge ${skill.scope}`}>{skill.scope === "project" ? "固有" : "共通"}</span>{!skill.valid && <span className="skill-invalid-badge">要修復</span>}</div><button type="button" aria-label={`${skill.name}を編集`} onClick={() => openEditSkillDialog(skill)} disabled={skillBusyKey !== null || agentRunning}>{skill.valid ? "編集" : "修復"}</button></div>
+              <p>{skill.valid ? skill.description : skill.error}</p>
+              <code title={skill.path}>{skill.path}</code>
+              {supportsToggle && <label className="skill-enable-toggle"><span>Codexで有効</span><input type="checkbox" checked={catalogSkill.enabled} onChange={(event) => void updateSkill(catalogSkill, event.target.checked)} disabled={skillBusyKey !== null || agentRunning} /></label>}
+              <footer><button type="button" onClick={() => void moveManagedSkill(skill)} disabled={!skill.valid || skillBusyKey !== null || agentRunning}>{skill.scope === "project" ? "共通に格上げ" : "プロジェクト固有へ格下げ"}</button><button type="button" className="danger" onClick={() => void deleteManagedSkill(skill)} disabled={skillBusyKey !== null || agentRunning}>削除</button></footer>
+            </article>;
+          })}
+          {visibleSkills.length === 0 && <p className="skills-empty">{skillSearch.trim() ? "条件に一致するスキルはありません。" : skillScope === "project" ? "プロジェクト固有のスキルはまだありません。" : "共通スキルはまだありません。"}</p>}
+        </div>
+      </div>
+    </section>
+  );
+
   const shortcutsSidebar = (
     <section className="activity-panel shortcuts-panel" aria-label="キーボードショートカット">
       <header className="activity-panel-heading"><span>キーボードショートカット</span><button className="panel-close" aria-label="ショートカットを閉じる" onClick={() => setLeftPanelOpen(false)}>×</button></header>
@@ -2794,7 +2979,6 @@ export default function Home() {
           {codexState.catalog.modelProvider && <pre className="settings-output">{JSON.stringify(codexState.catalog.modelProvider, null, 2)}</pre>}
         </section>
         <section><h3>アカウント</h3>{codexState.catalog.account ? <div className="setting-row"><span>{String(codexState.catalog.account.type ?? "サインイン済み")}</span><button onClick={() => { void fetch(`${apiBase}/codex/account/logout`, { method: "POST" }).catch((error) => setApiError(error.message)); }}>ログアウト</button></div> : <><button onClick={() => void login("chatgpt")}>ChatGPTでサインイン</button><div className="api-key-row"><input type="password" value={apiKeyDraft} onChange={(event) => setApiKeyDraft(event.target.value)} placeholder="APIキー" /><button disabled={!apiKeyDraft} onClick={() => void login("apiKey")}>キーを使用</button></div></>}</section>
-        <section><h3>スキル</h3>{codexState.catalog.skills.flatMap((entry: any) => entry.skills ?? [entry]).map((skill: any) => <label className="setting-row" key={skill.path ?? skill.name}><span>{skill.name ?? skill.path}</span><input type="checkbox" checked={skill.enabled !== false} onChange={(event) => void updateSkill(skill, event.target.checked)} /></label>)}</section>
         <section><h3>フック</h3>{codexState.catalog.hooks.flatMap((entry: any) => entry.hooks ?? [entry]).map((hook: any, index: number) => <div className="setting-row" key={hook.name ?? hook.event ?? index}><span>{hook.name ?? hook.event ?? "設定済みフック"}</span><small>{hook.enabled === false ? "無効" : "有効"}</small></div>)}</section>
         <section><h3>MCPサーバー</h3>{codexState.catalog.mcpServers.map((server: any) => <div className="setting-row" key={server.name}><span>{server.name}</span><small>{server.status ?? server.authStatus ?? "設定済み"}</small>{server.resources?.length > 0 && <button onClick={() => void invokeMcp(server, "resource")}>リソース</button>}{Object.keys(server.tools ?? {}).length > 0 && <button disabled={!codexState.activeThreadId} onClick={() => void invokeMcp(server, "tool")}>ツール</button>}<button onClick={() => { void fetch(`${apiBase}/codex/mcp/oauth`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: server.name }) }).then(async (response) => { const result = await response.json(); if (!response.ok) throw new Error(result.error); const url = result.authorizationUrl ?? result.url; if (url && window.confirm(`${server.name}のOAuth認証ページを開きますか？`)) window.open(url, "_blank", "noopener,noreferrer"); }).catch((error) => setApiError(error.message)); }}>OAuth</button></div>)}</section>
         {mcpResult && <pre className="settings-output">{mcpResult}</pre>}
@@ -2844,6 +3028,7 @@ export default function Home() {
             <button className={`activity-button ${activityView === "agent" ? "active" : ""}`} aria-label="Agent" aria-pressed={activityView === "agent"} onClick={() => showActivity("agent")}>◇</button>
             <button className={`activity-button ${activityView === "history" ? "active" : ""}`} aria-label="バージョン履歴" aria-pressed={activityView === "history"} onClick={() => showActivity("history")}>↶</button>
             <button className={`activity-button ${activityView === "shortcuts" ? "active" : ""}`} aria-label="キーボードショートカット" aria-pressed={activityView === "shortcuts"} onClick={() => showActivity("shortcuts")}>⌨</button>
+            <button className={`activity-button ${activityView === "skills" ? "active" : ""}`} aria-label="スキル" aria-pressed={activityView === "skills"} onClick={() => showActivity("skills")}>✦</button>
           </div>
           <div className="activity-bottom">
             <div className="avatar">FK</div>
@@ -3059,8 +3244,8 @@ export default function Home() {
               </div>
             </div>
             </div>
-          </section> : activityView === "history" ? historySidebar : activityView === "shortcuts" ? shortcutsSidebar : settingsSidebar}
-        </aside> : <button className="open-agent-panel" onClick={() => setLeftPanelOpen(true)}>{activityView === "history" ? "バージョン履歴" : activityView === "shortcuts" ? "ショートカット" : activityView === "settings" ? "設定" : "Agent"}を開く</button>}
+          </section> : activityView === "history" ? historySidebar : activityView === "shortcuts" ? shortcutsSidebar : activityView === "skills" ? skillsSidebar : settingsSidebar}
+        </aside> : <button className="open-agent-panel" onClick={() => setLeftPanelOpen(true)}>{activityLabel}を開く</button>}
 
         <section className="center-stage">
           <div className="editor-tabs">
@@ -3397,6 +3582,7 @@ export default function Home() {
           <button className={mobileView === "agent" ? "active" : ""} aria-pressed={mobileView === "agent"} onClick={() => { setActivityView("agent"); setLeftPanelOpen(true); setMobileView("agent"); }}>Agent</button>
           <button className={mobileView === "history" ? "active" : ""} aria-pressed={mobileView === "history"} onClick={() => { setActivityView("history"); setLeftPanelOpen(true); setMobileView("history"); }}>履歴</button>
           <button className={mobileView === "shortcuts" ? "active" : ""} aria-pressed={mobileView === "shortcuts"} onClick={() => { setActivityView("shortcuts"); setLeftPanelOpen(true); setMobileView("shortcuts"); }}>キー</button>
+          <button className={mobileView === "skills" ? "active" : ""} aria-pressed={mobileView === "skills"} onClick={() => showActivity("skills")}>スキル</button>
           <button className={mobileView === "slides" ? "active" : ""} aria-pressed={mobileView === "slides"} onClick={() => setMobileView("slides")}>スライド</button>
           <button className={mobileView === "inspector" ? "active" : ""} aria-pressed={mobileView === "inspector"} onClick={() => { setInspectorOpen(true); setMobileView("inspector"); }}>詳細</button>
           <button className={mobileView === "settings" ? "active" : ""} aria-pressed={mobileView === "settings"} onClick={() => { setActivityView("settings"); setLeftPanelOpen(true); setMobileView("settings"); }}>設定</button>
@@ -3465,6 +3651,36 @@ export default function Home() {
               {galleryDialog.kind === "turn" && <><div className="dialog-body"><strong>生成を止めて切り替えますか？</strong><p>進行中のAgent生成を止めると、未完成の変更は破棄されます。</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>キャンセル</button><button className="primary-button" onClick={() => { const target = galleryProjects.find((item) => item.slug === galleryDialog.slug); setGalleryDialog(null); if (target) void switchProject(target, true); }}>停止して切り替え</button></div></>}
             </div>
           </>}
+        </div>
+      )}
+
+      {skillDialog && (
+        <div className="skill-dialog-backdrop" role="presentation" onPointerDown={(event) => { if (event.target === event.currentTarget && skillBusyKey === null) setSkillDialog(null); }}>
+          <form ref={skillDialogRef} className="skill-dialog" role="dialog" aria-modal="true" aria-labelledby="skill-dialog-title" onSubmit={(event) => void saveSkill(event)} onKeyDown={(event) => {
+            if (event.key === "Escape" && skillBusyKey === null) {
+              event.preventDefault();
+              setSkillDialog(null);
+              return;
+            }
+            if (event.key !== "Tab") return;
+            const focusable = Array.from(skillDialogRef.current?.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])') ?? []);
+            if (!focusable.length) return;
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+            else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+          }}>
+            <header><strong id="skill-dialog-title">{skillDialog.mode === "create" ? "新しいスキル" : `${skillDialog.source?.name ?? "スキル"}を編集`}</strong><button type="button" aria-label="スキル編集を閉じる" onClick={() => { if (skillBusyKey === null) setSkillDialog(null); }}>×</button></header>
+            <div className="skill-dialog-body">
+              <label className="skill-dialog-field"><span>適用範囲</span><select value={skillDraft.scope} disabled={skillDialog.mode === "edit" || skillBusyKey !== null || agentRunning} onChange={(event) => setSkillDraft((current) => ({ ...current, scope: event.target.value as SkillScope }))}><option value="project">プロジェクト固有 · このデッキ</option><option value="common">共通 · すべてのプロジェクト</option></select></label>
+              <label className="skill-dialog-field"><span>名前</span><input autoFocus className="skill-name-input" value={skillDraft.name} required pattern="[a-z0-9]+(-[a-z0-9]+)*" maxLength={63} disabled={skillBusyKey !== null || agentRunning} onChange={(event) => setSkillDraft((current) => ({ ...current, name: event.target.value }))} /><small className="skill-dialog-help">英小文字のkebab-case、63文字以内。</small></label>
+              <label className="skill-dialog-field"><span>説明</span><input value={skillDraft.description} required maxLength={20000} disabled={skillBusyKey !== null || agentRunning} onChange={(event) => setSkillDraft((current) => ({ ...current, description: event.target.value }))} /></label>
+              <label className="skill-dialog-field"><span>指示内容</span><textarea value={skillDraft.body} required maxLength={900000} disabled={skillBusyKey !== null || agentRunning} onChange={(event) => setSkillDraft((current) => ({ ...current, body: event.target.value }))} /></label>
+              <label className="skill-dialog-field"><span>その他のYAML frontmatter <small>（任意）</small></span><textarea value={skillDraft.frontmatter} disabled={skillBusyKey !== null || agentRunning} onChange={(event) => setSkillDraft((current) => ({ ...current, frontmatter: event.target.value }))} placeholder={'license: MIT\nmetadata:\n  short-description: 例'} /></label>
+              {skillStatus.state !== "idle" && <div className={`skill-status ${skillStatus.state}`} role={skillStatus.state === "error" ? "alert" : "status"} aria-live="polite" aria-busy={skillStatus.state === "busy"}>{skillStatus.message}</div>}
+            </div>
+            <footer className="skill-dialog-actions"><button type="button" onClick={() => setSkillDialog(null)} disabled={skillBusyKey !== null}>キャンセル</button><button className="primary-button" type="submit" disabled={skillBusyKey !== null || agentRunning || !skillDraft.name.trim() || !skillDraft.description.trim() || !skillDraft.body.trim()}>{skillBusyKey !== null ? "保存中…" : skillDialog.mode === "create" ? "スキルを作成" : "変更を保存"}</button></footer>
+          </form>
         </div>
       )}
 

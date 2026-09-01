@@ -17,6 +17,11 @@ test("agent instructions describe the template and slot vocabulary", () => {
   assert.match(agentInstructions, /Master\/layout files are shared/);
   assert.match(agentInstructions, /these roles are semantic attributes, never CSS classes/);
   assert.match(agentInstructions, /do not add title or content[\s\S]*to class/);
+  assert.match(agentInstructions, /remember something or to turn instructions into a skill/);
+  assert.match(agentInstructions, /覚えて/);
+  assert.match(agentInstructions, /スキル化/);
+  assert.match(agentInstructions, /\.codex\/skills\/<lowercase-kebab-name>\/SKILL\.md/);
+  assert.match(agentInstructions, /do not save them in the common user skill directory/);
 });
 
 test("built-in templates are valid empty frames with the title first inside content", () => {
