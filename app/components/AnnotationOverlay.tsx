@@ -75,7 +75,7 @@ function PointerPickingLayer({ candidates, annotations, onPick, onCancel }: {
           type="button"
           className={`pointer-pick-frame ${hoveredId === candidate.id ? "hovered" : ""}`}
           style={rectStyle(candidate.rect)}
-          aria-label={`${existing ? "Select" : "Point to"} ${label}`}
+          aria-label={`${existing ? "選択" : "Agentに示す"}: ${label}`}
           key={`frame-${candidate.id}`}
           onPointerEnter={() => setHoveredId(candidate.id)}
           onPointerLeave={() => setHoveredId((current) => current === candidate.id ? null : current)}
@@ -154,9 +154,9 @@ export function AnnotationOverlay({
           zoom — and whatever size the deck's own slide root happens to render at. */}
       {interactive && annotations.length === 0 && (
         <div className="annotation-empty-state" aria-hidden="true">
-          <strong>Drag to draw a frame</strong>
-          <span>→ then write what goes in it</span>
-          <small>Frames are sent to Agent together</small>
+          <strong>変更したい範囲をドラッグ</strong>
+          <span>→ Agentへの指示を入力してください</span>
+          <small>指定した範囲はまとめてAgentへ送信されます</small>
         </div>
       )}
     <div className="annotation-overlay-scroll" ref={scrollRef}>
@@ -187,12 +187,12 @@ export function AnnotationOverlay({
                   <button
                     type="button"
                     className="annotation-order"
-                    aria-label={`Move annotation ${annotation.order}`}
-                    title={`Move annotation ${annotation.order}`}
+                    aria-label={`指示範囲 ${annotation.order} を移動`}
+                    title={`指示範囲 ${annotation.order} を移動します`}
                     {...gestureProps(annotation.id, "move")}
                   >{annotation.order}</button>
                 ) : (
-                  <span className="annotation-order annotation-order-static" aria-label={`Annotation ${annotation.order}`}>{annotation.order}</span>
+                  <span className="annotation-order annotation-order-static" aria-label={`Agentへの指示 ${annotation.order}`}>{annotation.order}</span>
                 )}
                 {annotation.target.kind === "region" && (
                   <input
@@ -202,9 +202,9 @@ export function AnnotationOverlay({
                     }}
                     className="annotation-label"
                     value={annotation.label}
-                    aria-label={`Annotation ${annotation.order} label`}
-                    placeholder="What goes here? (e.g. photo, one-line metric band)"
-                    title="What goes here? (e.g. photo, one-line metric band)"
+                    aria-label={`指示範囲 ${annotation.order} の変更内容`}
+                    placeholder="Agentへの変更指示を入力"
+                    title="この範囲をどう変更するかAgentへ伝えます"
                     onFocus={() => onSelect(annotation.id)}
                     onPointerDown={(event) => { event.stopPropagation(); onSelect(annotation.id); }}
                     onKeyDown={(event) => {
@@ -219,8 +219,8 @@ export function AnnotationOverlay({
                 <button
                   type="button"
                   className="annotation-delete"
-                  aria-label={`Delete annotation ${annotation.order}`}
-                  title="Delete annotation"
+                  aria-label={`指示範囲 ${annotation.order} を削除`}
+                  title="この指示範囲を削除します"
                   onPointerDown={(event) => event.stopPropagation()}
                   onClick={(event) => { event.stopPropagation(); onDelete(annotation.id); }}
                 >×</button>
@@ -228,7 +228,7 @@ export function AnnotationOverlay({
                   <button
                     type="button"
                     className={`annotation-handle ${handle}`}
-                    aria-label={`Resize annotation ${annotation.order} from ${handle}`}
+                    aria-label={`指示範囲 ${annotation.order} のサイズを変更`}
                     key={handle}
                     {...gestureProps(annotation.id, handle)}
                   />
@@ -236,7 +236,7 @@ export function AnnotationOverlay({
               </>
             ) : (
               <>
-                <span className="annotation-order annotation-order-static" aria-label={`Annotation ${annotation.order}`}>{annotation.order}</span>
+                <span className="annotation-order annotation-order-static" aria-label={`Agentへの指示 ${annotation.order}`}>{annotation.order}</span>
                 {annotation.target.kind === "region" && annotation.label && <span className="annotation-label-static">{annotation.label}</span>}
               </>
             )}

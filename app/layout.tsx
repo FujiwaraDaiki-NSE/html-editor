@@ -22,8 +22,8 @@ export async function generateMetadata(): Promise<Metadata> {
     || host.startsWith("127.0.0.1:");
   const protocol = requestHeaders.get("x-forwarded-proto") ?? (isLoopbackHost ? "http" : "https");
   const origin = `${protocol}://${host}`;
-  const title = "Weave — Human + Agent HTML Editor";
-  const description = "A shared visual HTML editor for creating polished slide decks with an agent.";
+  const title = "Weave — 人とAgentでつくるHTMLエディター";
+  const description = "人とAgentが一緒に、完成度の高いスライド資料をつくるビジュアルHTMLエディターです。";
 
   return {
     title,
@@ -32,7 +32,7 @@ export async function generateMetadata(): Promise<Metadata> {
       title,
       description,
       type: "website",
-      images: [{ url: `${origin}/og.png`, width: 1200, height: 630, alt: "Weave HTML editor workspace" }],
+      images: [{ url: `${origin}/og.png`, width: 1200, height: 630, alt: "Weave HTMLエディターの作業画面" }],
     },
     twitter: {
       card: "summary_large_image",
@@ -45,7 +45,7 @@ export async function generateMetadata(): Promise<Metadata> {
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en">
+    <html lang="ja">
       <body className={`${geistSans.variable} ${geistMono.variable}`}>{children}</body>
     </html>
   );

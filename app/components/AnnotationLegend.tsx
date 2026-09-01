@@ -14,7 +14,7 @@ const thumbnailRectStyle = (annotation: Annotation): CSSProperties => ({
 
 export function AnnotationLegend({ annotations }: Props) {
   return (
-    <ol className="annotation-legend" aria-label="Annotations">
+    <ol className="annotation-legend" aria-label="Agentへの指示">
       {[...annotations].sort((a, b) => a.order - b.order).map((annotation) => {
         const elementKind = annotation.target.kind === "element" ? annotation.target.elementKind || "element" : null;
         const text = annotation.target.kind === "element"
@@ -29,8 +29,8 @@ export function AnnotationLegend({ annotations }: Props) {
               />
             </span>
             <strong className="annotation-legend-order">@{annotation.order}</strong>
-            <span className="annotation-legend-text" title={text || elementKind || "Region"}>
-              {elementKind ? <strong>{elementKind}</strong> : text || "Region"}
+            <span className="annotation-legend-text" title={text || elementKind || "指定範囲"}>
+              {elementKind ? <strong>{elementKind}</strong> : text || "指定範囲"}
               {elementKind && text ? <span> · {text}</span> : null}
             </span>
           </li>

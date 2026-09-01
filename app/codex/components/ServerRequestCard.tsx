@@ -1,25 +1,64 @@
 "use client";
 /* eslint-disable @typescript-eslint/no-explicit-any -- reverse requests are forward-compatible generated protocol payloads. */
 
-import { useState } from "react";
+import { useRef, useState } from "react";
+import { beginRequestResolution, finishRequestResolution, type RequestResolutionOutcome, type RequestResolutionPhase } from "../request-state";
 import type { PendingServerRequest } from "../types";
 
 type Props = {
   request: PendingServerRequest;
-  onResolve: (id: string | number, result: Record<string, unknown>) => void;
-  onReject: (id: string | number) => void;
+  onResolve: (id: string | number, result: Record<string, unknown>) => Promise<RequestResolutionOutcome>;
+  onReject: (id: string | number) => Promise<RequestResolutionOutcome>;
 };
 
 export function ServerRequestCard({ request, onResolve, onReject }: Props) {
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [mcpContent, setMcpContent] = useState("{}");
+  const [resolutionPhase, setResolutionPhase] = useState<RequestResolutionPhase>("idle");
+  const [resolutionError, setResolutionError] = useState<string | null>(null);
+  const [resolutionRetryable, setResolutionRetryable] = useState(false);
+  const resolutionPhaseRef = useRef<RequestResolutionPhase>("idle");
   const params = request.params as any;
+  const submitResolution = (operation: () => Promise<RequestResolutionOutcome>) => {
+    const started = beginRequestResolution(resolutionPhaseRef.current, resolutionRetryable);
+    if (!started.started) return;
+    resolutionPhaseRef.current = started.phase;
+    setResolutionPhase(started.phase);
+    setResolutionError(null);
+    setResolutionRetryable(false);
+    void Promise.resolve()
+      .then(operation)
+      .then(
+        (outcome) => {
+          const result = outcome?.result === "settled" ? "settled" : "result_unknown";
+          const next = finishRequestResolution(resolutionPhaseRef.current, result);
+          resolutionPhaseRef.current = next;
+          setResolutionPhase(next);
+          setResolutionRetryable(result === "result_unknown" && outcome?.retryable === true);
+          setResolutionError(result === "result_unknown" ? outcome?.message ?? "回答の結果を確認できません。再試行は保留中の要求を確認してから行えます。" : null);
+        },
+        () => {
+          const next = finishRequestResolution(resolutionPhaseRef.current, "result_unknown");
+          resolutionPhaseRef.current = next;
+          setResolutionPhase(next);
+          setResolutionRetryable(false);
+          setResolutionError("回答の結果を確認できません。要求の状態を確認してから再試行してください。");
+        },
+      );
+  };
+  const resolve = (result: Record<string, unknown>) => submitResolution(() => onResolve(request.id, result));
+  const reject = () => submitResolution(() => onReject(request.id));
+  const isResolving = resolutionPhase === "submitting";
+  const isSettled = resolutionPhase === "settled";
+  const canMutate = !isResolving && !isSettled && (resolutionPhase !== "result_unknown" || resolutionRetryable);
+  const statusLabel = resolutionError ?? (isResolving ? "回答を送信中…" : isSettled ? "回答を送信しました" : "");
+  const statusRole = resolutionError ? "alert" : "status";
 
   if (request.method === "item/tool/requestUserInput") {
     const questions = (params.questions ?? []).slice(0, 3);
     return (
-      <article className="server-request">
-        <strong>Codex needs more information</strong>
+      <article className="server-request" aria-busy={isResolving} data-resolution-state={resolutionPhase}>
+        <strong>Codexから確認があります</strong>
         {questions.map((question: any) => (
           <label className="server-question" key={question.id}>
             <span>{question.header || question.question}</span>
@@ -28,8 +67,9 @@ export function ServerRequestCard({ request, onResolve, onReject }: Props) {
               <select
                 value={answers[question.id] ?? ""}
                 onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))}
+                disabled={!canMutate}
               >
-                <option value="">Choose…</option>
+                <option value="">選択してください…</option>
                 {question.options.map((option: any) => (
                   <option key={option.label} value={option.label}>{option.label}</option>
                 ))}
@@ -39,21 +79,23 @@ export function ServerRequestCard({ request, onResolve, onReject }: Props) {
               type={question.isSecret ? "password" : "text"}
               value={answers[question.id] ?? ""}
               onChange={(event) => setAnswers((current) => ({ ...current, [question.id]: event.target.value }))}
-              placeholder={question.isOther ? "Type an answer" : "Answer"}
+              placeholder={question.isOther ? "回答を入力" : "回答"}
+              disabled={!canMutate}
             />
           </label>
         ))}
         <button
-          disabled={questions.some((question: any) => !answers[question.id]?.trim())}
-          onClick={() => onResolve(request.id, {
+          disabled={!canMutate || questions.some((question: any) => !answers[question.id]?.trim())}
+          onClick={() => resolve({
             answers: Object.fromEntries(
               questions.map((question: any) => [question.id, { answers: [answers[question.id]] }]),
             ),
           })}
         >
-          Submit answers
+          回答を送信
         </button>
-        <button onClick={() => onReject(request.id)}>Cancel</button>
+        <button disabled={!canMutate} onClick={reject}>キャンセル</button>
+        {statusLabel && <span className={`server-request-status${resolutionError ? " error" : ""}`} role={statusRole} aria-live="polite">{statusLabel}</span>}
       </article>
     );
   }
@@ -63,50 +105,53 @@ export function ServerRequestCard({ request, onResolve, onReject }: Props) {
       Object.entries(params.permissions ?? {}).filter(([, value]) => value !== null),
     );
     return (
-      <article className="server-request">
-        <strong>Additional permissions</strong>
-        <p>{String(params.reason ?? "Codex requested additional project permissions.")}</p>
-        <button onClick={() => onResolve(request.id, { permissions, scope: "turn" })}>Allow for turn</button>
-        <button onClick={() => onResolve(request.id, { permissions, scope: "session" })}>Allow for session</button>
-        <button onClick={() => onReject(request.id)}>Decline</button>
+      <article className="server-request" aria-busy={isResolving} data-resolution-state={resolutionPhase}>
+        <strong>追加の権限が必要です</strong>
+        <p>{String(params.reason ?? "Codexがプロジェクトへの追加権限を求めています。")}</p>
+        <button disabled={!canMutate} onClick={() => resolve({ permissions, scope: "turn" })}>今回のみ許可</button>
+        <button disabled={!canMutate} onClick={() => resolve({ permissions, scope: "session" })}>このセッションで許可</button>
+        <button disabled={!canMutate} onClick={reject}>許可しない</button>
+        {statusLabel && <span className={`server-request-status${resolutionError ? " error" : ""}`} role={statusRole} aria-live="polite">{statusLabel}</span>}
       </article>
     );
   }
 
   if (request.method === "mcpServer/elicitation/request") {
     return (
-      <article className="server-request">
-        <strong>{params.serverName ?? "MCP server"}</strong>
-        <p>{String(params.message ?? "The MCP server needs a response.")}</p>
+      <article className="server-request" aria-busy={isResolving} data-resolution-state={resolutionPhase}>
+        <strong>{params.serverName ?? "MCPサーバー"}</strong>
+        <p>{String(params.message ?? "MCPサーバーから回答を求められています。")}</p>
         {params.mode === "url" ? (
           <>
             <button onClick={() => {
-              if (window.confirm("Open this external authorization page?")) {
+              if (window.confirm("外部の認証ページを開きますか？")) {
                 window.open(String(params.url), "_blank", "noopener,noreferrer");
               }
-            }}>Open URL</button>
-            <button onClick={() => onResolve(request.id, { action: "accept", content: null, _meta: params._meta ?? null })}>Continue</button>
+            }} disabled={!canMutate}>認証ページを開く</button>
+            <button disabled={!canMutate} onClick={() => resolve({ action: "accept", content: null, _meta: params._meta ?? null })}>続ける</button>
           </>
         ) : (
           <>
             <label className="server-question">
-              <span>Form response</span>
-              <textarea value={mcpContent} onChange={(event) => setMcpContent(event.target.value)} />
+              <span>フォームへの回答</span>
+              <textarea value={mcpContent} onChange={(event) => setMcpContent(event.target.value)} disabled={!canMutate} />
             </label>
-            <button onClick={() => {
+            <button disabled={!canMutate} onClick={() => {
               try {
-                onResolve(request.id, {
+                const content = JSON.parse(mcpContent);
+                resolve({
                   action: "accept",
-                  content: JSON.parse(mcpContent),
+                  content,
                   _meta: params._meta ?? null,
                 });
               } catch {
-                setMcpContent('{"error":"Enter valid JSON"}');
+                setMcpContent('{"error":"正しいJSONを入力してください"}');
               }
-            }}>Submit form</button>
+            }}>フォームを送信</button>
           </>
         )}
-        <button onClick={() => onResolve(request.id, { action: "decline", content: null, _meta: null })}>Decline</button>
+        <button disabled={!canMutate} onClick={() => resolve({ action: "decline", content: null, _meta: null })}>許可しない</button>
+        {statusLabel && <span className={`server-request-status${resolutionError ? " error" : ""}`} role={statusRole} aria-live="polite">{statusLabel}</span>}
       </article>
     );
   }
@@ -115,14 +160,21 @@ export function ServerRequestCard({ request, onResolve, onReject }: Props) {
     ? ["accept", "acceptForSession", "decline", "cancel"]
     : ["accept", "acceptForSession", "decline", "cancel"];
   const decisions = Array.isArray(params.availableDecisions) ? params.availableDecisions : generatedDecisions;
+  const decisionLabels: Record<string, string> = {
+    accept: "許可",
+    acceptForSession: "このセッションで許可",
+    decline: "許可しない",
+    cancel: "キャンセル",
+  };
   return (
-    <article className="server-request">
+    <article className="server-request" aria-busy={isResolving} data-resolution-state={resolutionPhase}>
       <strong>{request.method}</strong>
-      <p>{String(params.reason ?? params.message ?? params.command ?? "Codex needs your approval.")}</p>
+      <p>{String(params.reason ?? params.message ?? params.command ?? "Codexが許可を求めています。")}</p>
       {decisions.map((decision: any) => {
         const value = typeof decision === "string" ? decision : decision.decision;
-        return <button key={value} onClick={() => onResolve(request.id, { decision: value })}>{value}</button>;
+        return <button key={value} disabled={!canMutate} onClick={() => resolve({ decision: value })}>{decisionLabels[value] ?? value}</button>;
       })}
+      {statusLabel && <span className={`server-request-status${resolutionError ? " error" : ""}`} role={statusRole} aria-live="polite">{statusLabel}</span>}
     </article>
   );
 }
