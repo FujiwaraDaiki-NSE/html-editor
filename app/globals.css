@@ -1228,3 +1228,96 @@ button.project-card { cursor: pointer; }
   .composer-dock { position: sticky; bottom: 0; }
   :where(button, [role="button"], input, select, textarea) { min-height: 44px; }
 }
+
+/* Keep the integrated workspace rules authoritative over the legacy panel and
+   editor dimensions declared earlier in this file. */
+.source-workspace > .code-editor { width: 100%; height: 100%; }
+.source-preview { container-type: inline-size; }
+.source-preview > div { width: calc(100cqw - 16px); margin: 8px; }
+.source-preview > div > .weave-slide { transform: none; zoom: calc((100cqw - 16px) / 1280px); }
+.topbar { grid-template-columns: minmax(180px, 1fr) minmax(140px, 1fr) max-content; }
+.more-button { min-width: 64px; padding: 0 10px; }
+.top-actions { min-width: max-content; }
+.top-actions button { height: var(--ui-primary-control); font-size: var(--ui-meta); white-space: nowrap; }
+.save-button { min-width: max-content; }
+.canvas-toolbar { max-width: calc(100% - 24px); overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+.canvas-toolbar::-webkit-scrollbar { display: none; }
+.canvas-toolbar button { height: var(--ui-control); white-space: nowrap; }
+.mobile-canvas-tools { display: none; }
+.statusbar button { height: 100%; min-height: 0; }
+
+@media (max-width: 1120px) {
+  .weave-app .canvas-toolbar { overflow: visible; }
+  .weave-app .canvas-toolbar .zoom-tools,
+  .weave-app .canvas-toolbar .annotation-tools { display: none; }
+  .mobile-canvas-tools { position: relative; display: block; flex: 0 0 auto; }
+  .mobile-canvas-tools summary {
+    min-height: 40px;
+    padding: 0 4px;
+    display: grid;
+    place-items: center;
+    border-radius: 4px;
+    color: var(--text);
+    cursor: pointer;
+    list-style: none;
+    white-space: nowrap;
+  }
+  .mobile-canvas-tools summary::-webkit-details-marker { display: none; }
+  .mobile-canvas-tools[open] summary { background: var(--panel-3); }
+  .mobile-canvas-tools > div {
+    position: absolute;
+    z-index: 32;
+    right: 0;
+    bottom: calc(100% + 6px);
+    width: min(304px, calc(100vw - 16px));
+    padding: 6px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px;
+    border: 1px solid var(--line-strong);
+    border-radius: 7px;
+    background: var(--panel);
+    box-shadow: var(--shadow);
+  }
+  .selection-toolbar { scrollbar-width: thin; }
+  .selection-toolbar::-webkit-scrollbar { height: 4px; }
+}
+
+@media (min-width: 901px) and (max-width: 1120px) {
+  .weave-app > .workspace[data-slide-nav][data-inspector] {
+    grid-template-columns: 140px minmax(400px, 1fr) minmax(280px, var(--weave-sidebar-width, 320px)) !important;
+  }
+}
+
+@media (min-width: 901px) {
+  .workspace[data-inspector="open"] > .open-agent-panel,
+  .workspace[data-agent="open"] > .open-inspector { display: none; }
+}
+
+@media (max-width: 900px) {
+  .topbar { grid-template-columns: minmax(0, 1fr) auto; }
+  .top-actions button { height: 44px; min-height: 44px !important; }
+  .more-button { display: none; }
+  .save-button { min-width: 48px; }
+  .canvas-area { padding-bottom: 44px; }
+  .slide-shell {
+    width: min(calc(100% - 24px), calc((100dvh - 206px) * 16 / 9));
+    aspect-ratio: 16 / 9;
+  }
+  .weave-app .canvas-toolbar {
+    position: fixed;
+    z-index: 20;
+    top: auto !important;
+    right: 8px !important;
+    bottom: calc(60px + env(safe-area-inset-bottom));
+    left: 8px !important;
+    width: auto !important;
+  }
+  .mobile-canvas-tools summary { min-height: 44px; }
+  .mobile-canvas-tools button { height: 44px; min-height: 44px !important; }
+  .mobile-canvas-tools > div {
+    position: fixed;
+    right: 8px;
+    bottom: calc(112px + env(safe-area-inset-bottom));
+  }
+}
