@@ -1,7 +1,20 @@
-import { createServer } from "node:net";
+import { createServer, isIPv4 } from "node:net";
+import { networkInterfaces } from "node:os";
 
-export function findAvailablePort(startPort) {
+export function parseConfiguredHost(value) {
+  if (typeof value !== "string" || value.trim() !== value || !isIPv4(value) || value === "0.0.0.0") {
+    throw new TypeError("WEAVE_WEB_HOST must be a concrete local IPv4 interface address.");
+  }
+  const localAddresses = new Set(Object.values(networkInterfaces()).flat().map((address) => address?.address).filter(Boolean));
+  if (!localAddresses.has(value)) {
+    throw new TypeError("WEAVE_WEB_HOST must match an IP address assigned to this computer.");
+  }
+  return value;
+}
+
+export function findAvailablePort(startPort, host) {
   assertPortNumber(startPort);
+  parseConfiguredHost(host);
 
   return new Promise((resolve, reject) => {
     const tryPort = (port) => {
@@ -15,7 +28,7 @@ export function findAvailablePort(startPort) {
           reject(error);
         });
       });
-      probe.listen({ host: "127.0.0.1", port }, () => {
+      probe.listen({ host, port }, () => {
         probe.close((error) => error ? reject(error) : resolve(port));
       });
     };
@@ -38,22 +51,23 @@ export function parseConfiguredPort(value) {
   return port;
 }
 
-export function assertPortAvailable(port) {
+export function assertPortAvailable(port, host) {
   assertPortNumber(port);
+  parseConfiguredHost(host);
   return new Promise((resolve, reject) => {
     const probe = createServer();
     probe.once("error", (error) => probe.close(() => reject(error)));
-    probe.listen({ host: "127.0.0.1", port }, () => {
+    probe.listen({ host, port }, () => {
       probe.close((error) => error ? reject(error) : resolve());
     });
   });
 }
 
-export async function resolveWebPort(configuredPort) {
+export async function resolveWebPort(configuredPort, host) {
   if (configuredPort !== undefined) {
     const port = parseConfiguredPort(configuredPort);
-    await assertPortAvailable(port);
+    await assertPortAvailable(port, host);
     return port;
   }
-  return findAvailablePort(3000);
+  return findAvailablePort(3000, host);
 }

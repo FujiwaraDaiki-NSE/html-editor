@@ -446,12 +446,21 @@ test("project switching serializes root changes through ensure and Codex retarge
   assert.match(source, /projectReady: codexProjectRoot === projectRoot\(\)/);
 });
 
-test("development processes share one strict loopback web port", async () => {
-  const source = await readFile(new URL("../scripts/dev.mjs", import.meta.url), "utf8");
+test("development web server exposes one strict network port and proxies the loopback API", async () => {
+  const [source, viteConfig, page] = await Promise.all([
+    readFile(new URL("../scripts/dev.mjs", import.meta.url), "utf8"),
+    readFile(new URL("../vite.config.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+  ]);
   assert.match(source, /resolveWebPort/);
+  assert.match(source, /WEAVE_WEB_HOST/);
+  assert.match(source, /parseConfiguredHost/);
   assert.match(source, /WEAVE_WEB_PORT/);
-  assert.match(source, /127\.0\.0\.1/);
-  assert.match(source, /--strictPort/);
+  assert.match(source, /--hostname", webHost/);
+  assert.match(viteConfig, /strictPort: true/);
+  assert.match(viteConfig, /"\/api"/);
+  assert.match(viteConfig, /target: `http:\/\/127\.0\.0\.1:\$\{localApiPort\}`/);
+  assert.match(page, /const apiBase = "\/api"/);
 });
 
 test("async editor updates preserve newer local edits", async () => {

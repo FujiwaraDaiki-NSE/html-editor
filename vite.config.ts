@@ -11,6 +11,7 @@ const { d1, r2 } = hostingConfig;
 
 // macOS Seatbelt blocks FSEvents, so Codex previews need polling for HMR.
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
+const localApiPort = process.env.WEAVE_API_PORT ?? "4317";
 
 const localBindingConfig = {
   main: "./worker/index.ts",
@@ -46,6 +47,12 @@ export default defineConfig(async () => {
 
   return {
     server: {
+      strictPort: true,
+      proxy: {
+        "/api": {
+          target: `http://127.0.0.1:${localApiPort}`,
+        },
+      },
       watch: {
         ignored: [GENERATED_PROJECT_WATCH_GLOB],
         ...(isCodexSeatbeltSandbox
