@@ -97,10 +97,13 @@ test("projects are independent repositories with lifecycle operations", async ()
     await project.switchProject(slug);
     await project.switchProject(copy);
     await writeFile(join(workspaces, copy, "slides", "dirty.html"), "<main></main>");
-    await assert.rejects(project.switchProject(slug), (error) => error.code === "WEAVE_PROJECT_DIRTY");
+    await project.switchProject(slug);
+    await access(join(workspaces, copy, "slides", "dirty.html"));
     git(join(workspaces, copy), ["clean", "-fd"]);
     git(join(workspaces, slug), ["branch", "weave/variation/open"]);
-    await assert.rejects(project.switchProject(slug), (error) => error.code === "WEAVE_PROJECT_BLOCKED");
+    await project.switchProject(copy);
+    await project.switchProject(slug);
+    assert.equal(project.projectRoot(), join(workspaces, slug));
   } finally {
     if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
     else process.env.WEAVE_PROJECT_ROOT = previousRoot;
