@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { access, cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { access, cp, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { performance } from "node:perf_hooks";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -20,6 +20,22 @@ const workspacesRoot = process.env.WEAVE_WORKSPACES_ROOT ? resolve(process.env.W
 const archiveRoot = join(workspacesRoot, ".archive");
 const currentPath = process.env.WEAVE_WORKSPACES_ROOT ? join(dirname(workspacesRoot), ".weave", "current.json") : join(repoRoot, ".weave", "current.json");
 const assetApiBase = `http://127.0.0.1:${process.env.WEAVE_API_PORT ?? 4317}/api`;
+const agentSnapshotRoot = (root) => join(homedir(), ".local", "state", "weave", "agent-recovery", createHash("sha256").update(resolve(root)).digest("hex"));
+const recoveryControlRoot = (root) => join(agentSnapshotRoot(root), "records");
+
+async function atomicWriteJson(path, value) {
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  const handle = await open(temporary, "wx");
+  try {
+    await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`);
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+  await rename(temporary, path);
+  const directory = await open(dirname(path), "r");
+  try { await directory.sync(); } finally { await directory.close(); }
+}
 let currentProjectRoot = process.env.WEAVE_PROJECT_ROOT ? resolve(process.env.WEAVE_PROJECT_ROOT) : join(workspacesRoot, "northstar");
 export const projectRoot = () => currentProjectRoot;
 const manifestPath = (root = currentProjectRoot) => join(root, ".weave", "deck.json");
@@ -185,8 +201,8 @@ function normalizeReferenceName(value) {
   return `${normalizedBase || "file"}${normalizePart(extension)}`;
 }
 
-export async function importImageAsset({ data, mimeType }) {
-  const root = currentProjectRoot;
+export async function importImageAsset({ data, mimeType }, root = currentProjectRoot, onStored = null) {
+  return runProjectExclusive(async () => {
   const extension = assetTypes.get(String(mimeType ?? "").toLowerCase());
   if (!extension) throw new Error("Unsupported image type. Use PNG, JPEG, WebP, SVG, or GIF.");
   const bytes = Buffer.from(String(data ?? ""), "base64");
@@ -205,10 +221,13 @@ export async function importImageAsset({ data, mimeType }) {
   const filename = `${hash}.${extension}`;
   await mkdir(assetsRoot(root), { recursive: true });
   await writeFile(join(assetsRoot(root), filename), bytes);
-  return { path: `assets/${filename}`, mimeType, size: bytes.length };
+  const result = { path: `assets/${filename}`, mimeType, size: bytes.length };
+  if (onStored) await onStored(result);
+  return result;
+  }, root);
 }
 
-export async function importReference({ data, mimeType, name }) {
+export async function importReference({ data, mimeType, name }, root = currentProjectRoot, onStored = null) {
   return runProjectExclusive(async () => {
     const bytes = Buffer.from(String(data ?? ""), "base64");
     if (!bytes.length) throw new Error("Reference data is required.");
@@ -216,7 +235,6 @@ export async function importReference({ data, mimeType, name }) {
     const normalizedName = normalizeReferenceName(name);
     const hash = createHash("sha256").update(bytes).digest("hex");
     const filename = `${hash.slice(0, 12)}-${normalizedName}`;
-    const root = currentProjectRoot;
     const directory = referencesRoot(root);
     await mkdir(directory, { recursive: true });
     const filePath = join(directory, filename);
@@ -229,8 +247,10 @@ export async function importReference({ data, mimeType, name }) {
       entries.push({ path: relativePath, name: normalizedName, kind: "file", hash, size: bytes.length, mimeType, addedAt: new Date().toISOString() });
       await writeFile(indexPath, `${JSON.stringify({ entries }, null, 2)}\n`);
     }
-    return { path: relativePath, name: normalizedName, kind: "file", mimeType, size: bytes.length };
-  });
+    const result = { path: relativePath, name: normalizedName, kind: "file", mimeType, size: bytes.length };
+    if (onStored) await onStored(result, entries.find((entry) => entry?.path === relativePath));
+    return result;
+  }, root);
 }
 
 function pathInside(root, target) {
@@ -316,12 +336,12 @@ export async function listFolders(path = homedir()) {
   };
 }
 
-export async function importReferenceFolder({ source }) {
+export async function importReferenceFolder({ source }, root = currentProjectRoot, onStored = null) {
   return runProjectExclusive(async () => {
     const resolved = await referenceFolderSource(source);
     const summary = await walkReferenceFolder(resolved);
     if (summary.capped) throw new Error("Reference folder is too large or too slow to read and exceeds the limit (2,000 files / 500 MB).");
-    const directory = referencesRoot();
+    const directory = referencesRoot(root);
     await mkdir(directory, { recursive: true });
     const indexPath = join(directory, "index.json");
     const index = JSON.parse(await readFile(indexPath, "utf8").catch(() => "{\"entries\":[]}"));
@@ -337,8 +357,9 @@ export async function importReferenceFolder({ source }) {
     const entry = { path: `references/${name}`, name, kind: "folder", source: resolved, size: summary.bytes, files: summary.files, addedAt: new Date().toISOString() };
     entries.push(entry);
     await writeFile(indexPath, `${JSON.stringify({ entries }, null, 2)}\n`);
+    if (onStored) await onStored(entry, entry);
     return entry;
-  });
+  }, root);
 }
 
 async function copyReferenceFolder(source, destination) {
@@ -352,18 +373,18 @@ async function copyReferenceFolder(source, destination) {
   });
 }
 
-export async function syncReferenceFolder(path) {
+export async function syncReferenceFolder(path, root = currentProjectRoot, onStored = null) {
   return runProjectExclusive(async () => {
     if (!isReferencePath(path)) throw new Error("Invalid reference path.");
-    const indexPath = join(referencesRoot(), "index.json");
+    const indexPath = join(referencesRoot(root), "index.json");
     const index = JSON.parse(await readFile(indexPath, "utf8"));
     const entry = index.entries?.find((item) => item?.path === path && item.kind === "folder");
     if (!entry) throw new Error("Reference folder not found.");
-    if (!existsSync(entry.source)) return { references: await readReferences(), sourceMissing: true };
+    if (!existsSync(entry.source)) return { references: await readReferences(root), sourceMissing: true };
     const source = await referenceFolderSource(entry.source);
     const summary = await walkReferenceFolder(source);
     if (summary.capped) throw new Error("Reference folder is too large or too slow to read and exceeds the limit (2,000 files / 500 MB).");
-    const destination = join(projectRoot(), path);
+    const destination = join(root, path);
     const staged = `${destination}.${randomUUID()}.staged`;
     const previous = `${destination}.${randomUUID()}.previous`;
     try {
@@ -379,12 +400,14 @@ export async function syncReferenceFolder(path) {
     entry.size = summary.bytes;
     entry.files = summary.files;
     await writeFile(indexPath, `${JSON.stringify({ entries: index.entries }, null, 2)}\n`);
-    return { references: await readReferences(), sourceMissing: false };
-  });
+    const result = { references: await readReferences(root), sourceMissing: false };
+    if (onStored) await onStored(result, entry);
+    return result;
+  }, root);
 }
 
-export async function readReferences() {
-  const indexPath = join(referencesRoot(), "index.json");
+export async function readReferences(root = currentProjectRoot) {
+  const indexPath = join(referencesRoot(root), "index.json");
   let index;
   try {
     index = JSON.parse(await readFile(indexPath, "utf8"));
@@ -394,13 +417,13 @@ export async function readReferences() {
   if (!Array.isArray(index?.entries)) return [];
   return index.entries
     .filter((entry) => entry && typeof entry.path === "string")
-    .map((entry) => ({ ...entry, kind: entry.kind === "folder" ? "folder" : "file", missing: !existsSync(join(projectRoot(), entry.path)), ...(entry.kind === "folder" && entry.source ? { sourceMissing: !existsSync(entry.source) } : {}) }));
+    .map((entry) => ({ ...entry, kind: entry.kind === "folder" ? "folder" : "file", missing: !existsSync(join(root, entry.path)), ...(entry.kind === "folder" && entry.source ? { sourceMissing: !existsSync(entry.source) } : {}) }));
 }
 
-export async function removeReference(path) {
+export async function removeReference(path, root = currentProjectRoot, onStored = null) {
   if (!isReferencePath(path)) throw new Error("Invalid reference path.");
   return runProjectExclusive(async () => {
-    const indexPath = join(referencesRoot(), "index.json");
+    const indexPath = join(referencesRoot(root), "index.json");
     let index;
     try {
       index = JSON.parse(await readFile(indexPath, "utf8"));
@@ -410,9 +433,11 @@ export async function removeReference(path) {
     if (!Array.isArray(index?.entries)) return [];
     const entries = index.entries.filter((entry) => entry?.path !== path);
     if (entries.length !== index.entries.length) await writeFile(indexPath, `${JSON.stringify({ entries }, null, 2)}\n`);
-    await rm(join(projectRoot(), path), { recursive: true, force: true });
-    return readReferences();
-  });
+    await rm(join(root, path), { recursive: true, force: true });
+    const result = await readReferences(root);
+    if (onStored) await onStored(result);
+    return result;
+  }, root);
 }
 
 /* Seed content, authored as blocks and stamped into source HTML exactly once. After seeding
@@ -822,14 +847,134 @@ export async function writeProject(input, expectedRevision = null, root = curren
   );
 }
 
+/** Create a durable pre-Agent snapshot used by a later three-way merge/recovery flow. */
+export async function createRecoverySnapshot({ baseRevision, deck, css, agentFileSnapshot = null }, root = currentProjectRoot) {
+  if (!deck || typeof deck !== "object") throw new Error("Recovery deck is required.");
+  const id = randomUUID();
+  const directory = recoveryControlRoot(root);
+  await mkdir(directory, { recursive: true });
+  const snapshot = {
+    id,
+    createdAt: new Date().toISOString(),
+    baseRevision: baseRevision == null ? null : String(baseRevision),
+    baseDeck: structuredClone(deck),
+    baseCss: String(css ?? ""),
+    agentFileSnapshot: agentFileSnapshot ? structuredClone(agentFileSnapshot) : null,
+  };
+  await atomicWriteJson(join(directory, `${id}.json`), snapshot);
+  return { ...snapshot, path: join(directory, `${id}.json`) };
+}
+
+/** Keep edits made while an Agent turn is running in the durable recovery record. */
+export async function updateRecoverySnapshot(snapshot, updates, root = currentProjectRoot) {
+  const snapshotPath = snapshot?.path;
+  if (!snapshotPath || !pathInside(recoveryControlRoot(root), resolve(snapshotPath))) throw new Error("Recovery snapshot path is invalid.");
+  const next = { ...snapshot, ...structuredClone(updates) };
+  delete next.path;
+  await atomicWriteJson(snapshotPath, next);
+  Object.assign(snapshot, structuredClone(updates));
+  return snapshot;
+}
+
+export async function readRecoverySnapshots(root = currentProjectRoot) {
+  const directory = recoveryControlRoot(root);
+  const names = await readdir(directory).catch(() => []);
+  const snapshots = [];
+  for (const name of names.filter((entry) => entry.endsWith(".json"))) {
+    const path = join(directory, name);
+    try {
+      const snapshot = JSON.parse(await readFile(path, "utf8"));
+      if (!snapshot?.id || !snapshot?.baseDeck || typeof snapshot.baseCss !== "string") throw new Error("Recovery record is missing required fields.");
+      snapshots.push({ ...snapshot, path, root, status: "interrupted" });
+    } catch (error) {
+      throw new Error(`Recovery record is unreadable: ${path}`, { cause: error });
+    }
+  }
+  return snapshots;
+}
+
+export async function readAllRecoverySnapshots() {
+  if (process.env.WEAVE_PROJECT_ROOT) return await readRecoverySnapshots(currentProjectRoot);
+  const entries = await readdir(workspacesRoot, { withFileTypes: true }).catch(() => []);
+  const groups = await Promise.all(entries.filter((entry) => entry.isDirectory() && !entry.name.startsWith(".")).map((entry) => readRecoverySnapshots(join(workspacesRoot, entry.name))));
+  return groups.flat();
+}
+
+/** Preserve non-deck files that an Agent is never allowed to change implicitly. */
+export async function createAgentFileSnapshot(root = currentProjectRoot) {
+  const id = randomUUID();
+  const directory = join(agentSnapshotRoot(root), `${id}-files`);
+  await mkdir(directory, { recursive: true });
+  const entries = {};
+  for (const name of ["assets", "templates", "AGENTS.md", "references", ".codex/skills"]) {
+    const source = join(root, name);
+    entries[name] = existsSync(source);
+    if (entries[name]) {
+      await mkdir(dirname(join(directory, name)), { recursive: true });
+      await cp(source, join(directory, name), { recursive: true });
+    }
+  }
+  return { id, directory, entries };
+}
+
+export async function captureAgentFilePreservation(snapshot, name, root = currentProjectRoot) {
+  if (!snapshot?.directory || !pathInside(agentSnapshotRoot(root), resolve(snapshot.directory))) throw new Error("Agent file snapshot path is invalid.");
+  if (!/^assets\/[a-f0-9]{64}\.[a-z0-9]+$/i.test(name) && !isReferencePath(name)) throw new Error("Invalid Agent snapshot preservation path.");
+  const source = join(root, name);
+  if (!existsSync(source)) return;
+  const destination = join(snapshot.directory, "preserved", name);
+  await rm(destination, { recursive: true, force: true });
+  await mkdir(dirname(destination), { recursive: true });
+  await cp(source, destination, { recursive: true });
+}
+
+export async function restoreAgentFileSnapshot(snapshot, root = currentProjectRoot, { preserve = [] } = {}) {
+  if (!snapshot?.directory || !pathInside(agentSnapshotRoot(root), resolve(snapshot.directory))) throw new Error("Agent file snapshot path is invalid.");
+  const preserved = [];
+  for (const name of preserve) {
+    if (!/^assets\/[a-f0-9]{64}\.[a-z0-9]+$/i.test(name) && !isReferencePath(name) && name !== ".codex/skills") throw new Error("Invalid Agent snapshot preservation path.");
+    const source = join(root, name);
+    const captured = join(snapshot.directory, "preserved", name);
+    if (!existsSync(captured) && existsSync(source)) {
+      await mkdir(dirname(captured), { recursive: true });
+      await cp(source, captured, { recursive: true });
+    }
+    if (existsSync(captured)) preserved.push({ name, source: captured });
+  }
+  for (const name of ["assets", "templates", "AGENTS.md", "references", ".codex/skills"]) {
+    const target = join(root, name);
+    await rm(target, { recursive: true, force: true });
+    if (snapshot.entries?.[name]) {
+      await mkdir(dirname(target), { recursive: true });
+      await cp(join(snapshot.directory, name), target, { recursive: true });
+    }
+  }
+  for (const entry of preserved) {
+    const target = join(root, entry.name);
+    await mkdir(dirname(target), { recursive: true });
+    await rm(target, { recursive: true, force: true });
+    await cp(entry.source, target, { recursive: true });
+  }
+}
+
+export async function discardAgentFileSnapshot(snapshot, root = currentProjectRoot) {
+  if (!snapshot?.directory || !pathInside(agentSnapshotRoot(root), resolve(snapshot.directory))) return;
+  await rm(snapshot.directory, { recursive: true, force: true });
+}
+
+export async function discardRecoverySnapshot(snapshot, root = currentProjectRoot) {
+  const snapshotPath = typeof snapshot === "string" ? snapshot : snapshot?.path;
+  if (!snapshotPath || !pathInside(recoveryControlRoot(root), resolve(snapshotPath))) return;
+  await rm(snapshotPath, { force: true });
+}
+
 /** Restore only the generated stylesheet captured before an Agent turn. */
 export async function restoreDeckCss(css, root = currentProjectRoot) {
   await mkdir(stylesRoot(root), { recursive: true });
   await writeFile(deckCssPath(root), String(css));
 }
 
-export async function saveProject(input, expectedRevision, message, templatePackages = null) {
-  const root = currentProjectRoot;
+async function persistProject(input, expectedRevision, templatePackages, root, commitMessage) {
   return await runProjectExclusive(async () => {
     let normalizedPackages = null;
     let previousDeck = null;
@@ -856,7 +1001,7 @@ export async function saveProject(input, expectedRevision, message, templatePack
       if (normalizedPackages) await writeTemplatePackages(normalizedPackages, root);
       const deck = await writeProjectUnlocked(input, expectedRevision, root);
       await assertCommittable(root);
-      const commit = commitIfChanged(message ?? `Save: ${deck.title}`, root);
+      const commit = commitMessage === null ? null : commitIfChanged(commitMessage, root);
       return { deck, commit };
     } catch (error) {
       if (normalizedPackages) {
@@ -872,6 +1017,31 @@ export async function saveProject(input, expectedRevision, message, templatePack
     } finally {
       if (templateBackupRoot) await rm(templateBackupRoot, { recursive: true, force: true });
     }
+  }, root);
+}
+
+/** Persist the editor's current draft, including imported templates, without a Git commit. */
+export async function saveDraft(input, expectedRevision, templatePackages, root) {
+  return await persistProject(input, expectedRevision, templatePackages, root, null);
+}
+
+export async function saveProject(input, expectedRevision, message, templatePackages = null) {
+  const root = currentProjectRoot;
+  const commitMessage = message ?? `Save: ${String(input?.title ?? "Deck")}`;
+  return await persistProject(input, expectedRevision, templatePackages, root, commitMessage);
+}
+
+/** Mark the current on-disk draft as a named milestone after the normal quality gate. */
+export async function createMilestone(name, expectedRevision = null, root = currentProjectRoot) {
+  const label = String(name ?? "").trim();
+  if (!label) throw Object.assign(new Error("Milestone name is required."), { code: "WEAVE_MILESTONE_INVALID" });
+  if (label.length > 180) throw Object.assign(new Error("Milestone name exceeds 180 characters."), { code: "WEAVE_MILESTONE_INVALID" });
+  return await runProjectExclusive(async () => {
+    assertRevision(expectedRevision, root);
+    const deck = await readProject(root);
+    await assertCommittable(root);
+    const commit = commitIfChanged(`Milestone: ${label}`, root);
+    return { deck, commit, name: label };
   }, root);
 }
 
@@ -937,10 +1107,61 @@ export function getHistory() {
 
 export function getVariations(root = currentProjectRoot) {
   const output = runGit(["for-each-ref", "--sort=creatordate", "--format=%(refname:short)%09%(objectname:short)%09%(subject)", "refs/heads/weave/variation"], { cwd: root });
+  const metadata = readVariationMetadata(root);
   return output ? output.split("\n").map((line, index) => {
     const [branch, commit, message] = line.split("\t");
-    return { branch, label: `Direction ${String.fromCharCode(65 + index)}`, commit, message, status: "ready" };
+    return { branch, label: metadata[branch]?.label ?? `Direction ${String.fromCharCode(65 + index)}`, commit, message, status: "ready", state: metadata[branch]?.state ?? "ready" };
   }) : [];
+}
+
+const variationMetadataPath = (root = currentProjectRoot) => join(root, ".weave", "variations.json");
+
+function readVariationMetadata(root = currentProjectRoot) {
+  try {
+    const value = JSON.parse(readFileSync(variationMetadataPath(root), "utf8"));
+    return value && typeof value === "object" ? value : {};
+  } catch { return {}; }
+}
+
+async function writeVariationMetadata(metadata, root = currentProjectRoot) {
+  await mkdir(join(root, ".weave"), { recursive: true });
+  await writeFile(variationMetadataPath(root), `${JSON.stringify(metadata, null, 2)}\n`);
+}
+
+export function listVariationSessions(root = currentProjectRoot) {
+  const metadata = readVariationMetadata(root);
+  const sessions = getVariations(root).map((variation) => ({ ...variation, state: metadata[variation.branch]?.state ?? variation.state ?? "ready" }));
+  for (const [branch, value] of Object.entries(metadata)) {
+    if (value?.state === "archived" && !sessions.some((item) => item.branch === branch)) sessions.push({ branch, label: value.label ?? branch, commit: value.commit ?? null, message: value.message ?? "", status: "archived", state: "archived" });
+  }
+  return sessions;
+}
+
+export async function setVariationState(branch, state, root = currentProjectRoot) {
+  if (!/^weave\/(?:variation|history)\/[a-z]+$/.test(String(branch ?? ""))) throw new Error("Unknown direction.");
+  if (!["pending", "ready", "paused", "archived"].includes(state)) throw new Error("Invalid direction state.");
+  const metadata = readVariationMetadata(root);
+  metadata[branch] = { ...(metadata[branch] ?? {}), state };
+  await writeVariationMetadata(metadata, root);
+  return listVariationSessions(root).find((item) => item.branch === branch) ?? { branch, state };
+}
+
+export const pauseVariation = (branch, root = currentProjectRoot) => setVariationState(branch, "paused", root);
+export const resumeVariation = (branch, root = currentProjectRoot) => setVariationState(branch, "ready", root);
+export const archiveVariationSession = (branch, root = currentProjectRoot) => setVariationState(branch, "archived", root);
+
+export async function importVariationSlides(branch, slideIds, expectedRevision = null, root = currentProjectRoot) {
+  const preview = getVariationPreviews(root).find((item) => item.branch === branch);
+  if (!preview) throw new Error("Unknown direction.");
+  const ids = Array.isArray(slideIds) ? slideIds.map((id) => String(id)) : [];
+  if (!ids.length) throw new Error("At least one slide is required.");
+  const selected = new Set(ids);
+  const source = new Map(preview.deck.slides.map((slide) => [slide.id, slide]));
+  if (ids.some((id) => !source.has(id))) throw new Error("Direction slide not found.");
+  const current = await readProject(root);
+  const deck = { ...current, slides: current.slides.map((slide) => selected.has(slide.id) ? source.get(slide.id) : slide) };
+  await writeProject(deck, expectedRevision, root);
+  return deck;
 }
 
 /** Read saved direction snapshots without checking out a branch, so comparisons never disturb editing state. */
@@ -970,7 +1191,7 @@ export function getVariationPreviews(root = currentProjectRoot) {
 export function projectState() {
   return {
     history: getHistory(),
-    variations: getVariations(),
+    variations: listVariationSessions(),
     project: {
       root: currentProjectRoot,
       slug: currentProjectRoot.startsWith(`${workspacesRoot}/`) ? currentProjectRoot.slice(workspacesRoot.length + 1) : null,
@@ -978,32 +1199,101 @@ export function projectState() {
       commit: runGit(["rev-parse", "--short", "HEAD"]),
       revision: getRevision(),
       clean: managedStatus() === "",
+      historyPreview: existsSync(join(currentProjectRoot, ".weave", "history-preview.json")),
     },
   };
 }
 
+function gitFileAt(root, commit, path) {
+  try { return gitAt(root, ["show", `${commit}:${path}`]); } catch { return null; }
+}
+
+function gitBufferAt(root, commit, path) {
+  try {
+    return execFileSync("git", ["show", `${commit}:${path}`], { cwd: root, encoding: null, stdio: ["ignore", "pipe", "pipe"] });
+  } catch { return null; }
+}
+
+async function restoreGitDirectoryToDraft(commit, path, root, preserveWhenAbsent) {
+  let files = [];
+  try { files = gitAt(root, ["ls-tree", "-r", "--name-only", commit, path]).split("\n").filter(Boolean); } catch {}
+  if (files.length === 0 && preserveWhenAbsent) return;
+  await rm(join(root, path), { recursive: true, force: true });
+  await Promise.all(files.map(async (file) => {
+    const content = gitBufferAt(root, commit, file);
+    if (content === null) return;
+    const destination = join(root, file);
+    await mkdir(dirname(destination), { recursive: true });
+    await writeFile(destination, content);
+  }));
+}
+
+async function materializeMissingGitDirectoryFiles(commit, path, root) {
+  let files = [];
+  try { files = gitAt(root, ["ls-tree", "-r", "--name-only", commit, path]).split("\n").filter(Boolean); } catch {}
+  await Promise.all(files.map(async (file) => {
+    const destination = join(root, file);
+    if (existsSync(destination)) return;
+    const content = gitBufferAt(root, commit, file);
+    if (content === null) return;
+    await mkdir(dirname(destination), { recursive: true });
+    await writeFile(destination, content);
+  }));
+}
+
+async function readProjectAtCommit(commit, root = currentProjectRoot) {
+  const raw = gitFileAt(root, commit, ".weave/deck.json");
+  if (!raw) throw new Error("History entry does not contain a project deck.");
+  let manifest;
+  try { manifest = JSON.parse(raw); } catch { throw new Error("History entry has an invalid project deck."); }
+  if (manifest.schemaVersion !== 2) {
+    // Keep legacy history readable without checking it out. The existing
+    // migration helpers normalize the historical payload into source slides.
+    if (manifest.blocks !== undefined) return projectFromBlockSlides(manifest.title ?? seedTitle, manifest.accent ?? "#f6b84b", (manifest.slides ?? []).map((slide, index) => ({ ...slide, id: slide.id ?? `slide-${index + 1}`, title: slide.title ?? `Slide ${index + 1}`, blocks: slide.blocks ?? [] })));
+    const legacySlides = Array.isArray(manifest.slides) ? await Promise.all(manifest.slides.map(async (slide, index) => migrateLegacySlide({ ...slide, html: slide?.html ?? gitFileAt(root, commit, `slides/${slide?.id}.html`) }, index, await templateCatalog(root), manifest.accent ?? "#f6b84b"))) : [];
+    if (!legacySlides.length) throw new Error("History entry has an invalid project deck.");
+    return { title: String(manifest.title ?? seedTitle), defaultTemplateId: legacySlides[0].templateId, slides: legacySlides };
+  }
+  if (!Array.isArray(manifest.slides) || !manifest.slides.length) throw new Error("History entry has an invalid project deck.");
+  const slides = manifest.slides.map((slide, index) => {
+    const id = String(slide?.id ?? `slide-${index + 1}`);
+    const html = gitFileAt(root, commit, `slides/${id}.html`);
+    if (!html) throw new Error(`History entry is missing slide ${id}.`);
+    return { id, title: String(slide.title ?? `Slide ${index + 1}`), notes: String(slide.notes ?? ""), templateId: String(slide.templateId ?? ""), layoutId: String(slide.layoutId ?? ""), accent: String(slide.accent ?? ""), html };
+  });
+  return { title: String(manifest.title ?? ""), defaultTemplateId: String(manifest.defaultTemplateId ?? ""), slides };
+}
+
 export async function checkoutHistory(commit) {
   if (!/^[0-9a-f]{7,40}$/i.test(commit)) throw new Error("Invalid history id.");
-  if (managedStatus()) throw new Error("Save the current changes before restoring history.");
   runGit(["cat-file", "-e", `${commit}^{commit}`]);
-  if (runGit(["branch", "--show-current"]) !== "main") runGit(["checkout", "main"]);
-  runGit(["restore", "--source", commit, "--staged", "--worktree", "--", ".weave/deck.json", "slides", "styles", "AGENTS.md"]);
-  for (const path of [".codex/skills", "assets", "templates"]) {
-    if (runGit(["ls-tree", "-d", "--name-only", commit, path])) {
-      runGit(["restore", "--source", commit, "--staged", "--worktree", "--", path]);
-    } else {
-      await rm(join(currentProjectRoot, path), { recursive: true, force: true });
-      if (runGit(["ls-files", "--", path])) runGit(["add", "-A", "--", path]);
-    }
+  const previewPath = join(currentProjectRoot, ".weave", "history-preview.json");
+  if (!existsSync(previewPath)) {
+    const snapshot = { deck: await readProject(currentProjectRoot), css: await readDeckCss(currentProjectRoot), templates: await readTemplates(currentProjectRoot) };
+    await writeFile(previewPath, `${JSON.stringify(snapshot, null, 2)}\n`);
   }
-  const restored = commitIfChanged(`Restore history ${commit.slice(0, 12)}`);
-  if (restored) await ensureProject();
+  // A history preview is a draft on top of the current main. It must not move
+  // HEAD or rewrite the existing commit graph.
+  const target = await readProjectAtCommit(commit, currentProjectRoot);
+  await materializeMissingGitDirectoryFiles(commit, "assets", currentProjectRoot);
+  await restoreGitDirectoryToDraft(commit, "templates", currentProjectRoot, true);
+  await writeProjectUnlocked(target, null, currentProjectRoot);
+  const css = gitFileAt(currentProjectRoot, commit, "styles/deck.css");
+  if (css !== null) await restoreDeckCss(css, currentProjectRoot);
   return getRevision();
 }
 
-export function checkoutMain() {
-  if (managedStatus()) throw new Error("Save the current changes before returning to the latest version.");
-  runGit(["checkout", "main"]);
+export async function checkoutMain() {
+  const previewPath = join(currentProjectRoot, ".weave", "history-preview.json");
+  if (!existsSync(previewPath)) throw new Error("No history preview is open.");
+  const snapshot = JSON.parse(await readFile(previewPath, "utf8"));
+  const templates = await normalizeTemplatePackages(snapshot.templates);
+  await rm(templatesRoot(currentProjectRoot), { recursive: true, force: true });
+  await writeTemplatePackages(templates, currentProjectRoot);
+  await writeProjectUnlocked(snapshot.deck, null, currentProjectRoot);
+  await restoreDeckCss(snapshot.css, currentProjectRoot);
+  await rm(previewPath, { force: true });
+  return getRevision(currentProjectRoot);
 }
 
 export async function checkoutVariation(branch) {
@@ -1015,8 +1305,6 @@ export async function checkoutVariation(branch) {
 }
 
 export function createVariationBranch() {
-  if (managedStatus()) throw new Error("Save current changes before creating a direction.");
-  if (runGit(["branch", "--show-current"]) !== "main") runGit(["checkout", "main"]);
   const existing = new Set(getVariations().map((item) => item.branch));
   let index = 0;
   let branch;
@@ -1053,7 +1341,7 @@ export function discardVariation(branch, root = currentProjectRoot) {
   if (!/^weave\/variation\/[a-z]+$/.test(branch)) return;
   if (runGit(["branch", "--show-current"], { cwd: root }) === branch) {
     runGit(["restore", "--staged", "--worktree", "."], { cwd: root });
-    runGit(["clean", "-fd", "--", ".weave", "slides", "styles", ".codex/skills"], { cwd: root });
+    runGit(["clean", "-fd", "--", ".weave/deck.json", "slides", "styles", ".codex/skills"], { cwd: root });
     runGit(["checkout", "main"], { cwd: root });
   }
   if (getVariations(root).some((item) => item.branch === branch)) runGit(["branch", "-D", branch], { cwd: root });
@@ -1324,17 +1612,10 @@ async function persistCurrentProject() {
 }
 
 export async function assertSwitchable(targetSlug = null) {
-  if (managedStatus()) throw Object.assign(new Error("The current project has uncommitted changes."), { code: "WEAVE_PROJECT_DIRTY" });
-  if (getVariations().length) throw Object.assign(new Error("Current project has open proposal branches."), { code: "WEAVE_PROJECT_BLOCKED" });
-  if (targetSlug) {
-    const target = join(workspacesRoot, assertSlug(targetSlug));
-    if (await projectExists(targetSlug)) {
-      let targetVariations = [];
-      try { targetVariations = gitAt(target, ["for-each-ref", "--format=%(refname:short)", "refs/heads/weave/variation"]).split("\n").filter(Boolean); } catch {}
-      if (targetVariations.length) throw Object.assign(new Error(`Target project has ${targetVariations.length} open proposal branches.`), { code: "WEAVE_PROJECT_BLOCKED" });
-    }
-  }
-  if (runGit(["branch", "--show-current"]) === "") checkoutMain();
+  // Project switching is intentionally independent from draft cleanliness,
+  // open directions, and Agent activity. Drafts are already persisted on disk;
+  // each pending turn remains associated with its originating project root.
+  if (targetSlug) assertSlug(targetSlug);
 }
 
 async function createProjectUnlocked({ title, templateId }) {
@@ -1455,7 +1736,7 @@ export async function duplicateProject(slug) {
   const sourceReferences = resolve(referencesRoot(source));
   const sourceReferencesIndex = join(sourceReferences, "index.json");
   await cp(source, target, { recursive: true, filter: (path) => {
-    if (path.split("/").includes(".git") || /\.slides-[^/]+\.(staged|previous)$/.test(path)) return false;
+    if (path.split("/").includes(".git") || /[\\/]\.weave[\\/]recovery(?:[\\/]|$)/.test(path) || /\.slides-[^/]+\.(staged|previous)$/.test(path)) return false;
     const absolutePath = resolve(path);
     if (absolutePath === sourceReferences || !absolutePath.startsWith(`${sourceReferences}/`)) return true;
     return absolutePath === sourceReferencesIndex;

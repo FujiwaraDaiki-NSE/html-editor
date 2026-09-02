@@ -45,6 +45,21 @@ export function editorEnvelope(input) {
   const envelope = {};
   const slide = String(input.slide ?? "");
   if (slide) envelope.slide = slide;
+  if (input.modificationScope && typeof input.modificationScope === "object" && !Array.isArray(input.modificationScope)) {
+    const kind = String(input.modificationScope.kind ?? "");
+    if (["element", "current-slide", "selected-slides", "deck"].includes(kind)) {
+      const slideIds = Array.isArray(input.modificationScope.slideIds)
+        ? [...new Set(input.modificationScope.slideIds.map((id) => String(id)).filter(Boolean))].slice(0, 100)
+        : [];
+      const elementId = input.modificationScope.elementId === null ? null : String(input.modificationScope.elementId ?? "");
+      if (kind === "element" && !elementId) throw new Error("Element scope requires an elementId.");
+      if (["element", "current-slide", "selected-slides"].includes(kind) && slideIds.length === 0) throw new Error(`${kind} scope requires slideIds.`);
+      envelope.modificationScope = { kind, slideIds, elementId };
+    }
+  }
+  const executionMode = String(input.executionMode ?? "");
+  if (["apply", "propose", "plan"].includes(executionMode)) envelope.executionMode = executionMode;
+  if (input.allowSkillChanges === true) envelope.allowSkillChanges = true;
   if (input.selected && typeof input.selected === "object" && !Array.isArray(input.selected)) {
     const selected = {
       id: String(input.selected.id ?? ""),
@@ -86,6 +101,10 @@ export function editorEnvelope(input) {
 
 export const contextPromptRules = `The envelope carries only what the agent cannot observe; read slide HTML, CSS, templates, and history from project files.
 slide is the slide id, whose content is in slides/<slide>.html.
+modificationScope is a hard write boundary, separate from reference context. element permits only elementId on the listed slide; current-slide and selected-slides permit only the listed slideIds; deck permits the complete deck.
+executionMode controls delivery: apply edits files, propose returns a change proposal without editing, and plan returns a plan before any edit.
+allowSkillChanges is an explicit permission. Project skills must remain unchanged unless it is true and executionMode is apply.
+Never widen modificationScope because annotations, attachments, or other references are present. If the request requires a wider scope, stop and ask for explicit permission.
 Those files hold the editor canvas as of the start of this turn, so read them rather than asking for the markup.
 selected.id and annotation weaveId are values of data-weave-id attributes.
 If a snapshot and an id disagree, prefer the id.

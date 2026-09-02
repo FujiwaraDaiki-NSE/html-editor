@@ -19,3 +19,11 @@ test("preserves single-method route guards and leaves unknown routes to the 404 
   assert.deepEqual(routeMethodDecision("/api/save", "GET"), { allowed: false, allow: "POST" });
   assert.deepEqual(routeMethodDecision("/missing", "POST"), { allowed: true, allow: null });
 });
+
+test("exposes draft, milestone, and exploration session actions as POST routes", () => {
+  assert.deepEqual(routeMethodDecision("/api/draft", "POST"), { allowed: true, allow: "POST" });
+  assert.deepEqual(routeMethodDecision("/api/milestones", "POST"), { allowed: true, allow: "POST" });
+  assert.deepEqual(routeMethodDecision("/api/variations", "GET"), { allowed: true, allow: "GET" });
+  assert.deepEqual(routeMethodDecision("/api/variations/pause", "POST"), { allowed: true, allow: "POST" });
+  assert.deepEqual(routeMethodDecision("/api/variations/import", "POST"), { allowed: true, allow: "POST" });
+});
