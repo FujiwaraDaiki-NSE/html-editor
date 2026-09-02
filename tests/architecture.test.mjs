@@ -64,32 +64,44 @@ test("policy gates protect commits while turn writes stay available", async () =
   assert.doesNotMatch(writeBody, /auditContentPolicy/);
 });
 
-test("completed Agent turns gate ordinary updates and keep variation handling intact", async () => {
+test("completed Agent turns enforce scope and merge concurrent drafts before publishing", async () => {
   const [source, page] = await Promise.all([
     readFile(new URL("../server/local-api.mjs", import.meta.url), "utf8"),
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
   ]);
   const completion = source.slice(source.indexOf('codex.on("notification"'), source.indexOf("const server = createServer"));
-  const write = completion.indexOf("await writeProjectUnlocked(project, null, pending.root)");
+  const write = completion.indexOf("await writeProjectUnlocked(merged.deck, null, pending.root)");
   const ordinaryGate = completion.indexOf("} else {\n          await assertCommittable(pending.root);\n        }");
   const updated = completion.indexOf('status: "updated"');
-  assert.ok(write >= 0 && write < ordinaryGate, "failed output must remain written for inspection before auditing");
+  assert.ok(write >= 0 && write < ordinaryGate, "merged output must be written before auditing");
   assert.ok(ordinaryGate >= 0, "ordinary completion must run the committable audit");
   assert.ok(ordinaryGate < updated, "ordinary audit must run before the updated event");
-  assert.match(completion, /status: "error",\n\s+error: error\.message/);
+  assert.match(completion, /status: "error",\n\s+projectRoot: pending\.root,\n\s+error: error\.message/);
   assert.match(completion, /status: "updated",[\s\S]*?baseline: pending\.preTurnDeck/);
   assert.match(completion, /\.\.\.\(error\.code \? \{ code: error\.code \} : \{\}\)/);
   assert.match(completion, /\.\.\.\(Array\.isArray\(error\.diagnostics\) \? \{ diagnostics: error\.diagnostics \} : \{\}\)/);
   assert.match(completion, /if \(pending\.variation\) \{[\s\S]*?commitIfChanged\([^\n]+pending\.root\)/);
   assert.match(completion, /await restoreFailedTurn\(pending\)/);
-  assert.match(source, /pendingTurn\(\{[^\n]+preTurnDeck: deck, preTurnCss/);
+  assert.match(completion, /await restoreProjectSkillSnapshot\(pending\.root, pending\.projectSkillSnapshot\)/);
+  assert.match(completion, /projectRoot: pending\.root/);
+  assert.match(source, /pendingTurn\(\{[^\n]+workflow[^\n]+preTurnDeck: deck/);
+  assert.match(completion, /validateAgentResult\(pending\.workflow, pending\.baseDeck, agentDeck\)/);
+  assert.match(completion, /mergeEditorDecks\(\{ base: pending\.baseDeck, agent: agentDeck, current: currentDraft/);
+  assert.match(source, /pending\.humanDraft = structuredClone\(payload\.deck\)/);
+  assert.match(source, /recentAgentMerges\.set\(pending\.root/);
+  assert.match(source, /mergeEditorDecks\(\{ base: recent\.base, agent: recent\.agent, current: payload\.deck \}\)/);
+  assert.match(source, /restoreAgentManagedFiles\(pending/);
   assert.match(source, /await restoreDeckCss\(pending\.preTurnCss, pending\.root\)/);
   assert.match(source, /discardVariation\(pending\.branch, pending\.root\)/);
-  assert.match(source, /return codex\.activeTurns\.size > 0 \|\| pendingTurns\.size > 0/);
+  assert.match(source, /some\(\(turn\) => turn\.root === root\)/);
   assert.match(source, /const finalizations = \[\.\.\.pendingTurns\.values\(\)\]\.map\(\(pending\) => pending\.finalization\)/);
   assert.match(source, /await Promise\.all\(finalizations\)/);
   assert.match(page, /projectEventDecision\(envelope\.payload\)/);
   assert.match(page, /setProjectEventDiagnostics\(projectEvent\.diagnostics\)/);
+  assert.match(page, /const serverConflicts = Array\.isArray\(envelope\.payload\?\.conflicts\)/);
+  assert.match(page, /mergeEditorDecks\(\{ base: envelope\.payload\.baseline, agent: state\.deck/);
+  assert.match(page, />現在の編集を保持<\/button>/);
+  assert.match(page, />Agentの変更を採用<\/button>/);
   assert.match(page, /if \(projectEvent\.error\) setApiError\(projectEvent\.error\)/);
   assert.match(
     page,
@@ -212,14 +224,15 @@ test("commands are grouped by editing, project, and delivery intent", async () =
   assert.match(css, /\.canvas-tool-group \+ \.canvas-tool-group/);
 });
 
-test("project changes preserve browser-only edits until they are saved", async () => {
+test("project changes autosave drafts and switching never requires a save gate", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const switchProject = page.slice(page.indexOf("const switchProject = async"), page.indexOf("const galleryMutation"));
   const createProject = page.slice(page.indexOf("const createProject = async"), page.indexOf("const relativeProjectTime"));
-  assert.match(switchProject, /if \(!saved && !savedLocally\)/);
-  assert.match(createProject, /if \(!saved && !savedLocally\)/);
-  assert.match(page, /galleryDialog\.kind === "create"/);
-  assert.match(page, /return unchanged;/);
+  assert.doesNotMatch(switchProject, /!saved|turnBusy|blocked/);
+  assert.doesNotMatch(createProject, /!saved|turnBusy|blocked/);
+  assert.match(page, /fetch\(`\$\{apiBase\}\/draft`/);
+  assert.match(page, /setDraftSync\("synced"\)/);
+  assert.doesNotMatch(page, /galleryDialog\.kind === "(?:dirty|create|turn)"/);
 });
 
 test("project writes bind to an explicit root across asynchronous work", async () => {
@@ -241,20 +254,19 @@ test("the content-bearing local slide library is removed", async () => {
   }
 });
 
-test("the slide canvas opens at 100% zoom", async () => {
+test("the slide canvas reports the actual rendered zoom and supports fit and 100%", async () => {
   const [page, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
   ]);
   assert.match(page, /const defaultCanvasZoom = 1;/);
-  assert.match(page, /useState<number \| null>\(defaultCanvasZoom\)/);
-  assert.match(page, /const zoomLevel = manualZoom \?\? defaultCanvasZoom;/);
-  assert.match(page, /const slideScale = fitScale \* zoomLevel;/);
-  assert.match(page, /data-zoom-mode=\{zoomLevel <= defaultCanvasZoom \? "fit" : "manual"\}/);
-  assert.match(page, /Math\.round\(zoomLevel \* 100\)/);
-  assert.match(page, /aria-label="拡大率を100%に戻す" onClick=\{\(\) => setManualZoom\(defaultCanvasZoom\)\}/);
-  assert.match(page, /aria-label="画面に合わせる" onClick=\{\(\) => setManualZoom\(null\)\}/);
-  assert.match(page, /const \[inspectorOpen, setInspectorOpen\] = useState\(true\)/);
+  assert.match(page, /useState<number \| null>\(null\)/);
+  assert.match(page, /const slideScale = manualZoom \?\? fitScale;/);
+  assert.match(page, /const zoomMode = manualZoom === null \? "fit" : "manual";/);
+  assert.match(page, /Math\.round\(slideScale \* 100\)/);
+  assert.match(page, /aria-label="実寸で表示" onClick=\{\(\) => setManualZoom\(defaultCanvasZoom\)\}/);
+  assert.match(page, /aria-label=\{`画面に合わせる・現在\$\{Math\.round\(slideScale \* 100\)\}%`\}/);
+  assert.match(page, /const \[inspectorOpen, setInspectorOpen\] = useState\(false\)/);
   assert.match(page, /data-focus=\{canvasFocused \? "canvas" : "workspace"\}/);
   assert.match(page, /aria-label=\{canvasFocused \? "集中表示を終了" : "キャンバスに集中"\}/);
   assert.match(css, /\.canvas-area \{[^}]*container-type: size/);
@@ -288,7 +300,7 @@ test("a selected element can be referenced without knowing the pointing shortcut
   ]);
   const pointerReferenceHelper = page.match(/const pickPointerElement[\s\S]{0,200}?\n\s+(\w+)\([^;\n]*\);/)?.[1];
   const buttonReferenceHelper = page.match(/const referenceSelectedElement[\s\S]{0,200}?\n\s+(\w+)\([^;\n]*\);/)?.[1];
-  const referenceButton = page.match(/agentReady &&[\s\S]{0,200}<button[^>]*onClick=\{referenceSelectedElement\}[^>]*>@ Agent<\/button>/)?.[0] ?? "";
+  const referenceButton = page.match(/agentReady &&[\s\S]{0,200}<button[^>]*onClick=\{referenceSelectedElement\}[^>]*>Agentへ指示<\/button>/)?.[0] ?? "";
   assert.ok(pointerReferenceHelper);
   assert.equal(buttonReferenceHelper, pointerReferenceHelper);
   assert.match(referenceButton, /onClick=\{referenceSelectedElement\}/);
@@ -302,14 +314,17 @@ test("issue 3 keeps every primary surface reachable and removes implementation-f
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../app/layout.tsx", import.meta.url), "utf8"),
   ]);
-  for (const view of ["キャンバス", "Agent", "履歴", "キー", "スライド", "詳細", "設定"]) assert.match(page, new RegExp(`>${view}<\\/button>`));
+  for (const view of ["キャンバス", "スライド", "Agent"]) assert.match(page, new RegExp(`>${view}<\\/button>`));
+  assert.match(page, />その他\{/);
+  assert.match(page, />履歴とマイルストーン<\/button>/);
+  assert.match(page, />スキル<\/button>/);
   assert.match(css, /@media \(max-width: 900px\)[\s\S]*\.mobile-tabs/);
   assert.match(page, /className="slide-thumbnail"[\s\S]*dangerouslySetInnerHTML/);
   assert.doesNotMatch(page, /mini-[1-4]|Working tree clean|Unsaved editor changes|Commit label|Return to latest on main|>Code</);
   assert.match(page, /className="document-title-field" data-unsaved=/);
   assert.doesNotMatch(css, /unsaved-dot::after/);
   assert.match(page, /sel\.container && sel\.kind !== "metrics"/);
-  assert.match(page, /デザイン案を比較/);
+  assert.match(page, /探索案を比較/);
   assert.match(page, /Agentの変更/);
   assert.match(layout, /<html lang="ja">/);
   assert.match(css, /font-family: var\(--font-geist-sans\)/);
@@ -317,7 +332,7 @@ test("issue 3 keeps every primary surface reachable and removes implementation-f
 
 test("the primary interface is Japanese and every button receives hover help", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  for (const label of ["プレゼン・書き出し", "バージョン履歴", "キーボードショートカット", "インスペクター", "すべて保存済み"]) {
+  for (const label of ["プレゼン・書き出し", "履歴とマイルストーン", "キーボードショートカット", "デザイン", "同期済み"]) {
     assert.match(page, new RegExp(label));
   }
   assert.match(page, /document\.querySelectorAll<HTMLButtonElement>\("button"\)/);
@@ -391,7 +406,7 @@ test("the object tree is an accessible collapsible section with stable body styl
 test("canvas class operations support SVG blocks", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   // SVG blocks expose className as SVGAnimatedString, so canvas nodes must use classList/setAttribute.
-  assert.doesNotMatch(page, /\.className\.split\(/);
+  assert.doesNotMatch(page, /\b(?:node|child|target|element)\.className\.split\(/);
   assert.doesNotMatch(page, /\b(?:node|child|target|element)\.className\s*=/);
 });
 
@@ -424,7 +439,11 @@ test("project switching serializes root changes through ensure and Codex retarge
     assert.match(route, /await enqueueProjectSwitch\(async \(\) => \{/);
     assert.ok(route.indexOf("await switchProject") < route.indexOf("await ensureProject"));
     assert.ok(route.indexOf("await ensureProject") < route.indexOf("await retargetCodex"));
+    assert.match(route, /if \(pendingTurns\.size === 0\) await retargetCodex\(\)/);
   }
+  assert.match(source, /finishPendingTurn[\s\S]*enqueueProjectSwitch[\s\S]*retargetCodex\(targetRoot\)/);
+  assert.match(source, /async function retargetCodex\(targetRoot = projectRoot\(\)\)[\s\S]*codexProjectRoot = targetRoot/);
+  assert.match(source, /projectReady: codexProjectRoot === projectRoot\(\)/);
 });
 
 test("development web server exposes one strict network port and proxies the loopback API", async () => {

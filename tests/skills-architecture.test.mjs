@@ -30,7 +30,8 @@ test("Skills is a first-class activity on desktop and mobile", () => {
   assert.match(page, /skillStatus\.state === "error" \? "alert" : "status"/);
   assert.match(page, /skillDialogTriggerRef/);
   assert.match(page, /event\.key !== "Tab"/);
-  assert.match(page, /mobileView === "skills"/);
+  assert.match(page, /showActivity\("skills"\)/);
+  assert.match(page, />その他\{/);
   assert.match(css, /\.skill-card-list/);
   assert.match(css, /\.skill-dialog-backdrop/);
   assert.match(css, /grid-template-columns: repeat\(4, 1fr\)/);
@@ -55,7 +56,9 @@ test("Skills API has explicit scoped CRUD, upload, and move routes", () => {
   assert.match(api, /runSkillMutation\(operation\)[\s\S]*enqueueProjectSwitch[\s\S]*activeProjectTurn/);
   assert.match(skills, /unknownFrontmatter/);
   assert.match(project, /managedPaths = \[[\s\S]*\.codex\/skills/);
-  assert.match(project, /for \(const path of \["\.codex\/skills", "assets", "templates"\]\)/);
+  assert.match(project, /createAgentFileSnapshot/);
+  assert.match(project, /for \(const name of \["assets", "templates", "AGENTS\.md", "references", "\.codex\/skills"\]\)/);
+  assert.match(project, /restoreGitDirectoryToDraft\(commit, "templates", currentProjectRoot, true\)/);
 });
 
 test("Legacy cramped Settings skill toggles are removed but catalog support remains card-local", () => {

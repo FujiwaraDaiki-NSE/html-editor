@@ -5,7 +5,7 @@ import { partitionPendingRequests } from "../app/codex/selectors.ts";
 import { deriveTurnPresentation, IDLE_TURN_SUBMISSION, isTerminalTurnStatus, resetTurnSubmission } from "../app/codex/turn-status.ts";
 import { beginRequestResolution, finishRequestResolution } from "../app/codex/request-state.ts";
 
-test("Codex chat separates conversation, turn work logs, and blocking requests", async () => {
+test("Agent production tasks separate messages, work logs, and blocking requests", async () => {
   const [page, itemCard, requestCard, css] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/codex/components/ItemCard.tsx", import.meta.url), "utf8"),
@@ -24,12 +24,12 @@ test("Codex chat separates conversation, turn work logs, and blocking requests",
   assert.match(page, /phase: "accepted"/);
   assert.match(page, /turnId: result\.turn\.id/);
   assert.match(page, /turnSubmission\.phase !== "idle" \|\| codexState\.activeTurnId !== null/);
-  assert.match(page, /const canSubmitAgentMessage = !turnBusy \|\| agentRunning/);
-  assert.match(page, /別の会話で実行中/);
+  assert.match(page, /const canSubmitAgentMessage = !turnInFlightRef\.current \|\| agentRunning/);
+  assert.match(page, /別タスクで実行中/);
   assert.match(page, /resyncPendingRequests/);
   assert.match(page, /result: "result_unknown"/);
   assert.match(page, /setTurnSubmission\(IDLE_TURN_SUBMISSION\)/);
-  assert.match(page, /aria-label="Agentとの会話" aria-busy=\{turnBusy\}/);
+  assert.match(page, /aria-label="制作タスクのやり取り" aria-busy=\{turnBusy\}/);
   assert.match(page, /role="status" aria-live="polite" aria-busy=\{turnBusy\}/);
   assert.match(page, /data-turn-state=\{turnPresentation\}/);
   assert.match(page, /thread-popover" role="dialog" aria-modal="true"/);

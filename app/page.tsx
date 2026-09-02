@@ -12,11 +12,13 @@ import { composeSlideHtml, contentSlotSelector, extractSlideSourceHtml, titleFro
 import { advancedControlKeys, allControlKeys, applyBlockPosition, applySize, applyUtilityClass, blockPositionOptions, containerControlKeys, decorationControlKeys, imageControlKeys, listControlKeys, migrateSlideHtmlToTailwind, ratioOptions, readBlockPosition, readSize, readUtilityClass, sizeIntents, slideControlGroups, textControlKeys } from "../shared/tailwind-slide.mjs";
 import { canSendTurn, insertReferenceAt, nextOrder, rectFromClientBox, rectFromPoints, refreshAnnotations, resizeRect, resolveReferences, toSlidePoint, translateRect } from "../shared/annotation.mjs";
 import { editorEnvelope, overflowingIds } from "../shared/context.mjs";
+import { applyEditorChange, applyEditorHistory, mergeEditorDecks } from "../shared/editor-workflow.mjs";
 import { AnnotationAttachment } from "./components/AnnotationAttachment";
 import { AnnotationLegend } from "./components/AnnotationLegend";
 import { AnnotationOverlay } from "./components/AnnotationOverlay";
 import type { Annotation, AnnotationGestureKind, AnnotationRect, PointerCandidate, ResizeHandle } from "./components/AnnotationOverlay";
 import { textExcerptOfNode } from "./components/editable-text-utils";
+import { sourceElementIdAtOffset, sourceOffsetForElement, validateEditableSlideSource } from "./editor-source";
 import { ItemCard } from "./codex/components/ItemCard";
 import { ServerRequestCard } from "./codex/components/ServerRequestCard";
 import { codexReducer, initialCodexState } from "./codex/reducer";
@@ -43,11 +45,34 @@ type SkillDraft = { scope: SkillScope; name: string; description: string; body: 
 type SkillDialog = { mode: "create" | "edit"; source: SkillEntry | null };
 type SkillStatus = { state: "idle" | "busy" | "success" | "error"; message: string };
 type ActivityView = "agent" | "history" | "shortcuts" | "skills" | "settings";
-type MobileView = "canvas" | "agent" | "history" | "shortcuts" | "skills" | "slides" | "inspector" | "settings";
+type MobileView = "canvas" | "agent" | "history" | "shortcuts" | "skills" | "slides" | "inspector" | "settings" | "more";
 type InspectorView = "layers" | "design";
 type OpenPopover = "delivery" | "threads" | "addBlock" | "layouts" | "newSlide" | "slideMenu" | "quality" | "agentModel" | "references" | null;
 type VariationPreview = { branch: string; label: string; css: string; deck: ServerState["deck"] };
 type ChangedTarget = { slideId: string; elementId: string };
+type ChangeScope = "element" | "current-slide" | "selected-slides" | "deck";
+type ExecutionMode = "apply" | "propose" | "plan";
+type DraftSyncState = "synced" | "saving" | "offline" | "error";
+type Density = "comfortable" | "compact";
+type SourceDiagnostic = { message: string; line: number; column: number };
+type SelectionToolbarPosition = { left: number; top: number; placement: "above" | "below" | "dock" };
+type QualityDiagnostic = { id: string; code: string; severity: "error" | "warning" | "suggestion"; message: string; explanation: string; fixSuggestion: string; slideId: string | null; elementId: string | null; source: string };
+type MergeConflict = { path: string; unit: "deck" | "slide" | "element"; slideId?: string; elementId?: string; base: unknown; current: unknown; agent: unknown; explanation: string };
+
+function reviewChangeMatches(deck: { title: string; defaultTemplateId: string; slides: SlideDoc[] }, change: any, direction: "undo" | "redo") {
+  const expected = direction === "undo" ? change.after : change.before;
+  const expectedPresent = direction === "undo" ? change.afterPresent !== false : change.beforePresent !== false;
+  if (change.type === "slide-move") return JSON.stringify(deck.slides.map((slide) => slide.id)) === JSON.stringify(expected);
+  if (change.type === "slide-add" || change.type === "slide-delete") {
+    const current = deck.slides.find((slide) => slide.id === change.slideId);
+    return expectedPresent ? current !== undefined && JSON.stringify(current) === JSON.stringify(expected) : current === undefined;
+  }
+  if (change.elementId) return false;
+  const owner: any = change.slideId ? deck.slides.find((slide) => slide.id === change.slideId) : change.path?.[0] === "settings" ? (deck as any).settings : deck;
+  if (!owner || !change.key) return false;
+  const currentPresent = Object.prototype.hasOwnProperty.call(owner, change.key);
+  return expectedPresent ? currentPresent && JSON.stringify(owner[change.key]) === JSON.stringify(expected) : !currentPresent;
+}
 
 type ServerState = {
   deck: { title: string; defaultTemplateId: string; slides: SlideDoc[] };
@@ -55,10 +80,12 @@ type ServerState = {
   templates: TemplateDoc[];
   references: ReferenceShelfEntry[];
   history: HistoryEntry[];
-  variations: Array<{ branch: string; label: string; commit: string; message: string; status: "ready" | "generating" }>;
-  project: { root: string; slug?: string; branch: string; commit: string; revision?: string; clean: boolean };
+  variations: Array<{ branch: string; label: string; commit: string; message: string; status: "ready" | "generating" | "paused" | "archived"; state?: "pending" | "ready" | "paused" | "archived" }>;
+  project: { root: string; slug?: string; branch: string; commit: string; revision?: string; clean: boolean; historyPreview?: boolean; backgroundTasks?: Array<{ threadId?: string; turnId?: string; status: string; variation?: boolean; branch?: string }> };
+  backgroundTasks?: Record<string, Array<{ threadId?: string; turnId?: string; status: string; variation?: boolean; branch?: string }>>;
   codex: {
     ready: boolean;
+    projectReady: boolean;
     connection: { status: "connecting" | "connected" | "reconnecting" | "disconnected" | "incompatible"; error: string | null; cliVersion?: string | null };
     version: { matches: boolean; running: string; generated: string; warning: string | null } | null;
     catalog: { models: any[]; skills: any[]; hooks: any[]; mcpServers: any[]; account: Record<string, any> | null; modelProvider: Record<string, any> | null };
@@ -79,7 +106,7 @@ type ServerState = {
 
 type HistoryEntry = { id: string; shortId: string; message: string; date: string };
 type ProjectSummary = { slug: string; title: string; slideCount: number; updatedAt: string | null; current: boolean; blocked: boolean; blockedCount: number; thumbnailHtml: string; css: string };
-type GalleryDialog = { kind: "rename"; slug: string; title: string } | { kind: "archive"; slug: string; title: string } | { kind: "dirty"; slug: string; title: string } | { kind: "create"; title: string } | { kind: "turn"; slug: string; title: string };
+type GalleryDialog = { kind: "rename"; slug: string; title: string } | { kind: "archive"; slug: string; title: string };
 
 const apiBase = "/api";
 const defaultCanvasZoom = 1;
@@ -127,8 +154,8 @@ const slideNavKey = "weave.slideNav";
 const slideNavListeners = new Set<() => void>();
 const slideNavStore = {
   subscribe(listener: () => void) { slideNavListeners.add(listener); return () => { slideNavListeners.delete(listener); }; },
-  read: (): SlideNav => (window.localStorage.getItem(slideNavKey) === "rail" ? "rail" : "filmstrip"),
-  serverRead: (): SlideNav => "filmstrip",
+  read: (): SlideNav => "rail",
+  serverRead: (): SlideNav => "rail",
   write(value: SlideNav) { window.localStorage.setItem(slideNavKey, value); slideNavListeners.forEach((listener) => listener()); },
 };
 
@@ -140,6 +167,15 @@ const sidebarWidthStore = {
   read: () => clampSidebarWidth(Number(window.localStorage.getItem(sidebarWidthKey)) || 340),
   serverRead: () => 340,
   write(value: number) { window.localStorage.setItem(sidebarWidthKey, String(clampSidebarWidth(value))); sidebarWidthListeners.forEach((listener) => listener()); },
+};
+
+const densityKey = "weave.density";
+const densityListeners = new Set<() => void>();
+const densityStore = {
+  subscribe(listener: () => void) { densityListeners.add(listener); return () => { densityListeners.delete(listener); }; },
+  read: (): Density => window.localStorage.getItem(densityKey) === "compact" ? "compact" : "comfortable",
+  serverRead: (): Density => "comfortable",
+  write(value: Density) { window.localStorage.setItem(densityKey, value); densityListeners.forEach((listener) => listener()); },
 };
 
 type AgentModel = { model: string; effort: string };
@@ -380,13 +416,14 @@ export default function Home() {
   const [slides, setSlides] = useState<SlideDoc[]>(initialSlides);
   const [templates, setTemplates] = useState<TemplateDoc[]>([]);
   const [activeSlide, setActiveSlide] = useState(1);
+  const [selectedSlideIds, setSelectedSlideIds] = useState<Set<string>>(new Set());
   const [selectedId, setSelectedIdState] = useState<string | null>(null);
   const [deckCss, setDeckCss] = useState<string>(defaultDeckCss);
-  const [mode, setMode] = useState<"preview" | "code">("preview");
+  const [mode, setMode] = useState<"preview" | "source" | "split">("preview");
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [accent, setAccent] = useState("#f6b84b");
   const [fitScale, setFitScale] = useState(0.68);
-  const [manualZoom, setManualZoom] = useState<number | null>(defaultCanvasZoom);
+  const [manualZoom, setManualZoom] = useState<number | null>(null);
   const [injectKey, setInjectKey] = useState(0);
   const [activeVariation, setActiveVariation] = useState("main");
   const [variations, setVariations] = useState<ServerState["variations"]>([]);
@@ -394,6 +431,8 @@ export default function Home() {
   const [variationPreviews, setVariationPreviews] = useState<VariationPreview[] | null>(null);
   const [variationCompareLoading, setVariationCompareLoading] = useState(false);
   const [variationPrompt, setVariationPrompt] = useState("見出しを簡潔にし、重要な数値を強調した大胆な構成にしてください。");
+  const [variationComparisonMode, setVariationComparisonMode] = useState<"side-by-side" | "overlay">("side-by-side");
+  const [variationDiffOnly, setVariationDiffOnly] = useState(true);
   const [openPopover, setOpenPopover] = useState<OpenPopover>(null);
   const [saved, setSaved] = useState(true);
   const [promptDraft, setPromptDraft] = useState("");
@@ -402,6 +441,7 @@ export default function Home() {
   const [codexState, dispatchCodex] = useReducer(codexReducer, initialCodexState);
   const slideNav = useSyncExternalStore(slideNavStore.subscribe, slideNavStore.read, slideNavStore.serverRead);
   const sidebarWidth = useSyncExternalStore(sidebarWidthStore.subscribe, sidebarWidthStore.read, sidebarWidthStore.serverRead);
+  const density = useSyncExternalStore(densityStore.subscribe, densityStore.read, densityStore.serverRead);
   const [threadSearch, setThreadSearch] = useState("");
   const [showArchivedThreads, setShowArchivedThreads] = useState(false);
   const [threadMenuOpen, setThreadMenuOpen] = useState(false);
@@ -434,14 +474,13 @@ export default function Home() {
   const [galleryNow, setGalleryNow] = useState(0);
   const [gallerySwitching, setGallerySwitching] = useState<string | null>(null);
   const [galleryMenu, setGalleryMenu] = useState<string | null>(null);
-  const [galleryTip, setGalleryTip] = useState<string | null>(null);
   const [galleryDialog, setGalleryDialog] = useState<GalleryDialog | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [newProjectTitle, setNewProjectTitle] = useState("");
   const [newProjectTemplate, setNewProjectTemplate] = useState("orbit");
   const [newProjectCreating, setNewProjectCreating] = useState(false);
   const [showPresenter, setShowPresenter] = useState(false);
-  const [inspectorOpen, setInspectorOpen] = useState(true);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
   const [leftPanelOpen, setLeftPanelOpen] = useState(true);
   const [mobileView, setMobileView] = useState<MobileView>("canvas");
   const [inspectorView, setInspectorView] = useState<InspectorView>("layers");
@@ -476,16 +515,27 @@ export default function Home() {
   const [folderBrowser, setFolderBrowser] = useState<FolderBrowser | null>(null);
   const [folderImporting, setFolderImporting] = useState(false);
   const [changedReview, setChangedReview] = useState<ChangedTarget[]>([]);
+  const [structuredChanges, setStructuredChanges] = useState<any[]>([]);
+  const [mergeConflicts, setMergeConflicts] = useState<MergeConflict[]>([]);
+  const [revertedChangeIds, setRevertedChangeIds] = useState<Set<string>>(new Set());
   const [changedReviewIndex, setChangedReviewIndex] = useState(0);
   const [agentPreview, setAgentPreview] = useState<AgentPreviewState | null>(null);
   const [agentCompletion, setAgentCompletion] = useState<number | null>(null);
   const [previewHighlightSlideId, setPreviewHighlightSlideId] = useState<string | null>(null);
+  const [changeScope, setChangeScope] = useState<ChangeScope>("current-slide");
+  const [executionMode, setExecutionMode] = useState<ExecutionMode>("apply");
+  const [allowSkillChanges, setAllowSkillChanges] = useState(false);
+  const [draftSync, setDraftSync] = useState<DraftSyncState>("synced");
+  const [agentProjectReady, setAgentProjectReady] = useState(true);
+  const [sourceBuffer, setSourceBuffer] = useState("");
+  const [sourceDiagnostics, setSourceDiagnostics] = useState<SourceDiagnostic[]>([]);
+  const [sourceSearch, setSourceSearch] = useState("");
+  const [sourceReplace, setSourceReplace] = useState("");
+  const [selectionToolbarPosition, setSelectionToolbarPosition] = useState<SelectionToolbarPosition>({ left: 0, top: 0, placement: "dock" });
+  const [styleClipboard, setStyleClipboard] = useState<string | null>(null);
+  const [ignoredDiagnostics, setIgnoredDiagnostics] = useState<Set<string>>(new Set());
   const setSelectedId = (id: string | null) => {
     setSelectedIdState(id);
-    if (id) {
-      setInspectorOpen(true);
-      setInspectorView("design");
-    }
   };
 
   const canvasRef = useRef<HTMLDivElement>(null);
@@ -502,6 +552,7 @@ export default function Home() {
   const replacingImageRef = useRef(false);
   const messagesRef = useRef<HTMLDivElement>(null);
   const promptRef = useRef<HTMLTextAreaElement>(null);
+  const sourceEditorRef = useRef<HTMLTextAreaElement>(null);
   const compositionRef = useRef(false);
   const compositionCommitRef = useRef(false);
   const pointerCaretRef = useRef(0);
@@ -510,12 +561,15 @@ export default function Home() {
   const eventSequenceRef = useRef(0);
   const editGenerationRef = useRef(0);
   const browserDirtyRef = useRef(false);
+  const lastDraftFingerprintRef = useRef("");
   const undoRef = useRef<Snapshot[]>([]);
   const deckLoadedRef = useRef(false);
   const redoRef = useRef<Snapshot[]>([]);
   const agentPreviewBaselineRef = useRef<SlideDoc[] | null>(null);
   const agentViewedSlideIdRef = useRef<string | null>(null);
   const slidesRef = useRef(slides);
+  const deckTitleRef = useRef(deckTitle);
+  const defaultTemplateIdRef = useRef(defaultTemplateId);
   const activeRef = useRef(activeSlide);
   const selectedRef = useRef(selectedId);
   const blockDragRef = useRef<BlockDragSession | null>(null);
@@ -528,9 +582,9 @@ export default function Home() {
   // Preview stays outside slide state so save, sync, and undo cannot observe a candidate frame.
   const templatePreviewHtmlRef = useRef<string | null>(null);
   const templatePreviewSourceHtmlRef = useRef<string | null>(null);
-  const markDirty = () => { editGenerationRef.current += 1; browserDirtyRef.current = true; setSaved(false); };
+  const markDirty = () => { editGenerationRef.current += 1; browserDirtyRef.current = true; setSaved(false); setDraftSync("saving"); };
 
-  const agentReady = codexState.connection.status === "connected";
+  const agentReady = codexState.connection.status === "connected" && agentProjectReady;
   const agentRunning = selectThreadRunning(codexState, codexState.activeThreadId);
   const activeTurns = selectThreadTurns(codexState, codexState.activeThreadId);
   const visibleTurns = activeTurns.slice(-100);
@@ -540,9 +594,9 @@ export default function Home() {
   const blockingPendingRequests = [...pendingRequestGroups.active, ...pendingRequestGroups.unscoped];
   const turnPresentation = deriveTurnPresentation(turnSubmission, codexState.activeThreadId, agentRunning);
   const turnBusy = turnSubmission.phase !== "idle" || codexState.activeTurnId !== null;
-  const canSubmitAgentMessage = !turnBusy || agentRunning;
-  const zoomLevel = manualZoom ?? defaultCanvasZoom;
-  const slideScale = fitScale * zoomLevel;
+  const canSubmitAgentMessage = !turnInFlightRef.current || agentRunning;
+  const slideScale = manualZoom ?? fitScale;
+  const zoomMode = manualZoom === null ? "fit" : "manual";
   const activeSlideId = slides[activeSlide - 1]?.id;
   const liveChangedSlideIds = new Set(agentPreview?.changedSlideIds ?? []);
   const activeAnnotations = annotations.filter((annotation) => annotation.slideId === activeSlideId);
@@ -578,6 +632,7 @@ export default function Home() {
   const showActivity = (view: ActivityView) => {
     setActivityView(view);
     setLeftPanelOpen(true);
+    if (view === "agent") setInspectorOpen(false);
     setMobileView(view);
     if (view === "skills") void loadSkills();
   };
@@ -704,6 +759,31 @@ export default function Home() {
   const isTitleSlot = (node: Element) => node.matches(titleSlotSelector);
   const destroysTitleSlot = (node: Element) => isTitleSlot(node) || !!node.querySelector(titleSlotSelector);
   const selectedNode = () => (selectedId ? canvasRef.current?.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(selectedId)}"]`) ?? null : null);
+  const copySelectedStyle = () => {
+    const node = selectedNode();
+    if (!node) return;
+    setStyleClipboard(node.className);
+    setAnnouncement("選択要素のスタイルをコピーしました");
+  };
+  const pasteSelectedStyle = () => {
+    const node = selectedNode();
+    if (!node || styleClipboard === null) return;
+    checkpoint();
+    node.setAttribute("class", styleClipboard);
+    syncFromDom();
+    markDirty();
+    setAnnouncement("コピーしたスタイルを適用しました");
+  };
+  const resetSelectedOverrides = () => {
+    const node = selectedNode();
+    if (!node) return;
+    const removable = new Set(allControlKeys.flatMap((key: string) => controlGroups[key]?.options.flatMap((option) => option.className.split(/\s+/).filter(Boolean)) ?? []));
+    checkpoint();
+    node.classList.remove(...[...removable]);
+    syncFromDom();
+    markDirty();
+    setAnnouncement("個別指定を解除し、テーマと親の設定へ戻しました");
+  };
 
   /* A slide file contains only editable slot content. Everything users see in the canvas is
      derived from its Template master + selected Layout, including frame furniture and numbering. */
@@ -805,8 +885,108 @@ export default function Home() {
 
   const deckPayload = () => ({ title: deckTitle, defaultTemplateId, slides: captureActive() });
 
+  const openSourceEditor = (nextMode: "source" | "split") => {
+    const captured = captureActive();
+    setSlidesSynced(captured);
+    const source = captured[activeRef.current - 1]?.html;
+    if (typeof source !== "string") return;
+    setSourceBuffer(source);
+    setSourceDiagnostics(validateEditableSlideSource(source));
+    setSelectedAnnotationId(null);
+    setPointerPicking(false);
+    if (annotationMode) setAnnouncement("Mark for Agentを終了しました");
+    setAnnotationMode(false);
+    setMode(nextMode);
+  };
+
+  const applySourceBuffer = () => {
+    const problems = validateEditableSlideSource(sourceBuffer);
+    setSourceDiagnostics(problems);
+    if (problems.length > 0) {
+      setAnnouncement("HTMLのエラーを修正してから反映してください");
+      return;
+    }
+    checkpoint();
+    const current = slidesRef.current[activeRef.current - 1];
+    if (!current) return;
+    const title = titleFromSlideHtml(sourceBuffer) ?? current.title;
+    setSlidesSynced(slidesRef.current.map((slide, index) => index === activeRef.current - 1 ? { ...slide, title, html: sourceBuffer } : slide));
+    markDirty();
+    reinject();
+    setAnnouncement("HTMLを検証してキャンバスへ反映しました");
+  };
+
+  const replaceSourceMatches = () => {
+    if (!sourceSearch) return;
+    setSourceBuffer((current) => current.split(sourceSearch).join(sourceReplace));
+  };
+
+  useEffect(() => {
+    if (mode === "preview") return;
+    const source = slides[activeSlide - 1]?.html;
+    if (typeof source !== "string") return;
+    const timer = window.setTimeout(() => {
+      setSourceBuffer(source);
+      setSourceDiagnostics(validateEditableSlideSource(source));
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [activeSlide, mode, slides]);
+
+  useEffect(() => {
+    if (mode === "preview" || !selectedId) return;
+    const editor = sourceEditorRef.current;
+    if (!editor) return;
+    const offset = sourceOffsetForElement(editor.value, selectedId);
+    editor.setSelectionRange(offset, offset);
+    editor.focus();
+  }, [mode, selectedId]);
+
+  useEffect(() => {
+    if (!deckLoadedRef.current || !browserDirtyRef.current) return;
+    const draft = { title: deckTitle, defaultTemplateId, slides };
+    const fingerprint = JSON.stringify(draft);
+    if (fingerprint === lastDraftFingerprintRef.current) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setDraftSync("saving");
+      try {
+        const response = await fetch(`${apiBase}/draft`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ deck: draft, expectedRevision: serverRevision, templates: importedTemplates }),
+          signal: controller.signal,
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error ?? "作業中ドラフトを同期できませんでした。");
+        if (result.mergedAgent && result.deck) {
+          setDeckTitle(result.deck.title);
+          setDefaultTemplateId(result.deck.defaultTemplateId);
+          setSlidesSynced(result.deck.slides.map(slideFromHtml));
+          setMergeConflicts(Array.isArray(result.conflicts) ? result.conflicts : []);
+          setAnnouncement(result.conflicts?.length ? "Agent完了と同時の編集に競合があります。変更レビューで選択してください" : "Agentの変更と作業中ドラフトを統合しました");
+        }
+        lastDraftFingerprintRef.current = fingerprint;
+        if (typeof result.project?.revision === "string") setServerRevision(result.project.revision);
+        setDraftSync("synced");
+        setApiError(null);
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        setDraftSync(typeof navigator !== "undefined" && !navigator.onLine ? "offline" : "error");
+        setApiError(error instanceof Error ? error.message : String(error));
+      }
+    }, 700);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [deckTitle, defaultTemplateId, importedTemplates, serverRevision, slides]);
+
   const contextEnvelope = (annotationContext: Annotation[] = [], overflowing: string[] = [], attachments: ReferenceAttachment[] = []) => editorEnvelope({
     slide: activeSlideId,
+    modificationScope: {
+      kind: changeScope,
+      slideIds: changeScope === "selected-slides" ? selectedSlideIds.size > 0 ? [...selectedSlideIds] : activeSlideId ? [activeSlideId] : [] : activeSlideId ? [activeSlideId] : [],
+      elementId: changeScope === "element" ? selectedId : null,
+    },
+    executionMode,
+    allowSkillChanges,
     selected: selectedId ? {
       id: selectedId,
       kind: sel?.kind ?? "",
@@ -822,10 +1002,26 @@ export default function Home() {
 
   const quality = useMemo(() => {
     let html = "";
-    try { html = composedSlides(slides).join("\n"); } catch (error) { return { ok: false, diagnostics: [{ code: "template-reference", source: "slides", severity: "error", message: error instanceof Error ? error.message : String(error) }], errors: 1, warnings: 0 }; }
+    try { html = composedSlides(slides).join("\n"); } catch (error) { return { ok: false, diagnostics: [{ id: "template-reference", code: "template-reference", source: "slides", severity: "error" as const, message: error instanceof Error ? error.message : String(error), explanation: "テンプレート参照を解決できません。", fixSuggestion: "テンプレートとレイアウトの参照を確認してください。", slideId: null, elementId: null }], errors: 1, warnings: 0, suggestions: 0 }; }
     const result = auditContentPolicy({ css: deckCss, html });
-    return { ok: result.ok, diagnostics: result.diagnostics, errors: result.summary.errors, warnings: result.summary.warnings };
-  }, [slides, deckCss, composedSlides]);
+    const authored: QualityDiagnostic[] = slides.flatMap((slide) => {
+      const items: QualityDiagnostic[] = [];
+      for (const match of slide.html.matchAll(/<img\b([^>]*)>/gi)) {
+        const id = /data-weave-id=["']([^"']+)["']/i.exec(match[1])?.[1] ?? null;
+        if (!/\balt=["'][^"']+["']/i.test(match[1])) items.push({ id: `${slide.id}:image-alt:${id ?? match.index}`, code: "image.alt", severity: "warning", message: "画像の代替テキストがありません", explanation: "読み上げ利用者へ画像の意味が伝わりません。", fixSuggestion: "画像の目的を短い文章で入力してください。", slideId: slide.id, elementId: id, source: "html" });
+      }
+      const title = titleFromSlideHtml(slide.html) ?? "";
+      if (title.length > 42) items.push({ id: `${slide.id}:title-length`, code: "title.length", severity: "suggestion", message: "タイトルが長く、要点を見つけにくい可能性があります", explanation: `${title.length}文字のタイトルです。`, fixSuggestion: "主張を一つに絞り、42文字以内を目安に簡潔にします。", slideId: slide.id, elementId: /data-weave-slot=["']title["'][^>]*data-weave-id=["']([^"']+)/i.exec(slide.html)?.[1] ?? null, source: "html" });
+      if (/\btext-(?:xs|\[\d+(?:\.\d+)?px\])\b/.test(slide.html)) items.push({ id: `${slide.id}:small-text`, code: "text.small", severity: "warning", message: "小さい文字が含まれています", explanation: "投影時や小さな画面で読みにくくなる可能性があります。", fixSuggestion: "本文を14px相当以上へ調整します。", slideId: slide.id, elementId: null, source: "html" });
+      return items;
+    });
+    const policyDiagnostics: QualityDiagnostic[] = result.diagnostics.map((item: any, index: number) => ({ id: `policy:${item.code}:${index}`, code: item.code, severity: item.severity === "warning" ? "warning" : "error", message: item.message, explanation: item.message, fixSuggestion: "問題のHTMLまたはスタイルを安全な表現へ修正してください。", slideId: null, elementId: null, source: item.source }));
+    const diagnostics = [...policyDiagnostics, ...authored].filter((item) => item.severity === "error" || !ignoredDiagnostics.has(item.id));
+    const errors = diagnostics.filter((item) => item.severity === "error").length;
+    const warnings = diagnostics.filter((item) => item.severity === "warning").length;
+    const suggestions = diagnostics.filter((item) => item.severity === "suggestion").length;
+    return { ok: errors === 0, diagnostics, errors, warnings, suggestions };
+  }, [slides, deckCss, composedSlides, ignoredDiagnostics]);
   const qualityReport = useMemo(() => {
     const rejectedErrors = projectEventDiagnostics.filter((item) => item.severity !== "warning").length;
     const rejectedWarnings = projectEventDiagnostics.length - rejectedErrors;
@@ -833,11 +1029,12 @@ export default function Home() {
       ok: quality.ok && rejectedErrors === 0,
       errors: quality.errors + rejectedErrors,
       warnings: quality.warnings + rejectedWarnings,
+      suggestions: quality.suggestions,
     };
   }, [quality, projectEventDiagnostics]);
 
   const activeThread = codexState.activeThreadId ? codexState.threads[codexState.activeThreadId] : null;
-  const activeThreadName = activeThread ? displayThreadName(activeThread.name) || activeThread.preview || "新しい会話" : "会話なし";
+  const activeThreadName = activeThread ? displayThreadName(activeThread.name) || activeThread.preview || "新しい制作タスク" : "タスク未選択";
   const selectedModelInfo = useMemo(() => codexState.catalog.models.find((model: any) => (model.id ?? model.model) === selectedModel) as any, [codexState.catalog.models, selectedModel]);
   /* Display-only fallback: a model that declares no supported efforts still gets the three
      standard choices in the picker, while `applyServerState` leaves such a model's effort alone. */
@@ -871,9 +1068,9 @@ export default function Home() {
       in_progress: { kind: "running", label: "スライドを編集中…" },
     };
     if (turnPresentation !== "idle") return turnLabels[turnPresentation];
-    if (turnSubmission.phase === "submitting") return { kind: "submission", label: "別の会話へ送信中…" };
-    if (turnSubmission.phase === "accepted") return { kind: "accepted", label: "別の会話で開始待ち" };
-    if (codexState.activeTurnId) return { kind: "running", label: "別の会話で実行中…" };
+    if (turnSubmission.phase === "submitting") return { kind: "submission", label: "別タスクへ送信中…" };
+    if (turnSubmission.phase === "accepted") return { kind: "accepted", label: "別タスクで開始待ち" };
+    if (codexState.activeTurnId) return { kind: "running", label: "別タスクで実行中…" };
     return null;
   })();
   const catalogSkills = useMemo(() => codexState.catalog.skills.flatMap((entry: any) => entry?.skills ?? [entry]).filter(Boolean), [codexState.catalog.skills]);
@@ -898,6 +1095,7 @@ export default function Home() {
       setDefaultTemplateId(state.deck.defaultTemplateId);
       const sourceSlides = state.deck.slides?.length ? state.deck.slides : initialSlides;
       const nextSlides = renumberSlides(sourceSlides.map(slideFromHtml));
+      setSelectedSlideIds((current) => new Set([...current].filter((id) => nextSlides.some((slide) => slide.id === id))));
       if (state.agentPreview && !agentViewedSlideIdRef.current) {
         agentViewedSlideIdRef.current = viewedSlideIdForHydration(previousSlides, nextSlides, activeRef.current, deckLoadedRef.current);
       }
@@ -923,6 +1121,7 @@ export default function Home() {
     setServerRevision(state.project.revision ?? state.project.commit);
     setActiveVariation(state.project.branch);
     dispatchCodex({ type: "connection", connection: state.codex.connection });
+    setAgentProjectReady(state.codex.projectReady);
     dispatchCodex({ type: "catalog", catalog: state.codex.catalog });
     dispatchCodex({ type: "pendingRequests", requests: state.codex.pendingRequests });
     dispatchCodex({ type: "activeTurns", activeTurns: state.codex.activeTurns });
@@ -1005,6 +1204,11 @@ export default function Home() {
               const state = await stateResponse.json();
               const unchanged = generation === editGenerationRef.current;
               const projectStatus = envelope.type === "weave/project" ? envelope.payload?.status : null;
+              if (projectStatus === "updated" && envelope.payload?.deck?.slides) state.deck = envelope.payload.deck;
+              if (envelope.type === "weave/project" && typeof envelope.payload?.projectRoot === "string" && envelope.payload.projectRoot !== state.project?.root) {
+                eventSequenceRef.current = Math.max(eventSequenceRef.current, envelopeSequence);
+                continue;
+              }
               if (envelope.type === "weave/project" && !projectEventMatchesActivePreview(envelope.payload, state.agentPreview)) {
                 eventSequenceRef.current = Math.max(eventSequenceRef.current, envelopeSequence);
                 continue;
@@ -1036,13 +1240,26 @@ export default function Home() {
                   const viewedSlideId = slidesRef.current[activeRef.current - 1]?.id;
                   if (viewedSlideId && changedIds.includes(viewedSlideId)) setPreviewHighlightSlideId(viewedSlideId);
               }
-              if (projectStatus === "updated" && unchanged) {
+              if (projectStatus === "updated") {
+                if (typeof envelope.payload?.milestone === "string" && envelope.payload.milestone) setAnnouncement(`マイルストーン「${envelope.payload.milestone}」を作成しました`);
                 const eventBaseline = Array.isArray(envelope.payload?.baseline?.slides)
                   ? envelope.payload.baseline.slides as SlideDoc[]
                   : null;
                 const baseline = eventBaseline ?? state.agentPreview?.baseline.slides ?? agentPreviewBaselineRef.current ?? slidesRef.current;
-                const targets = changedTargets(baseline, state.deck?.slides ?? []);
+                const serverConflicts = Array.isArray(envelope.payload?.conflicts) ? envelope.payload.conflicts : [];
+                if (!unchanged && envelope.payload?.baseline) {
+                  const localMerge = mergeEditorDecks({ base: envelope.payload.baseline, agent: state.deck, current: { title: deckTitleRef.current, defaultTemplateId: defaultTemplateIdRef.current, slides: slidesRef.current } });
+                  setDeckTitle(localMerge.deck.title);
+                  setDefaultTemplateId(localMerge.deck.defaultTemplateId);
+                  setSlidesSynced(localMerge.deck.slides.map(slideFromHtml));
+                  setMergeConflicts([...serverConflicts, ...localMerge.conflicts]);
+                } else setMergeConflicts(serverConflicts);
+                const agentChanges = Array.isArray(envelope.payload?.changes?.changes) ? envelope.payload.changes.changes : [];
+                const agentSlideIds = new Set(agentChanges.map((change: any) => change.slideId).filter(Boolean));
+                const targets = changedTargets(baseline, state.deck?.slides ?? []).filter((target) => agentSlideIds.has(target.slideId));
                 setChangedReview(targets);
+                setStructuredChanges(agentChanges);
+                setRevertedChangeIds(new Set());
                 setChangedReviewIndex(0);
                 setAgentCompletion(changedSlideCount(baseline, state.deck?.slides ?? []));
               }
@@ -1058,7 +1275,7 @@ export default function Home() {
               }
               if (!unchanged) {
                 markDirty();
-                setApiError("編集中にプロジェクトの保存内容が変更されました。現在の編集は保持されています。もう一度保存して統合してください。");
+                setApiError("Agent完了時の編集を三者マージしました。競合がある場合は変更レビューで選択してください。");
               }
               eventSequenceRef.current = Math.max(eventSequenceRef.current, envelopeSequence);
               continue;
@@ -1103,7 +1320,7 @@ export default function Home() {
           const query = new URLSearchParams({ archived: String(showArchivedThreads), ...(threadSearch.trim() ? { q: threadSearch.trim() } : {}) });
           const response = await fetch(`${apiBase}/codex/threads?${query}`);
           const result = await response.json();
-          if (!response.ok) throw new Error(result.error ?? "会話一覧を取得できませんでした。");
+          if (!response.ok) throw new Error(result.error ?? "制作タスク一覧を取得できませんでした。");
           if (canceled) return;
           dispatchCodex({ type: "threadsLoaded", threads: result.data ?? [], archived: showArchivedThreads });
           if (!codexState.activeThreadId && result.data?.[0]) {
@@ -1146,7 +1363,7 @@ export default function Home() {
       if (attribute === "xlink:href") node.setAttributeNS("http://www.w3.org/1999/xlink", "xlink:href", `${apiBase}/${path}`);
       else node.setAttribute("href", `${apiBase}/${path}`);
     });
-    host.querySelectorAll<HTMLElement>("[data-weave-id]").forEach((node) => { node.draggable = !annotationMode && !turnBusy && isEditableSlideNode(node) && !isTitleSlot(node); });
+    host.querySelectorAll<HTMLElement>("[data-weave-id]").forEach((node) => { node.draggable = !annotationMode && isEditableSlideNode(node) && !isTitleSlot(node); });
     const root = host.querySelector<HTMLElement>(".weave-slide");
     if (root) {
       setCurrentTemplateId(active?.templateId ?? "");
@@ -1155,7 +1372,7 @@ export default function Home() {
     }
   // composeFor is intentionally omitted: injecting on every render would reset the live DOM caret.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeSlide, injectKey, mode, turnBusy, annotationMode]);
+  }, [activeSlide, injectKey, mode, annotationMode]);
 
   /* Selection outline + inspector read-out follow the selected node without re-injecting. */
   useLayoutEffect(() => {
@@ -1214,6 +1431,43 @@ export default function Home() {
   }, [mode]);
 
   useLayoutEffect(() => {
+    if (!selectedId || mode !== "preview") return;
+    const viewport = viewportRef.current;
+    const shell = viewport?.closest<HTMLElement>(".slide-shell");
+    const node = viewport?.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(selectedId)}"]`);
+    if (!viewport || !shell || !node) return;
+    const update = () => {
+      const shellBox = shell.getBoundingClientRect();
+      const box = node.getBoundingClientRect();
+      const toolbarWidth = Math.min(360, shellBox.width - 16);
+      const centered = box.left - shellBox.left + box.width / 2;
+      const left = Math.min(shellBox.width - toolbarWidth / 2 - 8, Math.max(toolbarWidth / 2 + 8, centered));
+      const above = box.top - shellBox.top - 44;
+      const below = box.bottom - shellBox.top + 8;
+      if (above >= 8) setSelectionToolbarPosition({ left, top: above, placement: "above" });
+      else if (below <= shellBox.height - 44) setSelectionToolbarPosition({ left, top: below, placement: "below" });
+      else setSelectionToolbarPosition({ left: shellBox.width / 2, top: shellBox.height - 44, placement: "dock" });
+    };
+    update();
+    viewport.addEventListener("scroll", update, { passive: true });
+    const observer = new ResizeObserver(update);
+    observer.observe(viewport);
+    observer.observe(node);
+    return () => { viewport.removeEventListener("scroll", update); observer.disconnect(); };
+  }, [activeSlide, injectKey, mode, selectedId, slideScale]);
+
+  useLayoutEffect(() => {
+    const host = canvasRef.current;
+    const slide = slidesRef.current[activeRef.current - 1];
+    if (!host || !slide || mode !== "preview") return;
+    host.querySelectorAll<HTMLElement>("[data-quality-severity]").forEach((node) => { delete node.dataset.qualitySeverity; delete node.dataset.qualityLabel; });
+    quality.diagnostics.filter((item) => item.slideId === slide.id && item.elementId).forEach((item) => {
+      const node = host.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(String(item.elementId))}"]`);
+      if (node) { node.dataset.qualitySeverity = item.severity; node.dataset.qualityLabel = item.message; }
+    });
+  }, [activeSlide, injectKey, mode, quality.diagnostics]);
+
+  useLayoutEffect(() => {
     const viewport = viewportRef.current;
     const scrollLayer = annotationScrollRef.current;
     if (!viewport || !scrollLayer) return;
@@ -1227,6 +1481,8 @@ export default function Home() {
 
   useEffect(() => { slidesRef.current = slides; }, [slides]);
   useEffect(() => { activeRef.current = activeSlide; }, [activeSlide]);
+  useEffect(() => { deckTitleRef.current = deckTitle; }, [deckTitle]);
+  useEffect(() => { defaultTemplateIdRef.current = defaultTemplateId; }, [defaultTemplateId]);
   useEffect(() => { selectedRef.current = selectedId; }, [selectedId]);
 
   useEffect(() => {
@@ -1367,7 +1623,7 @@ export default function Home() {
   const toggleAnnotationMode = () => {
     setPointerPicking(false);
     if (!annotationMode) canvasRef.current?.querySelector<HTMLElement>('[contenteditable="true"]')?.blur();
-    if (mode === "code") { reinject(); setMode("preview"); }
+    if (mode !== "preview") { reinject(); setMode("preview"); }
     annotationGestureRef.current = null;
     setDraftAnnotationRect(null);
     setTreeDragId(null);
@@ -1595,7 +1851,7 @@ export default function Home() {
     if (node.getAttribute?.("contenteditable") === "true") {
       node.removeAttribute("contenteditable");
       node.removeAttribute("data-editing");
-      node.draggable = !annotationMode && !turnBusy && !isTitleSlot(node);
+      node.draggable = !annotationMode && !isTitleSlot(node);
       setEditingId(null);
       syncFromDom();
     }
@@ -2094,7 +2350,7 @@ export default function Home() {
     }
     const slideIndex = slidesRef.current.findIndex((slide) => slide.id === attachment.slideId);
     if (slideIndex < 0) return;
-    if (mode === "code") setMode("preview");
+    if (mode !== "preview") setMode("preview");
     if (activeRef.current !== slideIndex + 1) switchSlide(slideIndex + 1);
     setActiveOverlayAttachmentId(attachment.id);
     setAnnouncement("Agentへの指示を表示しました");
@@ -2197,6 +2453,12 @@ export default function Home() {
 
   /* --- Persistence, export, agent ------------------------------------------------------ */
 
+  const clearEditorHistory = () => {
+    undoRef.current = [];
+    redoRef.current = [];
+    setHistoryState({ undo: 0, redo: 0 });
+  };
+
   const resetProjectEditor = () => {
     activeRef.current = 1;
     setActiveSlide(1);
@@ -2207,9 +2469,7 @@ export default function Home() {
     setSelectedAnnotationId(null);
     setAnnotationAttachments([]);
     setActiveOverlayAttachmentId(null);
-    undoRef.current = [];
-    redoRef.current = [];
-    setHistoryState({ undo: 0, redo: 0 });
+    clearEditorHistory();
     templatePreviewHtmlRef.current = null;
     templatePreviewSourceHtmlRef.current = null;
     setActiveVariation("main");
@@ -2221,7 +2481,6 @@ export default function Home() {
     setGalleryOpen(false);
     setGalleryView("list");
     setGalleryMenu(null);
-    setGalleryTip(null);
     setGalleryDialog(null);
     requestAnimationFrame(() => projectSwitcherRef.current?.focus());
   };
@@ -2243,7 +2502,6 @@ export default function Home() {
     setGalleryNow(Date.now());
     setGalleryView("list");
     setGalleryMenu(null);
-    setGalleryTip(null);
     void loadGallery();
     requestAnimationFrame(() => galleryRef.current?.focus());
   };
@@ -2261,21 +2519,14 @@ export default function Home() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [galleryOpen, galleryDialog, galleryMenu]);
 
-  const switchProject = async (target: ProjectSummary, interrupt = false, savedLocally = false) => {
+  const switchProject = async (target: ProjectSummary, interrupt = false) => {
     if (target.current) { closeGallery(); return; }
-    if (target.blocked) { setGalleryTip(target.slug); return; }
-    if (!saved && !savedLocally) { setGalleryDialog({ kind: "dirty", slug: target.slug, title: target.title }); return; }
-    setGalleryTip(null);
     setGallerySwitching(target.slug);
     try {
       const response = await fetch(`${apiBase}/projects/current`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ slug: target.slug, ...(interrupt ? { interrupt: true } : {}) }) });
       const result = await response.json();
       if (!response.ok) {
-        if (result.code === "WEAVE_PROJECT_DIRTY") setGalleryDialog({ kind: "dirty", slug: target.slug, title: target.title });
-        else if (result.code === "WEAVE_TURN_RUNNING") setGalleryDialog({ kind: "turn", slug: target.slug, title: target.title });
-        else if (result.code === "WEAVE_PROJECT_BLOCKED") setGalleryTip(target.slug);
-        else throw new Error(result.error ?? "プロジェクトを切り替えられませんでした。");
-        return;
+        throw new Error(result.error ?? "プロジェクトを切り替えられませんでした。");
       }
       applyServerState(result as ServerState);
       resetProjectEditor();
@@ -2298,10 +2549,9 @@ export default function Home() {
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   };
 
-  const createProject = async (savedLocally = false) => {
+  const createProject = async () => {
     const title = newProjectTitle.trim();
     if (!title) return;
-    if (!saved && !savedLocally) { setGalleryDialog({ kind: "create", title }); return; }
     setNewProjectCreating(true);
     try {
       const response = await fetch(`${apiBase}/projects`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title, templateId: newProjectTemplate }) });
@@ -2330,19 +2580,35 @@ export default function Home() {
   const thumbHtml = (html: string, css: string, title: string) => html ? <iframe className="project-live" sandbox="" title={title} loading="lazy" srcDoc={`<!doctype html><html><head><style>${css}</style><style>html,body{width:${designWidth}px;height:${designHeight}px;margin:0;overflow:hidden;background:#0d1017}body > .weave-slide{width:${designWidth}px;height:${designHeight}px}</style></head><body>${html}</body></html>`} /> : null;
 
   const saveProject = async () => {
-    if (turnBusy) return false;
+    const requestedName = saveMessage.trim() || window.prompt("マイルストーン名", `${deckTitle} レビュー版`)?.trim();
+    if (!requestedName) return false;
     try {
       const generation = editGenerationRef.current;
-      const response = await fetch(`${apiBase}/save`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ deck: deckPayload(), ...(importedTemplates ? { templates: importedTemplates } : {}), message: saveMessage || deckTitle, expectedRevision: serverRevision, idempotencyKey: createMessageId() }) });
+      if (draftSync !== "synced") {
+        const draftResponse = await fetch(`${apiBase}/draft`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ deck: deckPayload(), expectedRevision: serverRevision, templates: importedTemplates }) });
+        const draftResult = await draftResponse.json();
+        if (!draftResponse.ok) throw new Error(draftResult.error ?? "作業中ドラフトを同期できませんでした。");
+      }
+      const response = await fetch(`${apiBase}/milestones`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: requestedName, expectedRevision: serverRevision }) });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "保存できませんでした。");
+      if (!response.ok) throw new Error(result.error ?? "マイルストーンを作成できませんでした。");
       const unchanged = generation === editGenerationRef.current;
       applyServerState(result as ServerState, unchanged);
+      if (result.queued) {
+        if (unchanged) browserDirtyRef.current = false;
+        setSaved(false);
+        setDraftSync("synced");
+        setSaveMessage("");
+        setAnnouncement(`マイルストーン「${requestedName}」をAgent完了後に作成します`);
+        setApiError(null);
+        return false;
+      }
       if (unchanged) setImportedTemplates(null);
       if (unchanged) browserDirtyRef.current = false;
       setSaved(unchanged);
+      setDraftSync("synced");
       setSaveMessage("");
-      setAnnouncement(unchanged ? "デッキを履歴に保存しました" : "この版を履歴に保存しました。以降の編集は未保存のままです");
+      setAnnouncement(unchanged ? `マイルストーン「${requestedName}」を作成しました` : "マイルストーンを作成しました。以降の編集は作業中ドラフトへ同期します");
       setApiError(null);
       return unchanged;
     } catch (error) {
@@ -2354,6 +2620,26 @@ export default function Home() {
   const exportFragments = () => {
     const captured = captureActive();
     return composedSlides(captured);
+  };
+
+  const focusDiagnostic = (diagnostic: QualityDiagnostic) => {
+    if (diagnostic.slideId) {
+      const index = slidesRef.current.findIndex((slide) => slide.id === diagnostic.slideId);
+      if (index >= 0 && index + 1 !== activeRef.current) switchSlide(index + 1);
+    }
+    if (diagnostic.elementId) setSelectedId(diagnostic.elementId);
+    setAnnouncement(`${diagnostic.message}の対象を表示しました`);
+  };
+
+  const askAgentToFixDiagnostic = (diagnostic: QualityDiagnostic) => {
+    focusDiagnostic(diagnostic);
+    setChangeScope(diagnostic.elementId ? "element" : diagnostic.slideId ? "current-slide" : "deck");
+    setExecutionMode("apply");
+    setPromptDraft(`${diagnostic.message}。${diagnostic.fixSuggestion}`);
+    setInspectorOpen(false);
+    setActivityView("agent");
+    setLeftPanelOpen(true);
+    requestAnimationFrame(() => promptRef.current?.focus());
   };
 
   const exportDeck = async () => {
@@ -2428,12 +2714,12 @@ export default function Home() {
   };
 
   const restoreHistory = async (commit?: string) => {
-    if (turnBusy) return;
     try {
       const endpoint = commit ? "history/checkout" : "history/main";
       const response = await fetch(`${apiBase}/${endpoint}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(commit ? { commit } : {}) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "履歴を復元できませんでした。");
+      clearEditorHistory();
       applyServerState(result as ServerState);
       setSelectedId(null);
       setApiError(null);
@@ -2443,11 +2729,11 @@ export default function Home() {
   };
 
   const checkoutVariation = async (branch: string) => {
-    if (turnBusy) return;
     try {
       const response = await fetch(`${apiBase}/variations/checkout`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ branch }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "デザイン案を切り替えられませんでした。");
+      clearEditorHistory();
       applyServerState(result as ServerState);
       setSelectedId(null);
       setApiError(null);
@@ -2457,7 +2743,7 @@ export default function Home() {
   };
 
   const openVariationCompare = async () => {
-    if (variationCompareLoading || turnBusy || variations.length === 0) return;
+    if (variationCompareLoading || variations.length === 0) return;
     setVariationCompareLoading(true);
     try {
       const response = await fetch(`${apiBase}/variations/compare`);
@@ -2467,6 +2753,61 @@ export default function Home() {
       setApiError(null);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
     finally { setVariationCompareLoading(false); }
+  };
+
+  const applyReviewChange = (change: any) => {
+    const reverted = revertedChangeIds.has(change.id);
+    const direction = reverted ? "redo" : "undo";
+    if (!reviewChangeMatches(deckPayload(), change, direction)) {
+      setApiError("この変更の後に対象が編集されたため、安全に切り替えられません。現在の編集を保持しました。");
+      return;
+    }
+    checkpoint();
+    const next = applyEditorChange(deckPayload(), change, direction);
+    setDeckTitle(next.title);
+    setDefaultTemplateId(next.defaultTemplateId);
+    setSlidesSynced(next.slides.map(slideFromHtml));
+    setRevertedChangeIds((current) => { const copy = new Set(current); if (reverted) copy.delete(change.id); else copy.add(change.id); return copy; });
+    markDirty();
+    reinject();
+  };
+
+  const applyReviewGroup = (target: { kind: "slide"; slideId: string } | { kind: "all" }) => {
+    const selectedChanges = structuredChanges.filter((change) => target.kind === "all" || change.slideId === target.slideId);
+    const currentDeck = deckPayload();
+    const stale = selectedChanges.some((change) => !reviewChangeMatches(currentDeck, change, "undo"));
+    if (stale) { setApiError("対象に完了後の編集があるため、一括では戻せません。変更を個別に確認してください。"); return; }
+    checkpoint();
+    const next = applyEditorHistory(deckPayload(), structuredChanges, "undo", target);
+    setDeckTitle(next.title);
+    setDefaultTemplateId(next.defaultTemplateId);
+    setSlidesSynced(next.slides.map(slideFromHtml));
+    const affected = structuredChanges.filter((change) => target.kind === "all" || change.slideId === target.slideId).map((change) => change.id);
+    setRevertedChangeIds((current) => new Set([...current, ...affected]));
+    markDirty();
+    reinject();
+  };
+
+  const resolveMergeConflict = (conflict: MergeConflict, choice: "current" | "agent") => {
+    if (choice === "agent") {
+      checkpoint();
+      const slidePath = /^deck\.slides\[([^\]]+)\](?:\.([A-Za-z0-9_-]+))?$/.exec(conflict.path);
+      if (slidePath) {
+        const [, slideId, field] = slidePath;
+        const current = slidesRef.current;
+        const next = !field
+          ? conflict.agent === null
+            ? current.filter((slide) => slide.id !== slideId)
+            : current.map((slide) => slide.id === slideId ? slideFromHtml(conflict.agent as SlideDoc) : slide)
+          : current.map((slide) => slide.id === slideId ? { ...slide, [field]: conflict.agent } as SlideDoc : slide);
+        setSlidesSynced(next);
+      } else if (conflict.path === "deck.title") setDeckTitle(String(conflict.agent));
+      else if (conflict.path === "deck.defaultTemplateId") setDefaultTemplateId(String(conflict.agent));
+      markDirty();
+      reinject();
+    }
+    setMergeConflicts((current) => current.filter((item) => item.path !== conflict.path));
+    setAnnouncement(choice === "agent" ? "競合箇所へAgentの変更を採用しました" : "競合箇所は現在の編集を保持しました");
   };
 
   const reviewChangedTarget = (index: number) => {
@@ -2507,6 +2848,7 @@ export default function Home() {
         setTurnSubmission(IDLE_TURN_SUBMISSION);
       } else setTurnSubmission({ phase: "accepted", threadId: result.thread.id, turnId: result.turn.id });
       setActiveVariation(result.branch);
+      setAllowSkillChanges(false);
       dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
     } catch (error) {
       if (!accepted) setTurnSubmission(IDLE_TURN_SUBMISSION);
@@ -2522,24 +2864,46 @@ export default function Home() {
   };
 
   const acceptVariation = async () => {
-    if (turnBusy) return;
     try {
       const response = await fetch(`${apiBase}/variations/accept`, { method: "POST" });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "このデザイン案を採用できませんでした。");
+      clearEditorHistory();
       applyServerState(result as ServerState);
       setApiError(null);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   };
 
   const archiveVariation = async () => {
-    if (turnBusy) return;
     try {
       const response = await fetch(`${apiBase}/variations/archive`, { method: "POST" });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "このデザイン案を履歴へ送れませんでした。");
+      clearEditorHistory();
       applyServerState(result as ServerState);
       setApiError(null);
+    } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
+  };
+
+  const setExplorationState = async (branch: string, state: "paused" | "ready" | "archived") => {
+    const endpoint = state === "ready" ? "resume" : state === "paused" ? "pause" : "archive";
+    try {
+      const response = await fetch(`${apiBase}/variations/${endpoint}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ branch }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "探索セッションを更新できませんでした。");
+      setVariations((current) => current.map((variation) => variation.branch === branch ? { ...variation, state, status: state } : variation));
+    } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
+  };
+
+  const importExplorationSlide = async (branch: string, slideId: string) => {
+    try {
+      const response = await fetch(`${apiBase}/variations/import`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ branch, slideIds: [slideId], expectedRevision: serverRevision }) });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "探索案のスライドを取り込めませんでした。");
+      applyServerState(result as ServerState);
+      markDirty();
+      setVariationPreviews(null);
+      setAnnouncement("探索案から現在のスライドだけを取り込みました");
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   };
 
@@ -2608,7 +2972,7 @@ export default function Home() {
         dispatchCodex({ type: "threadLoaded", thread: started.thread, activate: true });
         setTurnSubmission({ phase: "submitting", threadId, turnId: null });
       }
-      if (!threadId) throw new Error("操作対象の会話を特定できませんでした。");
+      if (!threadId) throw new Error("操作対象の制作タスクを特定できませんでした。");
       steering = agentRunning;
       if (!steering) {
         agentPreviewBaselineRef.current = requestDeck.slides.map((item) => ({ ...item }));
@@ -2644,6 +3008,7 @@ export default function Home() {
         setAnnouncement("Agentへの指示を送信しました");
       }
       setPromptDraft("");
+      if (!steering) setAllowSkillChanges(false);
       setReferenceAttachments([]);
       setIncludeRegionAnnotations(true);
     } catch (error) {
@@ -2668,12 +3033,11 @@ export default function Home() {
   };
 
   const newThread = async () => {
-    if (turnBusy) return;
     clearTurnSubmission();
     try {
       const response = await fetch(`${apiBase}/codex/thread/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ approvalPolicy, model: selectedModel || undefined }) });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "会話を開始できませんでした。");
+      if (!response.ok) throw new Error(result.error ?? "制作タスクを開始できませんでした。");
       dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
       setApiError(null);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
@@ -2683,45 +3047,43 @@ export default function Home() {
     try {
       const response = await fetch(`${apiBase}/codex/thread/resume`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId }) });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "会話を再開できませんでした。");
+      if (!response.ok) throw new Error(result.error ?? "制作タスクを再開できませんでした。");
       dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   };
 
   const threadAction = async (action: string, params: Record<string, unknown> = {}) => {
-    if (turnBusy) return;
     const threadId = codexState.activeThreadId;
     if (!threadId) return;
     try {
       const response = await fetch(`${apiBase}/codex/thread/action`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action, params: { threadId, ...params } }) });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "会話を操作できませんでした。");
+      if (!response.ok) throw new Error(result.error ?? "制作タスクを操作できませんでした。");
       if (action === "delete") dispatchCodex({ type: "activateThread", threadId: null });
       else await openThread(threadId);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   };
 
   const forkThread = async () => {
-    if (!codexState.activeThreadId || turnBusy) return;
+    if (!codexState.activeThreadId) return;
     clearTurnSubmission();
     try {
       const response = await fetch(`${apiBase}/codex/thread/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: codexState.activeThreadId }) });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "会話を複製して分岐できませんでした。");
+      if (!response.ok) throw new Error(result.error ?? "制作タスクを複製できませんでした。");
       dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   };
 
   const manageGoal = async () => {
-    if (turnBusy) return;
     const threadId = codexState.activeThreadId;
     if (!threadId) return;
     try {
       const response = await fetch(`${apiBase}/codex/thread/action`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "goalGet", params: { threadId } }) });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "会話の目標を取得できませんでした。");
+      if (!response.ok) throw new Error(result.error ?? "制作タスクの目標を取得できませんでした。");
       const current = result.goal?.objective ?? result.objective ?? "";
-      const objective = window.prompt("会話の目標（空欄にすると解除します）", current);
+      const objective = window.prompt("制作タスクの目標（空欄にすると解除します）", current);
       if (objective === null) return;
       await threadAction(objective.trim() ? "goalSet" : "goalClear", objective.trim() ? { objective } : {});
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
@@ -2916,12 +3278,10 @@ export default function Home() {
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   };
 
-  /* Switching to Code mode captures the live DOM into `slides` first, so the code view can
-     read the fresh HTML straight from state without touching a ref during render. */
-  const codeView = mode === "code" ? (() => {
-    const slide = slides[activeSlide - 1];
-    if (!slide) return "";
-    try { return composeFor(slide, activeSlide, slides.length); } catch (error) { return error instanceof Error ? error.message : String(error); }
+  const sourcePreviewHtml = mode === "split" ? (() => {
+    const current = slides[activeSlide - 1];
+    if (!current || sourceDiagnostics.length > 0) return "";
+    try { return composeFor({ ...current, html: sourceBuffer }, activeSlide, slides.length); } catch { return ""; }
   })() : "";
   const templatePreview = (template: TemplateDoc, instanceId: string, layoutId = template.defaultLayoutId) => {
     const source = blankSlideHtml("");
@@ -2955,15 +3315,17 @@ export default function Home() {
     <>
       {slides.map((slide, index) => ({ slide, index })).filter(({ index }) => slides.length <= 60 || index === 0 || index === slides.length - 1 || Math.abs(index - (activeSlide - 1)) <= 20).map(({ slide, index }, visibleIndex, visibleEntries) => {
         const slideNumber = index + 1;
+        const slideDiagnostics = quality.diagnostics.filter((item) => item.slideId === slide.id);
+        const slideSeverity = slideDiagnostics.some((item) => item.severity === "error") ? "error" : slideDiagnostics.some((item) => item.severity === "warning") ? "warning" : slideDiagnostics.length > 0 ? "suggestion" : null;
         return (
           <div className="slide-entry" key={slide.id}>
             {visibleIndex > 0 && index - visibleEntries[visibleIndex - 1].index > 1 && <button className="slide-gap" aria-label="前のスライドを表示" onClick={() => switchSlide(Math.max(1, slideNumber - 20))}>…</button>}
             <button
-              className={`slide-item ${activeSlide === slideNumber ? "active" : ""} ${liveChangedSlideIds.has(slide.id) ? "agent-updated" : ""}`}
-              onClick={() => switchSlide(slideNumber)}
-              disabled={turnBusy}
+              className={`slide-item ${activeSlide === slideNumber ? "active" : ""} ${selectedSlideIds.has(slide.id) ? "selected" : ""} ${liveChangedSlideIds.has(slide.id) ? "agent-updated" : ""}`}
+              aria-pressed={selectedSlideIds.has(slide.id)}
+              onClick={(event) => { setSelectedSlideIds((current) => { if (!(event.metaKey || event.ctrlKey || event.shiftKey)) return new Set([slide.id]); const next = new Set(current); if (next.has(slide.id) && next.size > 1) next.delete(slide.id); else next.add(slide.id); return next; }); switchSlide(slideNumber); }}
               title={`${slideNumber}枚目を開く: ${slide.title || "無題"}`}
-              draggable={!turnBusy}
+              draggable
               onDragStart={() => setDraggedSlide(index)}
               onDragOver={(event) => event.preventDefault()}
               onDrop={() => {
@@ -2983,6 +3345,7 @@ export default function Home() {
               <span className="slide-number">{String(slideNumber).padStart(2, "0")}</span>
               {slideThumbnail(slide, index)}
               <span className="slide-name">{slide.title || "無題"}</span>
+              {slideSeverity && <span className={`slide-diagnostic-badge ${slideSeverity}`} aria-label={`${slideSeverity === "error" ? "エラー" : slideSeverity === "warning" ? "警告" : "提案"} ${slideDiagnostics.length}件`}>{slideSeverity === "error" ? "!" : slideSeverity === "warning" ? "△" : "○"} {slideDiagnostics.length}</span>}
               {liveChangedSlideIds.has(slide.id) && <span className="slide-live-marker">更新中</span>}
             </button>
             <button
@@ -2991,19 +3354,18 @@ export default function Home() {
               aria-haspopup="menu"
               aria-expanded={openPopover === "slideMenu" && activeSlide === slideNumber}
               onClick={(event) => { if (activeSlide !== slideNumber) switchSlide(slideNumber); togglePopover("slideMenu", event.currentTarget); }}
-              disabled={turnBusy}
             >⋯</button>
             {openPopover === "slideMenu" && activeSlide === slideNumber && <div className="slide-actions-menu" role="menu">
-              <button role="menuitem" onClick={() => { dismissPopover(false); duplicateSlide(); }} disabled={turnBusy}>スライドを複製</button>
-              <button role="menuitem" onClick={() => { dismissPopover(false); moveSlide(-1); }} disabled={turnBusy || activeSlide === 1}>左へ移動</button>
-              <button role="menuitem" onClick={() => { dismissPopover(false); moveSlide(1); }} disabled={turnBusy || activeSlide === slides.length}>右へ移動</button>
-              <button role="menuitem" className="danger" onClick={() => { dismissPopover(false); deleteSlide(); }} disabled={turnBusy || slides.length <= 1}>スライドを削除</button>
+              <button role="menuitem" onClick={() => { dismissPopover(false); duplicateSlide(); }}>スライドを複製</button>
+              <button role="menuitem" onClick={() => { dismissPopover(false); moveSlide(-1); }} disabled={activeSlide === 1}>左へ移動</button>
+              <button role="menuitem" onClick={() => { dismissPopover(false); moveSlide(1); }} disabled={activeSlide === slides.length}>右へ移動</button>
+              <button role="menuitem" className="danger" onClick={() => { dismissPopover(false); deleteSlide(); }} disabled={slides.length <= 1}>スライドを削除</button>
             </div>}
           </div>
         );
       })}
       <span className="new-slide-wrap">
-        <button className="new-slide" onClick={(event) => togglePopover("newSlide", event.currentTarget)} disabled={turnBusy || !templates.length} aria-label="新しいスライド" title="新しいスライドを追加します">＋</button>
+        <button className="new-slide" onClick={(event) => togglePopover("newSlide", event.currentTarget)} disabled={!templates.length} aria-label="新しいスライド" title="新しいスライドを追加します">＋</button>
         {openPopover === "newSlide" && (
           <>
             <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
@@ -3011,7 +3373,7 @@ export default function Home() {
               {templates.map((template) => (
                 <div className="template-group" key={template.id}>
                   <strong className="template-group-name">{template.name}</strong>
-                  {template.layouts.map((layout) => <button key={`${template.id}-${layout.id}`} role="option" aria-selected="false" onClick={() => addSlide(template.id, layout.id)} disabled={turnBusy}>{templatePreview(template, `new-slide-${layout.id}`, layout.id)}<span>{layout.name}</span></button>)}
+                  {template.layouts.map((layout) => <button key={`${template.id}-${layout.id}`} role="option" aria-selected="false" onClick={() => addSlide(template.id, layout.id)}>{templatePreview(template, `new-slide-${layout.id}`, layout.id)}<span>{layout.name}</span></button>)}
                 </div>
               ))}
             </div>
@@ -3041,25 +3403,26 @@ export default function Home() {
     <section className="activity-panel history-panel" aria-label="バージョン履歴">
       <header className="activity-panel-heading"><span>バージョン履歴</span><button className="panel-close" aria-label="バージョン履歴を閉じる" onClick={() => setLeftPanelOpen(false)}>×</button></header>
       <div className="activity-panel-body">
+        {(project?.backgroundTasks?.length ?? 0) > 0 && <section className="background-task-list" aria-label="このプロジェクトのバックグラウンドタスク"><strong>バックグラウンド</strong>{project!.backgroundTasks!.map((task, index) => <p key={`${task.threadId ?? "recovery"}-${index}`}><span>{task.variation ? "探索案" : "Agentタスク"}</span><small>{task.status === "running" ? "実行中" : task.status === "starting" ? "開始中" : task.status === "interrupted" ? "復旧可能" : task.status}</small></p>)}</section>}
         <div className="repository-summary">
-          <span><i className={saved ? "clean" : "dirty"} />{saved ? "すべて保存済みです" : "未保存の変更があります"}</span>
+          <span><i className={draftSync === "synced" ? "clean" : "dirty"} />{draftSync === "synced" ? "作業中ドラフトは同期済みです" : "作業中ドラフトを同期しています"}</span>
           {project && <details className="version-details"><summary>技術情報</summary><small>{project.branch} · {project.commit}</small></details>}
         </div>
-        <label className="save-message"><span>バージョン名</span><input value={saveMessage} onChange={(event) => setSaveMessage(event.target.value)} placeholder={deckTitle} /></label>
-        <button className="sidebar-primary-action" onClick={() => void saveProject()} disabled={saved || turnBusy}>{saved ? "現在のバージョンは保存済み" : "現在のバージョンを保存"}</button>
-        {project?.branch === "detached" && <button className="return-latest" onClick={() => void restoreHistory()} disabled={turnBusy}>最新バージョンへ戻る</button>}
-        <div className="activity-section-label">保存済みバージョン</div>
+        <label className="save-message"><span>マイルストーン名</span><input value={saveMessage} onChange={(event) => setSaveMessage(event.target.value)} placeholder={`${deckTitle} レビュー版`} /></label>
+        <button className="sidebar-primary-action" onClick={() => void saveProject()}>マイルストーンを作成</button>
+        {project?.historyPreview && <button className="return-latest" onClick={() => void restoreHistory()}>履歴を開く前のドラフトへ戻る</button>}
+        <div className="activity-section-label">マイルストーン</div>
         <div className="history-list">
           {history.map((entry, index) => (
             <div className="history-entry" key={entry.id}>
-              <button onClick={() => void restoreHistory(entry.id)} disabled={!saved || turnBusy}>
+              <button onClick={() => void restoreHistory(entry.id)}>
                 <i className={index === 0 ? "current" : ""} /><span><strong>{entry.message}</strong><small>{new Date(entry.date).toLocaleString()}</small></span>
               </button>
               <details className="version-details"><summary>詳細</summary><small>{entry.shortId}</small></details>
             </div>
           ))}
         </div>
-        {!saved && <p className="activity-warning">履歴を復元する前に、現在の編集内容を保存してください。</p>}
+        <p className="activity-warning">過去の状態は既存履歴を上書きせず、新しい作業中ドラフトとして開きます。</p>
       </div>
     </section>
   );
@@ -3110,7 +3473,8 @@ export default function Home() {
     <section className="activity-panel settings-panel" aria-label="設定">
       <header className="activity-panel-heading"><span>設定</span><button className="panel-close" aria-label="設定を閉じる" onClick={() => setLeftPanelOpen(false)}>×</button></header>
       <div className="activity-panel-body settings-sidebar">
-        <section><h3>表示</h3><label><span>カラーモード</span><select value={theme} onChange={(event) => setTheme(event.target.value as "dark" | "light")}><option value="dark">ダーク</option><option value="light">ライト</option></select></label><label><span>スライド一覧</span><select value={slideNav} onChange={(event) => slideNavStore.write(event.target.value as SlideNav)}><option value="filmstrip">フィルムストリップ</option><option value="rail">サイドレール</option></select></label></section>
+        <nav className="more-navigation" aria-label="その他の機能"><button onClick={() => { setActivityView("history"); setMobileView("history"); }}>履歴とマイルストーン</button><button onClick={(event) => togglePopover("quality", event.currentTarget)}>品質チェック</button><button onClick={() => showActivity("skills")}>スキル</button><button onClick={() => showActivity("shortcuts")}>ヘルプとショートカット</button></nav>
+        <section><h3>表示</h3><label><span>カラーモード</span><select value={theme} onChange={(event) => setTheme(event.target.value as "dark" | "light")}><option value="dark">ダーク</option><option value="light">ライト</option></select></label><label><span>表示密度</span><select value={density} onChange={(event) => densityStore.write(event.target.value as Density)}><option value="comfortable">通常</option><option value="compact">コンパクト</option></select></label><p>スライド一覧は左、デザイン・Agent・変更レビューは右の単一コンテキストパネルに表示します。</p></section>
         <section><h3>Agent</h3>
           <label><span>承認方法</span><select value={approvalPolicy} onChange={(event) => setApprovalPolicy(event.target.value)}><option value="never">確認しない</option><option value="on-request">必要なとき確認</option><option value="untrusted">未確認コマンドのみ</option></select></label>
           {codexState.catalog.modelProvider && <pre className="settings-output">{JSON.stringify(codexState.catalog.modelProvider, null, 2)}</pre>}
@@ -3124,9 +3488,8 @@ export default function Home() {
   );
 
   return (
-    <main className={`weave-app ${theme}`} style={{ "--accent": accent } as React.CSSProperties}>
+    <main className={`weave-app ${theme}`} data-density={density} style={{ "--accent": accent } as React.CSSProperties}>
       <header className="topbar">
-        <div className="traffic-lights" aria-hidden="true"><span /><span /><span /></div>
         <button ref={projectSwitcherRef} className="project-switcher" aria-label="プロジェクトを開く" aria-expanded={galleryOpen} aria-haspopup="dialog" onClick={openGallery} data-help="プロジェクトの作成・切り替え・管理を開きます">
           <span className="project-mark">W</span>
           <span><strong>{deckTitle}</strong><small>{project?.root.split("/").pop() ?? "ローカルプロジェクト"}</small></span>
@@ -3136,14 +3499,14 @@ export default function Home() {
           <span className="document-title-field" data-unsaved={!saved ? "true" : undefined}>
             <input aria-label="資料タイトル" value={deckTitle} onChange={(event) => { setDeckTitle(event.target.value); markDirty(); }} />
             {!saved && <i className="unsaved-dot" aria-hidden="true" />}
-            {!saved && <span className="sr-only">未保存の変更あり</span>}
+            {!saved && <span className="sr-only">マイルストーン未作成の変更あり</span>}
           </span>
           <small>{activeSlide} / {slides.length} 枚目</small>
         </div>
         <div className="top-actions">
           <button className="delivery-button" onClick={(event) => togglePopover("delivery", event.currentTarget)} aria-expanded={openPopover === "delivery"} aria-haspopup="menu" data-help="プレゼン表示、書き出し、印刷を選びます">プレゼン・書き出し <span aria-hidden="true">⌄</span></button>
           <input ref={importRef} className="sr-only" type="file" accept=".json,.weave.json,application/json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importBundle(file); }} />
-          <button className="save-button" onClick={() => void saveProject()} disabled={turnBusy} data-help={saved ? "現在の内容は保存済みです" : "現在の編集内容を新しいバージョンとして保存します"}><span>{saved ? "✓" : "↑"}</span> {saved ? "保存済み" : "保存"}</button>
+          <button className="save-button" onClick={() => void saveProject()} data-help="現在のドラフトへ名前を付け、長期履歴として残します"><span>◇</span> マイルストーン</button>
         </div>
       </header>
 
@@ -3177,36 +3540,37 @@ export default function Home() {
 
         {leftPanelOpen ? <aside className="left-panel">
           <div className="panel-resizer" role="separator" aria-orientation="vertical" aria-label="サイドバーの幅を変更" aria-valuenow={sidebarWidth} aria-valuemin={280} aria-valuemax={560} tabIndex={0} onPointerDown={startSidebarResize} onKeyDown={(event) => { if (event.key === "ArrowLeft") { event.preventDefault(); adjustSidebarWidth(-16); } if (event.key === "ArrowRight") { event.preventDefault(); adjustSidebarWidth(16); } }} />
-          {activityView === "agent" ? <section className="agent-panel" aria-label="Agentとの会話" aria-busy={turnBusy}>
+          {activityView === "agent" ? <section className="agent-panel" aria-label="Agent制作タスク" aria-busy={turnBusy}>
+            <div className="context-panel-switcher" role="tablist" aria-label="コンテキストパネル"><button role="tab" aria-selected="false" onClick={() => { setLeftPanelOpen(false); setInspectorOpen(true); setInspectorView("design"); }}>デザイン</button><button role="tab" aria-selected="true">Agent</button><button role="tab" aria-selected="false" onClick={() => { setChangedReviewIndex(0); setLeftPanelOpen(false); }}>変更レビュー{changedReview.length > 0 ? ` ${changedReview.length}` : ""}</button></div>
             <div className="agent-heading">
               <div className="agent-heading-main">
                 <h2 className="agent-heading-title">
-                  <button className="thread-switcher" onClick={(event) => togglePopover("threads", event.currentTarget)} aria-expanded={openPopover === "threads"} aria-haspopup="dialog" title="会話を切り替えます"><span>{activeThreadName}</span><em aria-hidden="true">⌄</em></button>
+                  <button className="thread-switcher" onClick={(event) => togglePopover("threads", event.currentTarget)} aria-expanded={openPopover === "threads"} aria-haspopup="dialog" title="制作タスクを切り替えます"><span>{activeThreadName}</span><em aria-hidden="true">⌄</em></button>
                 </h2>
                 <span className={`agent-state agent-state-${agentHeaderState?.kind ?? "idle"}`} role="status" aria-live="polite" aria-busy={turnBusy} data-turn-state={turnPresentation} data-status={agentHeaderState?.kind ?? "idle"}>{agentHeaderState?.label ?? ""}</span>
               </div>
               <div className="agent-heading-actions">
-                <button className="new-thread-button" onClick={() => void newThread()} aria-label="新しい会話" title="新しい会話を開始します" disabled={turnBusy}>＋</button>
-                <button className="thread-menu-trigger" onClick={(event) => toggleThreadMenu(event.currentTarget)} aria-expanded={threadMenuOpen} aria-haspopup="menu" aria-label="会話の操作" title="会話の名前変更、分岐、ゴール、整理、アーカイブ、削除">…</button>
+                <button className="new-thread-button" onClick={() => void newThread()} aria-label="新しい制作タスク" title="新しい制作タスクを開始します">＋</button>
+                <button className="thread-menu-trigger" onClick={(event) => toggleThreadMenu(event.currentTarget)} aria-expanded={threadMenuOpen} aria-haspopup="menu" aria-label="制作タスクの操作" title="制作タスクの名前変更、別の方向、アーカイブ、削除">…</button>
                 <button className="panel-close" onClick={() => setLeftPanelOpen(false)} aria-label="Agentパネルを閉じる" title="Agentパネルを閉じます">×</button>
               </div>
             </div>
             {openPopover === "threads" && (
               <>
                 <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
-                <div ref={threadDialogRef} className="thread-popover" role="dialog" aria-modal="true" aria-label="会話を切り替え" tabIndex={-1} onKeyDown={onThreadDialogKeyDown}>
+                <div ref={threadDialogRef} className="thread-popover" role="dialog" aria-modal="true" aria-label="制作タスクを切り替え" tabIndex={-1} onKeyDown={onThreadDialogKeyDown}>
                   <div className="thread-popover-heading">
-                    <strong>会話</strong>
-                    <button type="button" onClick={() => { dismissPopover(); void newThread(); }} disabled={turnBusy}>＋ 新しい会話</button>
+                    <strong>制作タスク</strong>
+                    <button type="button" onClick={() => { dismissPopover(); void newThread(); }}>＋ 新しいタスク</button>
                   </div>
                   <div className="thread-controls">
-                    <input type="search" value={threadSearch} onChange={(event) => setThreadSearch(event.target.value)} placeholder="会話を検索" aria-label="会話を検索" />
+                    <input type="search" value={threadSearch} onChange={(event) => setThreadSearch(event.target.value)} placeholder="タスク名・対象スライドを検索" aria-label="制作タスクを検索" />
                     <button className={showArchivedThreads ? "active" : ""} onClick={() => setShowArchivedThreads((value) => !value)}>{showArchivedThreads ? "使用中" : "アーカイブ"}</button>
                   </div>
-                  <div className="thread-list" aria-label="会話一覧">
+                  <div className="thread-list" aria-label="制作タスク一覧">
                     {codexState.threadOrder.map((id) => codexState.threads[id]).filter((thread) => thread && thread.archived === showArchivedThreads).slice(0, 12).map((thread) => (
                       <button key={thread.id} className={codexState.activeThreadId === thread.id ? "active" : ""} onClick={() => { dismissPopover(); void openThread(thread.id); }}>
-                        <strong>{displayThreadName(thread.name) || thread.preview || "新しい会話"}</strong>
+                        <strong>{displayThreadName(thread.name) || thread.preview || "新しい制作タスク"}</strong>
                         <small>{thread.status}</small>
                       </button>
                     ))}
@@ -3218,18 +3582,17 @@ export default function Home() {
               <>
                 <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
                 <div ref={threadMenuRef} className="thread-actions-menu" role="menu" tabIndex={-1} aria-label={`${activeThreadName}の操作`} onKeyDown={onThreadMenuKeyDown}>
-                  <strong>会話の操作</strong>
-                  <button role="menuitem" disabled={!codexState.activeThreadId || turnBusy} onClick={() => { const name = window.prompt("会話名", displayThreadName(codexState.threads[codexState.activeThreadId!]?.name) ?? ""); if (name !== null) { dismissPopover(); void threadAction("name", { name }); } }}>名前を変更</button>
-                  <button role="menuitem" disabled={!codexState.activeThreadId || turnBusy} onClick={() => { dismissPopover(); void forkThread(); }}>複製して分岐</button>
-                  <button role="menuitem" disabled={!codexState.activeThreadId || turnBusy} onClick={() => { dismissPopover(); void manageGoal(); }}>ゴール</button>
-                  <button role="menuitem" disabled={!codexState.activeThreadId || turnBusy} onClick={() => { dismissPopover(); void threadAction("compact"); }}>履歴を整理</button>
-                  <button role="menuitem" disabled={!codexState.activeThreadId || turnBusy} onClick={() => { dismissPopover(); void threadAction(activeThread?.archived ? "unarchive" : "archive"); }}>{activeThread?.archived ? "アーカイブから戻す" : "アーカイブ"}</button>
-                  <button role="menuitem" className="danger" disabled={!codexState.activeThreadId || turnBusy} onClick={() => { if (window.confirm("このWeave会話を完全に削除しますか？")) { dismissPopover(); void threadAction("delete"); } }}>削除</button>
+                  <strong>制作タスクの操作</strong>
+                  <button role="menuitem" disabled={!codexState.activeThreadId} onClick={() => { const name = window.prompt("タスク名", displayThreadName(codexState.threads[codexState.activeThreadId!]?.name) ?? ""); if (name !== null) { dismissPopover(); void threadAction("name", { name }); } }}>タスク名を変更</button>
+                  <button role="menuitem" disabled={!codexState.activeThreadId} onClick={() => { dismissPopover(); void forkThread(); }}>別の方向で試す</button>
+                  <button role="menuitem" disabled={!codexState.activeThreadId} onClick={() => { dismissPopover(); void threadAction(activeThread?.archived ? "unarchive" : "archive"); }}>{activeThread?.archived ? "アーカイブから戻す" : "アーカイブ"}</button>
+                  <details className="advanced-task-actions"><summary>詳細操作</summary><button role="menuitem" disabled={!codexState.activeThreadId} onClick={() => { dismissPopover(); void manageGoal(); }}>内部ゴール</button><button role="menuitem" disabled={!codexState.activeThreadId} onClick={() => { dismissPopover(); void threadAction("compact"); }}>履歴を整理</button></details>
+                  <button role="menuitem" className="danger" disabled={!codexState.activeThreadId} onClick={() => { if (window.confirm("この制作タスクを完全に削除しますか？")) { dismissPopover(); void threadAction("delete"); } }}>削除</button>
                 </div>
               </>
             )}
-            <div ref={messagesRef} className="messages" role="log" aria-live="polite" aria-relevant="additions text" aria-label="Agentとの会話" aria-busy={turnBusy} onScroll={(event) => { const element = event.currentTarget; shouldAutoScrollRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48; }}>
-              {!codexState.activeThreadId && <p className="empty-thread">会話を開始するか、既存の会話を選んでください。</p>}
+            <div ref={messagesRef} className="messages" role="log" aria-live="polite" aria-relevant="additions text" aria-label="制作タスクのやり取り" aria-busy={turnBusy} onScroll={(event) => { const element = event.currentTarget; shouldAutoScrollRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48; }}>
+              {!codexState.activeThreadId && <p className="empty-thread">依頼を書いて新しい制作タスクを始めるか、過去のタスクを選んでください。</p>}
               {activeTurns.length > visibleTurns.length && <p className="trimmed-log">最新{visibleTurns.length}ターンを表示しています。</p>}
               {visibleTurns.map((turn, turnIndex) => {
                 const turnItems = selectTurnItems(codexState, turn.id);
@@ -3332,8 +3695,14 @@ export default function Home() {
                   </>}
                 </aside>
               </>}
-              <div className="context-chip" role="group" aria-label="送信コンテキスト">
-                <span className="context-chip-heading">送信対象</span>
+              <div className="agent-boundary-controls" role="group" aria-label="Agentの変更範囲と実行方法">
+                <label><span>変更範囲</span><select value={changeScope} onChange={(event) => setChangeScope(event.target.value as ChangeScope)}><option value="element" disabled={!selectedId}>この要素だけ</option><option value="current-slide">現在のスライド</option><option value="selected-slides">選択したスライド</option><option value="deck">デッキ全体</option></select></label>
+                <label><span>実行</span><select value={executionMode} onChange={(event) => { const mode = event.target.value as ExecutionMode; setExecutionMode(mode); if (mode !== "apply") setAllowSkillChanges(false); }}><option value="apply">直接反映</option><option value="propose">提案だけ作成</option><option value="plan">先に計画を提示</option></select></label>
+                <label className="agent-skill-permission"><input type="checkbox" checked={allowSkillChanges} disabled={executionMode !== "apply"} onChange={(event) => setAllowSkillChanges(event.target.checked)} /><span>この1回だけプロジェクトスキルの変更を許可</span></label>
+                <p>Agentは{changeScope === "element" ? `「${blockLabels[sel?.kind ?? ""] ?? "選択要素"}」だけ` : changeScope === "current-slide" ? `スライド${activeSlide}だけ` : changeScope === "selected-slides" ? `選択した${selectedSlideIds.size || 1}枚のスライド` : "デッキ全体"}を変更できます。</p>
+              </div>
+              <div className="context-chip" role="group" aria-label="参照対象">
+                <span className="context-chip-heading">参照</span>
                 <span className="context-target-chip" title={slides[activeSlide - 1]?.title || "無題"}><span className="context-icon" aria-hidden="true">▧</span>スライド {activeSlide} · {slides[activeSlide - 1]?.title || "無題"}</span>
                 {selectedId && <span className="context-target-chip"><span className="context-icon" aria-hidden="true">⌖</span>選択要素 · {blockLabels[sel?.kind ?? ""] ?? "要素"}</span>}
                 {activeElementAnnotations.length > 0 && <span className="context-target-chip"><span className="context-icon" aria-hidden="true">⌑</span>指示要素 {activeElementAnnotations.length}件</span>}
@@ -3387,25 +3756,27 @@ export default function Home() {
         <section className="center-stage">
           <div className="editor-tabs">
             <div className="variation-tabs">
-              {variations.length > 0 && <button className={activeVariation === "main" ? "active" : ""} onClick={() => void checkoutVariation("main")} disabled={turnBusy}><span className="variation-dot dot-0" />元の案</button>}
+              {variations.length > 0 && <button className={activeVariation === "main" ? "active" : ""} onClick={() => void checkoutVariation("main")}><span className="variation-dot dot-0" />通常編集</button>}
               {variations.map((variation, index) => (
-                <button key={variation.branch} className={activeVariation === variation.branch ? "active" : ""} onClick={() => void checkoutVariation(variation.branch)} disabled={turnBusy}>
-                  <span className={`variation-dot dot-${index + 1}`} />{variation.label}<small>{variation.status === "ready" ? "準備完了" : "生成中"}</small>
+                <button key={variation.branch} className={activeVariation === variation.branch ? "active" : ""} onClick={() => void checkoutVariation(variation.branch)}>
+                  <span className={`variation-dot dot-${index + 1}`} />探索 {String.fromCharCode(65 + index)}<small>{variation.status === "ready" ? "比較できます" : variation.status === "paused" ? "保留中" : variation.status === "archived" ? "終了" : "生成中"}</small>
                 </button>
               ))}
-              <button className="add-variation" onClick={() => setShowVariationPrompt(!showVariationPrompt)} aria-label="別案を追加" disabled={turnBusy}>＋</button>
-              {variations.length > 0 && <button className="compare-variations" onClick={() => void openVariationCompare()} disabled={turnBusy || variationCompareLoading}>{variationCompareLoading ? "読み込み中…" : "比較"}</button>}
+              <button className="add-variation" onClick={() => setShowVariationPrompt(!showVariationPrompt)} aria-label="探索セッションを追加">＋</button>
+              {variations.length > 0 && <button className="compare-variations" onClick={() => void openVariationCompare()} disabled={variationCompareLoading}>{variationCompareLoading ? "読み込み中…" : "探索案を比較"}</button>}
             </div>
             <div className="editor-tab-actions">
               {activeVariation.startsWith("weave/variation/") && (
                 <>
-                  <button className="archive-direction" onClick={() => void archiveVariation()} disabled={turnBusy}>履歴へ送る</button>
-                  <button className="use-direction" onClick={() => void acceptVariation()} disabled={turnBusy}>この案を採用</button>
+                  <button className="archive-direction" onClick={() => void setExplorationState(activeVariation, "paused")}>保留</button>
+                  <button className="archive-direction" onClick={() => void archiveVariation()}>探索を終了</button>
+                  <button className="use-direction" onClick={() => void acceptVariation()}>案全体を採用</button>
                 </>
               )}
               <div className="view-toggle" role="group" aria-label="編集表示">
-                <button className={mode === "preview" ? "active" : ""} onClick={() => { if (mode === "code") reinject(); setMode("preview"); }}>▣ <span>プレビュー</span></button>
-                <button className={mode === "code" ? "active" : ""} onClick={() => { setSlidesSynced(captureActive()); setSelectedAnnotationId(null); setPointerPicking(false); if (annotationMode) setAnnouncement("Mark for Agentを終了しました"); setAnnotationMode(false); setMode("code"); }}>‹› <span>ソース</span></button>
+                <button className={mode === "preview" ? "active" : ""} onClick={() => { if (mode !== "preview") reinject(); setMode("preview"); }}>▣ <span>ビジュアル</span></button>
+                <button className={mode === "split" ? "active" : ""} onClick={() => openSourceEditor("split")}>◫ <span>分割</span></button>
+                <button className={mode === "source" ? "active" : ""} onClick={() => openSourceEditor("source")}>‹› <span>HTML編集</span></button>
               </div>
             </div>
           </div>
@@ -3413,24 +3784,24 @@ export default function Home() {
           <div className="canvas-area">
             {showVariationPrompt && (
               <div className="variation-prompt">
-                <div><span>新しいデザイン案</span><button aria-label="デザイン案の作成を閉じる" onClick={() => setShowVariationPrompt(false)}>×</button></div>
+                <div><span>新しい探索セッション</span><button aria-label="探索セッションの作成を閉じる" onClick={() => setShowVariationPrompt(false)}>×</button></div>
                 <label htmlFor="variation-prompt">どのような雰囲気にしますか？</label>
                 <textarea id="variation-prompt" value={variationPrompt} maxLength={16000} onChange={(event) => setVariationPrompt(event.target.value)} />
-                <button onClick={() => void generateVariation()} disabled={!agentReady || turnBusy}><span>✦</span> デザイン案を生成</button>
-                <small>最新の保存済みバージョンから順番に生成します。</small>
+                <button onClick={() => void generateVariation()} disabled={!agentReady || turnSubmission.phase !== "idle"}><span>✦</span> 探索案を生成</button>
+                <small>生成中も通常編集や別のプロジェクトへ移動できます。</small>
               </div>
             )}
             {variationPreviews ? (
               <section className="variation-compare" aria-label="デザイン案の比較">
-                <header><span><strong>デザイン案を比較</strong><small>スライド{activeSlide}を横並びで表示</small></span><button onClick={() => setVariationPreviews(null)}>比較を閉じる</button></header>
-                <div className="variation-compare-grid">
-                  {variationPreviews.map((preview) => {
+                <header><span><strong>探索案を比較</strong><small>差分のあるスライドと取り込む範囲を選べます</small></span><div className="variation-compare-controls"><button className={variationDiffOnly ? "active" : ""} aria-pressed={variationDiffOnly} onClick={() => setVariationDiffOnly((value) => !value)}>差分だけ</button><button className={variationComparisonMode === "side-by-side" ? "active" : ""} onClick={() => setVariationComparisonMode("side-by-side")}>左右比較</button><button className={variationComparisonMode === "overlay" ? "active" : ""} onClick={() => setVariationComparisonMode("overlay")}>重ねて比較</button><button onClick={() => setVariationPreviews(null)}>比較を閉じる</button></div></header>
+                <div className="variation-compare-grid" data-mode={variationComparisonMode}>
+                  {variationPreviews.filter((preview) => !variationDiffOnly || preview.branch === "main" || preview.deck.slides[activeSlide - 1]?.html !== variationPreviews.find((item) => item.branch === "main")?.deck.slides[activeSlide - 1]?.html).map((preview) => {
                     const previewSlide = preview.deck.slides[Math.min(activeSlide - 1, preview.deck.slides.length - 1)];
                     let html = "";
                     try { html = previewSlide ? composeFor(previewSlide, Math.min(activeSlide, preview.deck.slides.length), preview.deck.slides.length) : ""; } catch { html = ""; }
                     return <article key={preview.branch} className={preview.branch === activeVariation ? "active" : ""}>
                       <div className="variation-card-preview"><style>{preview.css}</style><div dangerouslySetInnerHTML={{ __html: displayAssetHtml(html) }} /></div>
-                      <footer><span><strong>{preview.branch === "main" ? "元の案" : preview.label}</strong><small>{previewSlide?.title || "無題"}</small></span><button onClick={async () => { setVariationPreviews(null); await checkoutVariation(preview.branch); }}>開く</button></footer>
+                      <footer><span><strong>{preview.branch === "main" ? "通常編集" : preview.label}</strong><small>{previewSlide?.title || "無題"}</small><small>{preview.branch === "main" ? "比較の基準" : "Agent要約: 構成・表現・配色の変更を含む案"}</small></span>{preview.branch !== "main" && previewSlide && <button onClick={() => void importExplorationSlide(preview.branch, previewSlide.id)}>このスライドだけ取り込む</button>}<button onClick={async () => { setVariationPreviews(null); await checkoutVariation(preview.branch); }}>案を開く</button></footer>
                     </article>;
                   })}
                 </div>
@@ -3459,7 +3830,7 @@ export default function Home() {
                 </div>
                 <div
                   className="slide-viewport"
-                  data-zoom-mode={zoomLevel <= defaultCanvasZoom ? "fit" : "manual"}
+                  data-zoom-mode={zoomMode}
                   data-annotation-mode={annotationMode ? "true" : undefined}
                   data-pointer-picking={pointerPicking ? "true" : undefined}
                   ref={(node) => { viewportRef.current = node; canvasRef.current = node; }}
@@ -3508,9 +3879,29 @@ export default function Home() {
                   <button onClick={() => reviewChangedTarget(changedReviewIndex + 1)} aria-label="次の変更箇所">→</button>
                   <button onClick={() => { setChangedReview([]); setSelectedId(null); }}>確認完了</button>
                 </div>}
-                {selectedId && sel && !annotationMode && <div className="selection-toolbar" role="toolbar" aria-label="選択した要素の操作">
+                {(structuredChanges.length > 0 || mergeConflicts.length > 0) && <details className="change-review-panel">
+                  <summary>変更レビュー <strong>{structuredChanges.length + mergeConflicts.length}件</strong></summary>
+                  {mergeConflicts.length > 0 && <section className="merge-conflicts" aria-label="競合の解決"><header><strong>同じ箇所の競合</strong><small>箇所ごとに残す内容を選んでください</small></header>{mergeConflicts.map((conflict) => <article key={conflict.path}>
+                    <strong>{conflict.slideId ? `スライド ${conflict.slideId}` : "デッキ全体"}{conflict.elementId ? ` · ${conflict.elementId}` : ""}</strong>
+                    <p>{conflict.explanation}</p>
+                    <div className="change-before-after"><span><small>現在の編集</small><code>{typeof conflict.current === "string" ? conflict.current.slice(0, 180) : JSON.stringify(conflict.current)?.slice(0, 180)}</code></span><span><small>Agentの変更</small><code>{typeof conflict.agent === "string" ? conflict.agent.slice(0, 180) : JSON.stringify(conflict.agent)?.slice(0, 180)}</code></span></div>
+                    <footer><button onClick={() => resolveMergeConflict(conflict, "current")}>現在の編集を保持</button><button onClick={() => resolveMergeConflict(conflict, "agent")}>Agentの変更を採用</button></footer>
+                  </article>)}</section>}
+                  <header><span>意味単位の変更セット</span><button onClick={() => applyReviewGroup({ kind: "all" })}>すべて戻す</button></header>
+                  <div className="change-review-list">{structuredChanges.map((change) => <article key={change.id} data-reverted={revertedChangeIds.has(change.id) ? "true" : undefined}>
+                    <button className="change-target" onClick={() => { const index = slidesRef.current.findIndex((slide) => slide.id === change.slideId); if (index >= 0) switchSlide(index + 1); if (change.elementId) setSelectedId(change.elementId); }}><strong>{change.slideId ? `スライド ${change.slideId}` : "デッキ全体"}</strong><span>{change.type === "text" ? "テキスト変更" : change.type === "style" ? "スタイル変更" : change.type === "layout" ? "レイアウト変更" : change.type}</span></button>
+                    <p>{change.reason}</p>
+                    <div className="change-before-after"><span><small>変更前</small><code>{typeof change.before === "string" ? change.before.slice(0, 180) : JSON.stringify(change.before)?.slice(0, 180)}</code></span><span><small>変更後</small><code>{typeof change.after === "string" ? change.after.slice(0, 180) : JSON.stringify(change.after)?.slice(0, 180)}</code></span></div>
+                    <footer><button onClick={() => applyReviewChange(change)}>{revertedChangeIds.has(change.id) ? "この変更を再適用" : "この変更だけ戻す"}</button>{change.slideId && <button onClick={() => applyReviewGroup({ kind: "slide", slideId: change.slideId })}>このスライドを戻す</button>}</footer>
+                  </article>)}</div>
+                </details>}
+                {selectedId && sel && !annotationMode && <div className="selection-toolbar" data-placement={selectionToolbarPosition.placement} style={{ left: selectionToolbarPosition.left, top: selectionToolbarPosition.top }} role="toolbar" aria-label="選択した要素の簡易操作">
                   {!sel.container && sel.kind !== "image" && <button onClick={beginEditSelected}>編集</button>}
-                  {agentReady && <button onClick={referenceSelectedElement}>@ Agent</button>}
+                  {!sel.container && sel.kind !== "image" && <button aria-label="太字を切り替える" onClick={() => { const node = selectedNode(); if (!node) return; checkpoint(); node.classList.toggle("font-bold"); syncFromDom(); markDirty(); }}>太字</button>}
+                  {agentReady && <button onClick={referenceSelectedElement}>Agentへ指示</button>}
+                  <button className="mobile-detail-action" onClick={() => { setLeftPanelOpen(false); setInspectorOpen(true); setMobileView("inspector"); }}>詳細</button>
+                  <button onClick={copySelectedStyle}>スタイルをコピー</button>
+                  <button onClick={pasteSelectedStyle} disabled={styleClipboard === null}>貼り付け</button>
                   {!outline.some((item) => item.id === selectedId && item.locked) && <button onClick={duplicateSelected}>複製</button>}
                   {outline.length > 1 && !outline.some((item) => item.id === selectedId && item.locked) && <button className="danger" onClick={deleteSelected}>削除</button>}
                 </div>}
@@ -3524,11 +3915,11 @@ export default function Home() {
                     <input ref={imageInputRef} className="sr-only" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml,image/gif" onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadImage(file); }} />
                   </div>
                   <div className="canvas-tool-group zoom-tools" role="group" aria-label="キャンバスの拡大率">
-                    <button aria-label="縮小" onClick={() => setManualZoom(Math.max(.25, zoomLevel - .1))}>−</button>
-                    <b>{Math.round(zoomLevel * 100)}%</b>
-                    <button aria-label="拡大" onClick={() => setManualZoom(Math.min(4, zoomLevel + .1))}>＋</button>
-                    <button aria-label="拡大率を100%に戻す" onClick={() => setManualZoom(defaultCanvasZoom)}>100</button>
-                    <button aria-label="画面に合わせる" onClick={() => setManualZoom(null)}>⊡</button>
+                    <button aria-label="縮小" aria-keyshortcuts="Control+- Meta+-" onClick={() => setManualZoom(Math.max(.25, slideScale - .1))}>−</button>
+                    <b aria-live="polite">{Math.round(slideScale * 100)}%</b>
+                    <button aria-label="拡大" aria-keyshortcuts="Control++ Meta++" onClick={() => setManualZoom(Math.min(4, slideScale + .1))}>＋</button>
+                    <button aria-label="実寸で表示" onClick={() => setManualZoom(defaultCanvasZoom)}>実寸</button>
+                    <button className={zoomMode === "fit" ? "active" : ""} aria-label={`画面に合わせる・現在${Math.round(slideScale * 100)}%`} onClick={() => setManualZoom(null)}>画面に合わせる</button>
                     <button
                       className={canvasFocused ? "active" : ""}
                       aria-label={canvasFocused ? "集中表示を終了" : "キャンバスに集中"}
@@ -3563,13 +3954,18 @@ export default function Home() {
                 )}
               </div>
             ) : (
-              <div className="code-editor">
-                <div className="code-breadcrumb"><span>slides</span> / <span>{slides[activeSlide - 1]?.id}.html</span></div>
-                <pre>
-                  {codeView.split("\n").map((line, index) => (
-                    <div key={index}><span className="line-number">{index + 1}</span><code>{line}</code></div>
-                  ))}
-                </pre>
+              <div className={`source-workspace ${mode === "split" ? "split" : "source-only"}`}>
+                {mode === "split" && <div className="source-preview" aria-label="HTML編集のプレビュー"><style>{deckCss}</style><div dangerouslySetInnerHTML={{ __html: displayAssetHtml(sourcePreviewHtml) }} /></div>}
+                <section className="code-editor" aria-label="HTMLソース編集">
+                  <div className="code-breadcrumb"><span>スライドHTML</span><strong>{slides[activeSlide - 1]?.id}.html</strong><span>未確定のHTMLはキャンバスへ反映されません</span></div>
+                  <div className="source-search" role="search"><input value={sourceSearch} onChange={(event) => setSourceSearch(event.target.value)} placeholder="検索" aria-label="HTMLを検索" /><input value={sourceReplace} onChange={(event) => setSourceReplace(event.target.value)} placeholder="置換" aria-label="置換後の文字" /><button onClick={replaceSourceMatches} disabled={!sourceSearch}>すべて置換</button></div>
+                  <div className="source-buffer-wrap">
+                    <pre aria-hidden="true">{sourceBuffer}</pre>
+                    <textarea ref={sourceEditorRef} value={sourceBuffer} spellCheck={false} aria-label="スライドHTML" onChange={(event) => { setSourceBuffer(event.target.value); setSourceDiagnostics(validateEditableSlideSource(event.target.value)); }} onSelect={(event) => { const id = sourceElementIdAtOffset(sourceBuffer, event.currentTarget.selectionStart); if (id) setSelectedId(id); }} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); applySourceBuffer(); } if (event.key === "Tab") { event.preventDefault(); const target = event.currentTarget; const start = target.selectionStart; const next = `${sourceBuffer.slice(0, start)}  ${sourceBuffer.slice(target.selectionEnd)}`; setSourceBuffer(next); requestAnimationFrame(() => target.setSelectionRange(start + 2, start + 2)); } }} />
+                  </div>
+                  <footer className="source-actions"><span role="status" className={sourceDiagnostics.length ? "source-invalid" : "source-valid"}>{sourceDiagnostics.length ? `${sourceDiagnostics.length}件のエラー` : "HTMLは有効です"}</span><button onClick={applySourceBuffer} disabled={sourceDiagnostics.length > 0}>検証して反映</button></footer>
+                  {sourceDiagnostics.length > 0 && <ol className="source-diagnostics" aria-label="HTML検証エラー">{sourceDiagnostics.map((problem, index) => <li key={`${problem.line}-${problem.column}-${index}`}><button onClick={() => { const lines = sourceBuffer.split("\n"); const offset = lines.slice(0, problem.line - 1).reduce((sum, line) => sum + line.length + 1, 0) + problem.column - 1; sourceEditorRef.current?.focus(); sourceEditorRef.current?.setSelectionRange(offset, offset); }}><strong>{problem.message}</strong><span>行 {problem.line}, 列 {problem.column}</span></button></li>)}</ol>}
+                </section>
               </div>
             )}
           </div>
@@ -3578,7 +3974,8 @@ export default function Home() {
         </section>
 
         {inspectorOpen ? <aside className="inspector">
-          <div className="inspector-heading"><span>インスペクター</span><button aria-label="インスペクターを閉じる" onClick={() => setInspectorOpen(false)}>×</button></div>
+          <div className="context-panel-switcher" role="tablist" aria-label="コンテキストパネル"><button role="tab" aria-selected="true">デザイン</button><button role="tab" aria-selected="false" onClick={() => { setInspectorOpen(false); setActivityView("agent"); setLeftPanelOpen(true); }}>Agent</button><button role="tab" aria-selected="false" onClick={() => { setInspectorOpen(false); setChangedReviewIndex(0); }}>変更レビュー{changedReview.length > 0 ? ` ${changedReview.length}` : ""}</button></div>
+          <div className="inspector-heading"><span>詳細インスペクター</span><button aria-label="インスペクターを閉じる" onClick={() => setInspectorOpen(false)}>×</button></div>
           <div className="inspector-tabs" role="tablist" aria-label="インスペクターの表示">
             <button role="tab" aria-selected={inspectorView === "layers"} className={inspectorView === "layers" ? "active" : ""} onClick={() => setInspectorView("layers")}>レイヤー</button>
             <button role="tab" aria-selected={inspectorView === "design"} className={inspectorView === "design" ? "active" : ""} onClick={() => setInspectorView("design")}>デザイン</button>
@@ -3599,14 +3996,14 @@ export default function Home() {
                   key={item.id}
                   style={{ paddingLeft: 14 + item.depth * 14 }}
                   className={[selectedId === item.id ? "active" : "", treeDragId === item.id ? "dragging" : "", treeDrop?.id === item.id ? `drop-${treeDrop.position}` : ""].filter(Boolean).join(" ")}
-                  draggable={!annotationMode && !turnBusy && !item.locked}
+                  draggable={!annotationMode && !item.locked}
                   onClick={() => setSelectedId(item.id)}
                   onDragStart={(event) => { if (annotationMode || item.locked) { event.preventDefault(); return; } event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", item.id); setTreeDragId(item.id); setSelectedId(item.id); }}
                   onDragOver={(event) => onTreeDragOver(event, item)}
                   onDrop={(event) => onTreeDrop(event, item)}
                   onDragEnd={() => { setTreeDragId(null); setTreeDrop(null); }}
                 >
-                  <i>{blockIcons[item.kind] ?? "▦"}</i><span>{item.label}</span><small>{item.locked ? "固定" : item.container ? "コンテナ" : "ブロック"}</small>
+                  <i>{blockIcons[item.kind] ?? "▦"}</i><span>{item.label}</span>{quality.diagnostics.some((diagnostic) => diagnostic.elementId === item.id) && <b className="layer-diagnostic" aria-label="品質上の指摘あり">!</b>}<small>{item.locked ? "固定" : item.container ? "コンテナ" : "ブロック"}</small>
                 </button>
               ))}
             </div>}
@@ -3622,6 +4019,9 @@ export default function Home() {
                   choice here calls for follow it inline, where the choice is still in view. */}
               <section className="property-section">
                 <div className="property-heading"><span>ブロック</span><span>{blockLabels[sel.kind] ?? sel.kind}</span></div>
+                <div className="property-origin"><span>値の由来</span><strong>{selectedNode()?.className ? "この要素で個別指定" : "テーマ／親から継承"}</strong><button type="button" onClick={resetSelectedOverrides}>継承へ戻す</button></div>
+                {sel.kind === "metrics" && <p className="property-constraint" role="note"><strong>変更できる範囲が限定されています</strong>Metricsは固定列構造のため、方向変更は利用できません。子要素の配置競合を防ぎます。</p>}
+                {sel.read.parentLayout !== "column" && <p className="property-impact" role="note">この要素のサイズ変更は、同じ親にある兄弟要素の利用可能領域にも影響します。</p>}
                 {sel.read.parentLayout !== "grid" && (
                   <div className="property-row">
                     <span>幅</span>
@@ -3721,16 +4121,12 @@ export default function Home() {
           {sel && outline.length > 1 && !outline.some((item) => item.id === selectedId && item.locked) && <button className="delete-block" onClick={deleteSelected}>選択中のブロックを削除</button>}
           </fieldset>
           </>}
-        </aside> : <button className="open-inspector" onClick={() => setInspectorOpen(true)}>インスペクター</button>}
+        </aside> : <button className="open-inspector" onClick={() => { setLeftPanelOpen(false); setInspectorOpen(true); }}>デザイン</button>}
         <nav className="mobile-tabs" aria-label="作業画面">
           <button className={mobileView === "canvas" ? "active" : ""} aria-pressed={mobileView === "canvas"} onClick={() => setMobileView("canvas")}>キャンバス</button>
-          <button className={mobileView === "agent" ? "active" : ""} aria-pressed={mobileView === "agent"} onClick={() => { setActivityView("agent"); setLeftPanelOpen(true); setMobileView("agent"); }}>Agent</button>
-          <button className={mobileView === "history" ? "active" : ""} aria-pressed={mobileView === "history"} onClick={() => { setActivityView("history"); setLeftPanelOpen(true); setMobileView("history"); }}>履歴</button>
-          <button className={mobileView === "shortcuts" ? "active" : ""} aria-pressed={mobileView === "shortcuts"} onClick={() => { setActivityView("shortcuts"); setLeftPanelOpen(true); setMobileView("shortcuts"); }}>キー</button>
-          <button className={mobileView === "skills" ? "active" : ""} aria-pressed={mobileView === "skills"} onClick={() => showActivity("skills")}>スキル</button>
           <button className={mobileView === "slides" ? "active" : ""} aria-pressed={mobileView === "slides"} onClick={() => setMobileView("slides")}>スライド</button>
-          <button className={mobileView === "inspector" ? "active" : ""} aria-pressed={mobileView === "inspector"} onClick={() => { setInspectorOpen(true); setMobileView("inspector"); }}>詳細</button>
-          <button className={mobileView === "settings" ? "active" : ""} aria-pressed={mobileView === "settings"} onClick={() => { setActivityView("settings"); setLeftPanelOpen(true); setMobileView("settings"); }}>設定</button>
+          <button className={mobileView === "agent" ? "active" : ""} aria-pressed={mobileView === "agent"} onClick={() => { setActivityView("agent"); setLeftPanelOpen(true); setMobileView("agent"); }}>Agent</button>
+          <button className={mobileView === "more" ? "active" : ""} aria-pressed={mobileView === "more"} onClick={() => { setActivityView("settings"); setLeftPanelOpen(true); setMobileView("more"); }}>その他{qualityReport.errors + qualityReport.warnings > 0 ? ` · ${qualityReport.errors + qualityReport.warnings}` : ""}</button>
         </nav>
         <nav className="mobile-slide-panel slide-nav" aria-label="スライド一覧">{slideNavigator}</nav>
       </div>
@@ -3765,23 +4161,21 @@ export default function Home() {
               {galleryLoading ? <p className="gallery-empty">読み込み中…</p> : <>
                 {galleryProjects.length === 0 && <div className="gallery-empty"><strong>プロジェクトがありません</strong><span>新しいプロジェクトを作成してください。</span></div>}
                 <div className="gallery-grid">
-                  <button className="new-project-card" onClick={() => { setGalleryView("new"); setGalleryMenu(null); setGalleryTip(null); }}><b>＋</b><span>新しいプロジェクト</span></button>
+                  <button className="new-project-card" onClick={() => { setGalleryView("new"); setGalleryMenu(null); }}><b>＋</b><span>新しいプロジェクト</span></button>
                   {galleryProjects.map((item) => <div key={item.slug} className="project-card-wrap">
-                    <button className={`project-card ${item.current ? "current" : ""} ${item.blocked ? "blocked" : ""}`} onClick={() => void switchProject(item)} disabled={!!gallerySwitching} aria-label={`${item.title}を開く`}>
+                    <button className={`project-card ${item.current ? "current" : ""}`} onClick={() => void switchProject(item)} disabled={!!gallerySwitching} aria-label={`${item.title}を開く`}>
                       <span className="project-thumb">
                         {gallerySwitching === item.slug ? <span className="thumb-loading">読み込み中…</span> : thumbHtml(item.thumbnailHtml, item.css, item.title)}
                         {item.current && <span className="card-pill">開いています</span>}
-                        {item.blocked && <span className="card-pill warn">未処理の別案あり</span>}
                       </span>
-                      <span className="card-meta"><strong>{item.title}</strong><small>{item.current && !saved ? "未保存の変更あり" : `${item.slideCount}枚 · ${relativeProjectTime(item.updatedAt)}`}</small></span>
+                      <span className="card-meta"><strong>{item.title}</strong><small>{item.current && !saved ? "ドラフト同期済み · マイルストーン未作成" : `${item.slideCount}枚 · ${relativeProjectTime(item.updatedAt)}`}</small></span>
                     </button>
-                    <button className="kebab" aria-label={`${item.title}のメニュー`} aria-haspopup="menu" aria-expanded={galleryMenu === item.slug} onPointerDown={(event) => event.stopPropagation()} onClick={() => { setGalleryTip(null); setGalleryMenu((current) => current === item.slug ? null : item.slug); }}>⋯</button>
+                    <button className="kebab" aria-label={`${item.title}のメニュー`} aria-haspopup="menu" aria-expanded={galleryMenu === item.slug} onPointerDown={(event) => event.stopPropagation()} onClick={() => setGalleryMenu((current) => current === item.slug ? null : item.slug)}>⋯</button>
                     {galleryMenu === item.slug && <div className="card-menu" role="menu" onPointerDown={(event) => event.stopPropagation()}>
                       <button role="menuitem" onClick={() => { setRenameDraft(item.title); setGalleryDialog({ kind: "rename", slug: item.slug, title: item.title }); setGalleryMenu(null); }}><span>名前を変更</span><small>表示名を変更します</small></button>
                       <button role="menuitem" onClick={() => void galleryMutation(item.slug, "duplicate")}><span>複製</span><small>新しいプロジェクトとして保存します</small></button>
                       {!item.current && <button className="danger" role="menuitem" onClick={() => { setGalleryDialog({ kind: "archive", slug: item.slug, title: item.title }); setGalleryMenu(null); }}><span>アーカイブ</span><small>この一覧から移動します</small></button>}
                     </div>}
-                    {galleryTip === item.slug && <div className="card-tip"><strong>まだ開けません</strong><p>生成した別案が{item.blockedCount}件未処理です。切り替える前に採用、履歴へ送る、または破棄してください。</p></div>}
                   </div>)}
                 </div>
               </>}
@@ -3791,9 +4185,6 @@ export default function Home() {
             <div className="dialog" role="alertdialog" aria-modal="true">
               {galleryDialog.kind === "rename" && <><div className="dialog-body"><strong>プロジェクト名を変更</strong><input className="name-field" autoFocus value={renameDraft} onChange={(event) => setRenameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void galleryMutation(galleryDialog.slug, "rename", renameDraft); }} /></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>キャンセル</button><button className="primary-button" onClick={() => void galleryMutation(galleryDialog.slug, "rename", renameDraft)}>保存</button></div></>}
               {galleryDialog.kind === "archive" && <><div className="dialog-body"><strong>「{galleryDialog.title}」をアーカイブしますか？</strong><p>プロジェクトは削除されず、この一覧から移動します。</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>キャンセル</button><button className="primary-button" onClick={() => void galleryMutation(galleryDialog.slug, "archive")}>アーカイブ</button></div></>}
-              {galleryDialog.kind === "dirty" && <><div className="dialog-body"><strong>切り替える前に保存</strong><p>「{deckTitle}」に未保存の変更があります。編集中の内容と操作履歴は別のプロジェクトに引き継がれません。</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>キャンセル</button><button className="primary-button" onClick={async () => { const target = galleryProjects.find((item) => item.slug === galleryDialog.slug); setGalleryDialog(null); if (await saveProject() && target) void switchProject(target, false, true); }}>保存して「{galleryDialog.title}」を開く</button></div></>}
-              {galleryDialog.kind === "create" && <><div className="dialog-body"><strong>作成する前に保存</strong><p>「{deckTitle}」に未保存の変更があります。保存してから新しいプロジェクトを開きます。</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>キャンセル</button><button className="primary-button" onClick={async () => { setGalleryDialog(null); if (await saveProject()) void createProject(true); }}>保存して作成</button></div></>}
-              {galleryDialog.kind === "turn" && <><div className="dialog-body"><strong>生成を止めて切り替えますか？</strong><p>進行中のAgent生成を止めると、未完成の変更は破棄されます。</p></div><div className="dialog-actions"><button className="ghost-button" onClick={() => setGalleryDialog(null)}>キャンセル</button><button className="primary-button" onClick={() => { const target = galleryProjects.find((item) => item.slug === galleryDialog.slug); setGalleryDialog(null); if (target) void switchProject(target, true); }}>停止して切り替え</button></div></>}
             </div>
           </>}
         </div>
@@ -3831,8 +4222,8 @@ export default function Home() {
 
       <footer className="statusbar">
         <div>
-          <button className={`quality-button ${qualityReport.ok ? "ok" : "error"}`} onClick={(event) => togglePopover("quality", event.currentTarget)} aria-expanded={openPopover === "quality"}>品質 {qualityReport.ok ? (qualityReport.warnings ? `警告 ${qualityReport.warnings}件` : "✓") : `エラー ${qualityReport.errors}件`}</button>
-          <span>{saved ? "すべて保存済み" : "未保存の変更あり"}</span>
+          <button className={`quality-button ${qualityReport.ok ? "ok" : "error"}`} onClick={(event) => togglePopover("quality", event.currentTarget)} aria-expanded={openPopover === "quality"}>品質 {qualityReport.errors ? `エラー ${qualityReport.errors}` : qualityReport.warnings ? `警告 ${qualityReport.warnings}` : qualityReport.suggestions ? `提案 ${qualityReport.suggestions}` : "✓"}</button>
+          {draftSync === "error" ? <button className="draft-retry" onClick={() => { lastDraftFingerprintRef.current = ""; setDraftSync("saving"); setSlides((current) => [...current]); }}>同期できていません — 再試行</button> : <span role="status">{draftSync === "saving" ? "保存中…" : draftSync === "offline" ? "オフライン — 端末内に保存済み" : "同期済み"}</span>}
           {apiError && <span className="status-error">{apiError}</span>}
         </div>
         <div><span>HTML</span><span>UTF-8</span><span>スペース: 2</span>{!agentReady && <button className="connection offline" onClick={() => setConnectionEpoch((value) => value + 1)} title="Agentへの接続をやり直す"><i /> Agentへ再接続</button>}</div>
@@ -3843,9 +4234,9 @@ export default function Home() {
           <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
           <aside className="quality-popover" aria-label="デッキの品質レポート">
             <header><strong>デッキの品質</strong><button aria-label="品質レポートを閉じる" onClick={() => dismissPopover()}>×</button></header>
-            {qualityReport.ok && <p className="quality-empty">作業を妨げる品質上の問題はありません。</p>}
+            {qualityReport.ok && quality.diagnostics.length === 0 && <p className="quality-empty">作業を妨げる品質上の問題はありません。</p>}
             {quality.diagnostics.map((item: any, index: number) => (
-              <div key={`${item.code}-${index}`} className="quality-row"><i className={item.severity === "warning" ? "warning" : "error"} /><span><strong>{item.message}</strong><small>{item.code} · {item.source}</small></span></div>
+              <div key={item.id ?? `${item.code}-${index}`} className="quality-row" data-severity={item.severity}><i className={item.severity} aria-hidden="true" /><span><strong>{item.severity === "error" ? "エラー" : item.severity === "warning" ? "警告" : "提案"} · {item.message}</strong><small>{item.explanation}</small><small>{item.slideId ? `スライド ${item.slideId}` : "デッキ全体"}{item.elementId ? ` · 要素 ${item.elementId}` : ""}</small><span className="quality-actions"><button onClick={() => focusDiagnostic(item)}>対象を見る</button><button onClick={() => askAgentToFixDiagnostic(item)}>Agentで修正</button>{item.severity !== "error" && <button onClick={() => setIgnoredDiagnostics((current) => new Set([...current, item.id]))}>今回は無視</button>}</span></span></div>
             ))}
             {projectEventDiagnostics.length > 0 && <>
               <div className="quality-report-heading">直前のAgent出力は反映されませんでした</div>

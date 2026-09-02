@@ -46,11 +46,12 @@ test("deck saves are revision-guarded, replace slide files, and restore history 
 
     const restoreRevision = await project.checkoutHistory(initialRevision);
     assert.equal(git(root, ["branch", "--show-current"]), "main");
-    assert.notEqual(restoreRevision, initialRevision);
-    assert.notEqual(restoreRevision, savedCommit);
+    assert.equal(restoreRevision, savedCommit);
     assert.equal((await project.readProject()).title, initial.title);
-    assert.match(git(root, ["log", "-1", "--pretty=%s"]), /^Restore history /);
-    assert.equal(git(root, ["status", "--porcelain"]), "");
+    assert.equal(git(root, ["log", "-1", "--pretty=%s"]), "Save transactional deck");
+    assert.notEqual(git(root, ["status", "--porcelain"]), "");
+
+    project.commitIfChanged("Milestone: restored initial draft");
 
     await rename(join(root, "slides"), join(root, ".slides-crash.previous"));
     await mkdir(join(root, ".slides-crash.staged"));
@@ -374,7 +375,7 @@ test("concurrent saves with one revision cannot overwrite each other", async () 
   }
 });
 
-test("history restore removes managed directories absent from the target commit", async () => {
+test("history preview preserves current assets and can return to the prior draft", async () => {
   const root = await mkdtemp(join(tmpdir(), "weave-history-tree-"));
   const previousRoot = process.env.WEAVE_PROJECT_ROOT;
   process.env.WEAVE_PROJECT_ROOT = root;
@@ -385,9 +386,14 @@ test("history restore removes managed directories absent from the target commit"
     await mkdir(join(root, "assets"), { recursive: true });
     await writeFile(join(root, "assets", "added.png"), "image");
     project.commitIfChanged("Add later asset");
+    const dirtyDeck = { ...(await project.readProject(root)), title: "Unsaved current draft" };
+    await project.writeProject(dirtyDeck, null, root);
     await project.checkoutHistory(revisionWithoutAssets);
-    await assert.rejects(readFile(join(root, "assets", "added.png")), (error) => error.code === "ENOENT");
-    assert.equal(git(root, ["status", "--porcelain"]), "");
+    assert.equal(await readFile(join(root, "assets", "added.png"), "utf8"), "image");
+    assert.equal(project.projectState().project.historyPreview, true);
+    await project.checkoutMain();
+    assert.deepEqual(await project.readProject(root), dirtyDeck);
+    assert.equal(project.projectState().project.historyPreview, false);
   } finally {
     if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
     else process.env.WEAVE_PROJECT_ROOT = previousRoot;
@@ -413,7 +419,7 @@ test("restoring a pre-v2 history commit migrates it before the project is read",
     git(root, ["branch", "weave/variation/a", legacyRevision]);
     await project.checkoutVariation("weave/variation/a");
     assert.equal((await project.readProject()).title, "Legacy");
-    project.checkoutMain();
+    await project.checkoutVariation("main");
     await project.checkoutHistory(legacyRevision);
     const restored = await project.readProject();
     assert.equal(restored.title, "Legacy");
@@ -517,6 +523,95 @@ test("restoring a rejected turn also restores the generated stylesheet", async (
   }
 });
 
+test("recovery snapshots persist human edits and queued milestones across reload", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weave-recovery-draft-"));
+  const previousRoot = process.env.WEAVE_PROJECT_ROOT;
+  process.env.WEAVE_PROJECT_ROOT = root;
+  try {
+    const project = await import(`../server/project.mjs?recovery-draft=${Date.now()}`);
+    await project.ensureProject();
+    const baseDeck = await project.readProject(root);
+    const humanDraft = { ...baseDeck, title: "Recovered human draft" };
+    const fileSnapshot = await project.createAgentFileSnapshot(root);
+    const snapshot = await project.createRecoverySnapshot({ baseRevision: project.getRevision(root), deck: baseDeck, css: await project.readDeckCss(root), agentFileSnapshot: fileSnapshot }, root);
+    await project.updateRecoverySnapshot(snapshot, { humanDraft, queuedMilestone: "Review ready" }, root);
+    const [recovered] = await project.readRecoverySnapshots(root);
+    assert.deepEqual(recovered.humanDraft, humanDraft);
+    assert.equal(recovered.queuedMilestone, "Review ready");
+    assert.equal(recovered.agentFileSnapshot.directory, fileSnapshot.directory);
+    assert.equal(recovered.status, "interrupted");
+    await project.discardRecoverySnapshot(snapshot, root);
+    await project.discardAgentFileSnapshot(fileSnapshot, root);
+  } finally {
+    if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
+    else process.env.WEAVE_PROJECT_ROOT = previousRoot;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Agent file snapshots protect managed files while preserving human uploads", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weave-agent-files-"));
+  const previousRoot = process.env.WEAVE_PROJECT_ROOT;
+  process.env.WEAVE_PROJECT_ROOT = root;
+  try {
+    const project = await import(`../server/project.mjs?agent-files=${Date.now()}`);
+    await project.ensureProject();
+    await mkdir(join(root, "references"), { recursive: true });
+    await writeFile(join(root, "references", "index.json"), "[{\"path\":\"before\"}]\n");
+    await writeFile(join(root, "references", "base.txt"), "original reference");
+    const beforeTemplates = await project.readTemplates(root);
+    const beforeAgents = await readFile(join(root, "AGENTS.md"), "utf8");
+    const beforeReferences = await readFile(join(root, "references", "index.json"), "utf8");
+    const snapshot = await project.createAgentFileSnapshot(root);
+    assert.equal(snapshot.directory.startsWith(root), false);
+    await writeFile(join(root, "assets", "agent-only.txt"), "not allowed");
+    const humanAsset = `assets/${"a".repeat(64)}.png`;
+    await writeFile(join(root, humanAsset), "human upload");
+    await project.captureAgentFilePreservation(snapshot, humanAsset, root);
+    await writeFile(join(root, humanAsset), "agent overwrite");
+    const humanReference = "references/human.txt";
+    await writeFile(join(root, humanReference), "human reference");
+    await project.captureAgentFilePreservation(snapshot, humanReference, root);
+    await writeFile(join(root, humanReference), "agent overwrite");
+    await writeFile(join(root, "AGENTS.md"), "agent mutation");
+    await writeFile(join(root, "references", "index.json"), "[]");
+    await writeFile(join(root, "references", "base.txt"), "agent mutation");
+    await rm(project.templatesRoot(root), { recursive: true, force: true });
+    await project.restoreAgentFileSnapshot(snapshot, root, { preserve: [humanAsset, humanReference] });
+    await assert.rejects(readFile(join(root, "assets", "agent-only.txt")), (error) => error.code === "ENOENT");
+    assert.equal(await readFile(join(root, humanAsset), "utf8"), "human upload");
+    assert.equal(await readFile(join(root, humanReference), "utf8"), "human reference");
+    assert.deepEqual(await project.readTemplates(root), beforeTemplates);
+    assert.equal(await readFile(join(root, "AGENTS.md"), "utf8"), beforeAgents);
+    assert.equal(await readFile(join(root, "references", "index.json"), "utf8"), beforeReferences);
+    assert.equal(await readFile(join(root, "references", "base.txt"), "utf8"), "original reference");
+    await project.discardAgentFileSnapshot(snapshot, root);
+  } finally {
+    if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
+    else process.env.WEAVE_PROJECT_ROOT = previousRoot;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("corrupt recovery records fail closed instead of exposing partial Agent output", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weave-recovery-corrupt-"));
+  const previousRoot = process.env.WEAVE_PROJECT_ROOT;
+  process.env.WEAVE_PROJECT_ROOT = root;
+  try {
+    const project = await import(`../server/project.mjs?recovery-corrupt=${Date.now()}`);
+    await project.ensureProject();
+    const snapshot = await project.createRecoverySnapshot({ baseRevision: project.getRevision(root), deck: await project.readProject(root), css: await project.readDeckCss(root) }, root);
+    assert.equal(snapshot.path.startsWith(root), false);
+    await writeFile(snapshot.path, "{\"baseDeck\":");
+    await assert.rejects(project.readRecoverySnapshots(root), /Recovery record is unreadable/);
+    await rm(snapshot.path, { force: true });
+  } finally {
+    if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
+    else process.env.WEAVE_PROJECT_ROOT = previousRoot;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("discarding a rejected variation returns to main and removes its branch", async () => {
   const root = await mkdtemp(join(tmpdir(), "weave-variation-restore-"));
   const previousRoot = process.env.WEAVE_PROJECT_ROOT;
@@ -532,6 +627,34 @@ test("discarding a rejected variation returns to main and removes its branch", a
     assert.equal(git(root, ["branch", "--show-current"]), "main");
     assert.deepEqual(project.getVariations(root), []);
     assert.deepEqual(await project.readProject(root), before);
+  } finally {
+    if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
+    else process.env.WEAVE_PROJECT_ROOT = previousRoot;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a discarded variation can restore the dirty draft it inherited", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weave-variation-dirty-"));
+  const previousRoot = process.env.WEAVE_PROJECT_ROOT;
+  process.env.WEAVE_PROJECT_ROOT = root;
+  try {
+    const project = await import(`../server/project.mjs?variation-dirty=${Date.now()}`);
+    await project.ensureProject();
+    const dirtyDraft = { ...(await project.readProject(root)), title: "Unsaved before exploration" };
+    await project.writeProject(dirtyDraft, null, root);
+    const branch = project.createVariationBranch();
+    const files = await project.createAgentFileSnapshot(root);
+    const recovery = await project.createRecoverySnapshot({ baseRevision: project.getRevision(root), deck: dirtyDraft, css: await project.readDeckCss(root), agentFileSnapshot: files }, root);
+    await writeFile(join(root, "AGENTS.md"), "agent mutation");
+    project.discardVariation(branch, root);
+    await project.restoreAgentFileSnapshot(files, root);
+    await project.writeProjectUnlocked(recovery.baseDeck, null, root);
+    assert.deepEqual(await project.readProject(root), dirtyDraft);
+    assert.notEqual(await readFile(join(root, "AGENTS.md"), "utf8"), "agent mutation");
+    assert.match(git(root, ["status", "--porcelain"]), /\.weave\/deck\.json/);
+    await project.discardRecoverySnapshot(recovery, root);
+    await project.discardAgentFileSnapshot(files, root);
   } finally {
     if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
     else process.env.WEAVE_PROJECT_ROOT = previousRoot;

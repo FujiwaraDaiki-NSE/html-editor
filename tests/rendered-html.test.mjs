@@ -16,10 +16,10 @@ test("server-renders the Weave editor shell", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   const html = await response.text();
-  assert.match(html, /<title>Weave — 人とAgentでつくるHTMLエディター<\/title>/i);
+  assert.match(html, /<title>Weave — HTMLネイティブなAIスライド制作<\/title>/i);
   assert.match(html, /第3四半期 戦略デッキ/);
   assert.match(html, /プレゼン・書き出し/);
   assert.match(html, /Codexへ接続中/);
-  assert.match(html, /class="workspace"[^>]*data-inspector="open"/);
+  assert.match(html, /class="workspace"[^>]*data-inspector="closed"/);
   assert.doesNotMatch(html, /react-loading-skeleton/i);
 });
