@@ -19,7 +19,7 @@ npm run dev
 WEAVE_WEB_HOST=172.30.128.50 WEAVE_WEB_PORT=3001 npm run dev
 ```
 
-外部PCでは `http://172.30.128.50:3001` を開きます。ローカルAPIは別ポートへ公開せず、Vite経由で利用します。
+外部PCでは `http://172.30.128.50:3001`、起動したPCでは `http://localhost:3001` を開きます。LANインターフェースを指定した場合も、この2つのアドレスだけで待ち受けます。ローカルAPIは別ポートへ公開せず、Vite経由で利用します。
 
 `npm run dev`は画面、ローカルAPI、Codex app-serverをまとめて起動します。OpenAIの資格情報をアプリ内へコピーせず、Codex CLIの既存ログインを利用します。
 

@@ -23,7 +23,7 @@ test("selects the next available port when the starting port is occupied", async
   assert.ok(address && typeof address === "object");
 
   try {
-    const selected = await findAvailablePort(address.port, "127.0.0.1");
+    const selected = await findAvailablePort(address.port, ["127.0.0.1"]);
     assert.ok(selected > address.port);
   } finally {
     blocker.close();
@@ -36,7 +36,7 @@ test("fails when an explicitly configured port is occupied", async () => {
   assert.ok(address && typeof address === "object");
 
   try {
-    await assert.rejects(resolveWebPort(String(address.port), "127.0.0.1"), { code: "EADDRINUSE" });
+    await assert.rejects(resolveWebPort(String(address.port), ["127.0.0.1"]), { code: "EADDRINUSE" });
   } finally {
     blocker.close();
   }
@@ -55,7 +55,22 @@ test("detects a port occupied only on a non-loopback interface", async (context)
   assert.ok(address && typeof address === "object");
 
   try {
-    await assert.rejects(resolveWebPort(String(address.port), host), { code: "EADDRINUSE" });
+    await assert.rejects(resolveWebPort(String(address.port), [host, "127.0.0.1"]), { code: "EADDRINUSE" });
+  } finally {
+    blocker.close();
+  }
+});
+
+test("detects a port occupied only on loopback when serving a LAN interface", async (context) => {
+  const host = nonLoopbackIpv4Address();
+  if (!host) return context.skip("No non-loopback IPv4 interface is available.");
+
+  const blocker = await listenOnEphemeralPort();
+  const address = blocker.address();
+  assert.ok(address && typeof address === "object");
+
+  try {
+    await assert.rejects(resolveWebPort(String(address.port), [host, "127.0.0.1"]), { code: "EADDRINUSE" });
   } finally {
     blocker.close();
   }
