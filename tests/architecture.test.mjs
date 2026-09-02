@@ -173,6 +173,8 @@ test("activity rail destinations render their details in the left sidebar", asyn
   assert.match(page, /className="activity-panel history-panel"/);
   assert.match(page, /className="activity-panel settings-panel"/);
   assert.match(css, /\.activity-panel \{/);
+  assert.match(page, /className="more-button"[^>]*onClick=\{\(\) => showActivity\("settings"\)\}/);
+  assert.match(page, /const showActivity = \(view: ActivityView\) => \{[\s\S]*?setLeftPanelOpen\(true\);[\s\S]*?setInspectorOpen\(false\);/);
   assert.doesNotMatch(page, /showHistory|history-popover|showCodexSettings|showHelp/);
 });
 
@@ -222,6 +224,27 @@ test("commands are grouped by editing, project, and delivery intent", async () =
   assert.doesNotMatch(page, /className="icon-button"/);
   assert.doesNotMatch(page, /className="share-button"/);
   assert.match(css, /\.canvas-tool-group \+ \.canvas-tool-group/);
+});
+
+test("integrated workspace chrome overrides legacy panel and control dimensions", async () => {
+  const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(css, /\.source-workspace > \.code-editor \{ width: 100%; height: 100%; \}/);
+  assert.match(css, /\.source-preview > div > \.weave-slide \{ transform: none; zoom: calc\(\(100cqw - 16px\) \/ 1280px\); \}/);
+  assert.match(css, /\.topbar \{ grid-template-columns: minmax\(180px, 1fr\) minmax\(140px, 1fr\) max-content; \}/);
+  assert.match(css, /\.top-actions button \{ height: var\(--ui-primary-control\); font-size: var\(--ui-meta\); white-space: nowrap; \}/);
+  assert.match(css, /\.canvas-toolbar button \{ height: var\(--ui-control\); white-space: nowrap; \}/);
+  assert.match(css, /\.weave-app \.canvas-toolbar \{[\s\S]*?position: fixed;[\s\S]*?bottom: calc\(60px \+ env\(safe-area-inset-bottom\)\);[\s\S]*?width: auto !important;/);
+  assert.match(css, /\.canvas-area \{ padding-bottom: 44px; \}/);
+  assert.match(css, /\.slide-shell \{[\s\S]*?width: min\(calc\(100% - 24px\), calc\(\(100dvh - 206px\) \* 16 \/ 9\)\);[\s\S]*?aspect-ratio: 16 \/ 9;/);
+  assert.match(css, /\.statusbar button \{ height: 100%; min-height: 0; \}/);
+  assert.match(css, /\.workspace\[data-inspector="open"\] > \.open-agent-panel,[\s\S]*?\.workspace\[data-agent="open"\] > \.open-inspector \{ display: none; \}/);
+  assert.match(css, /\.weave-app \.canvas-toolbar \.zoom-tools,[\s\S]*?\.weave-app \.canvas-toolbar \.annotation-tools \{ display: none; \}/);
+  assert.match(css, /\.mobile-canvas-tools > div \{[\s\S]*?grid-template-columns: 1fr 1fr;/);
+  assert.match(css, /\.weave-app > \.workspace\[data-slide-nav\]\[data-inspector\] \{[\s\S]*?grid-template-columns: 140px minmax\(400px, 1fr\)/);
+  assert.match(page, /onClick=\{\(\) => showActivity\("agent"\)\}>Agent<\/button>/);
+  assert.match(page, /showActivity\("settings"\); setMobileView\("more"\);/);
+  assert.match(page, /<summary>表示・Agent<\/summary>[\s\S]*?Mark for Agent/);
 });
 
 test("project changes autosave drafts and switching never requires a save gate", async () => {

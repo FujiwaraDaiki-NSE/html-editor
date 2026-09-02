@@ -632,7 +632,7 @@ export default function Home() {
   const showActivity = (view: ActivityView) => {
     setActivityView(view);
     setLeftPanelOpen(true);
-    if (view === "agent") setInspectorOpen(false);
+    setInspectorOpen(false);
     setMobileView(view);
     if (view === "skills") void loadSkills();
   };
@@ -3504,6 +3504,7 @@ export default function Home() {
           <small>{activeSlide} / {slides.length} 枚目</small>
         </div>
         <div className="top-actions">
+          <button className="more-button" onClick={() => showActivity("settings")} aria-label="その他の機能">その他</button>
           <button className="delivery-button" onClick={(event) => togglePopover("delivery", event.currentTarget)} aria-expanded={openPopover === "delivery"} aria-haspopup="menu" data-help="プレゼン表示、書き出し、印刷を選びます">プレゼン・書き出し <span aria-hidden="true">⌄</span></button>
           <input ref={importRef} className="sr-only" type="file" accept=".json,.weave.json,application/json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importBundle(file); }} />
           <button className="save-button" onClick={() => void saveProject()} data-help="現在のドラフトへ名前を付け、長期履歴として残します"><span>◇</span> マイルストーン</button>
@@ -3937,6 +3938,17 @@ export default function Home() {
                       onClick={toggleAnnotationMode}
                     >▱ <span>Mark for Agent</span></button>
                   </div>
+                  <details className="mobile-canvas-tools">
+                    <summary>表示・Agent</summary>
+                    <div role="group" aria-label="表示とAgentへの範囲指定">
+                      <button aria-label="縮小" onClick={() => setManualZoom(Math.max(.25, slideScale - .1))}>− 縮小</button>
+                      <button aria-label="拡大" onClick={() => setManualZoom(Math.min(4, slideScale + .1))}>＋ 拡大</button>
+                      <button aria-label="実寸で表示" onClick={() => setManualZoom(defaultCanvasZoom)}>実寸</button>
+                      <button className={zoomMode === "fit" ? "active" : ""} aria-label={`画面に合わせる・現在${Math.round(slideScale * 100)}%`} onClick={() => setManualZoom(null)}>画面に合わせる</button>
+                      <button className={canvasFocused ? "active" : ""} aria-pressed={canvasFocused} onClick={() => setCanvasFocused((value) => !value)}>{canvasFocused ? "集中表示を終了" : "集中表示"}</button>
+                      <button className={annotationMode ? "active" : ""} aria-pressed={annotationMode} onClick={toggleAnnotationMode}>▱ Mark for Agent</button>
+                    </div>
+                  </details>
                 </div>
                 {openPopover === "addBlock" && (
                   <>
@@ -4125,8 +4137,8 @@ export default function Home() {
         <nav className="mobile-tabs" aria-label="作業画面">
           <button className={mobileView === "canvas" ? "active" : ""} aria-pressed={mobileView === "canvas"} onClick={() => setMobileView("canvas")}>キャンバス</button>
           <button className={mobileView === "slides" ? "active" : ""} aria-pressed={mobileView === "slides"} onClick={() => setMobileView("slides")}>スライド</button>
-          <button className={mobileView === "agent" ? "active" : ""} aria-pressed={mobileView === "agent"} onClick={() => { setActivityView("agent"); setLeftPanelOpen(true); setMobileView("agent"); }}>Agent</button>
-          <button className={mobileView === "more" ? "active" : ""} aria-pressed={mobileView === "more"} onClick={() => { setActivityView("settings"); setLeftPanelOpen(true); setMobileView("more"); }}>その他{qualityReport.errors + qualityReport.warnings > 0 ? ` · ${qualityReport.errors + qualityReport.warnings}` : ""}</button>
+          <button className={mobileView === "agent" ? "active" : ""} aria-pressed={mobileView === "agent"} onClick={() => showActivity("agent")}>Agent</button>
+          <button className={mobileView === "more" ? "active" : ""} aria-pressed={mobileView === "more"} onClick={() => { showActivity("settings"); setMobileView("more"); }}>その他{qualityReport.errors + qualityReport.warnings > 0 ? ` · ${qualityReport.errors + qualityReport.warnings}` : ""}</button>
         </nav>
         <nav className="mobile-slide-panel slide-nav" aria-label="スライド一覧">{slideNavigator}</nav>
       </div>

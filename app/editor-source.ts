@@ -30,7 +30,7 @@ export function validateEditableSlideSource(source: string): SourceProblem[] {
   }
 
   const voidTags = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
-  const inlineFormattingTags = new Set(["em", "strong", "b", "i", "u", "s", "small", "sub", "sup", "br"]);
+  const inlineFormattingTags = new Set(["span", "em", "strong", "b", "i", "u", "s", "small", "sub", "sup", "br"]);
   const stack: Array<{ tag: string; index: number }> = [];
   for (const match of source.matchAll(/<\/?\s*([a-z][\w:-]*)\b[^>]*>/gi)) {
     const tag = match[1].toLowerCase();
