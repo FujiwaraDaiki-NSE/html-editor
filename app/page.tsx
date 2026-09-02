@@ -23,7 +23,7 @@ import { codexReducer, initialCodexState } from "./codex/reducer";
 import type { RequestResolutionOutcome } from "./codex/request-state";
 import { isConversationMessage, partitionPendingRequests, pendingRequestScope, selectThreadRunning, selectThreadTurns, selectTurnItems } from "./codex/selectors";
 import { deriveTurnPresentation, IDLE_TURN_SUBMISSION, isTerminalTurnStatus, resetTurnSubmission, type TurnPresentationState, type TurnSubmissionState } from "./codex/turn-status";
-import { projectEventDecision } from "./project-events";
+import { preservedSlideNumber, projectEventDecision, projectEventMatchesActivePreview, viewedSlideIdForHydration } from "./project-events";
 
 /* A slide is now a real HTML file: its `<main class="weave-slide">` fragment is the single
    truth. The editor renders that fragment as live DOM and edits it in place; nothing is
@@ -66,6 +66,14 @@ type ServerState = {
     pendingRequests: Array<{ id: string | number; method: string; params: Record<string, any>; createdAt: number }>;
   };
   skills: SkillEntry[];
+  agentPreview: null | {
+    threadId: string;
+    turnId: string | null;
+    baseline: { title: string; defaultTemplateId: string; slides: SlideDoc[] };
+    changedSlideIds: string[];
+    previewSequence: number;
+    phase: "checking" | "editing" | "finalizing";
+  };
   migrationNotice: string;
 };
 
@@ -229,6 +237,11 @@ type OutlineItem = { id: string; label: string; kind: string; depth: number; con
 type TreeDrop = { id: string | null; position: "before" | "after" | "inside" };
 
 type Snapshot = { title: string; defaultTemplateId: string; templates: TemplateDoc[]; importedTemplates: TemplateDoc[] | null; slides: SlideDoc[]; activeSlide: number; selectedId: string | null; annotations: Annotation[] };
+type AgentPreviewState = {
+  phase: "checking" | "editing" | "finalizing";
+  changedSlideIds: string[];
+  sequence: number;
+};
 type BlockDragSession = {
   id: string;
   node: HTMLElement;
@@ -337,6 +350,13 @@ const changedTargets = (before: SlideDoc[], after: SlideDoc[]): ChangedTarget[] 
       })
       .map((node) => ({ slideId: slide.id, elementId: node.dataset.weaveId! }));
   });
+};
+
+const changedSlideCount = (before: SlideDoc[], after: SlideDoc[]) => {
+  const beforeById = new Map(before.map((slide) => [slide.id, JSON.stringify(slide)]));
+  const afterIds = new Set(after.map((slide) => slide.id));
+  return after.filter((slide) => beforeById.get(slide.id) !== JSON.stringify(slide)).length
+    + before.filter((slide) => !afterIds.has(slide.id)).length;
 };
 
 const kindOfNode = (node: HTMLElement): string => blockKinds.find((cls) => node.classList.contains(cls)) ?? node.tagName.toLowerCase();
@@ -457,6 +477,9 @@ export default function Home() {
   const [folderImporting, setFolderImporting] = useState(false);
   const [changedReview, setChangedReview] = useState<ChangedTarget[]>([]);
   const [changedReviewIndex, setChangedReviewIndex] = useState(0);
+  const [agentPreview, setAgentPreview] = useState<AgentPreviewState | null>(null);
+  const [agentCompletion, setAgentCompletion] = useState<number | null>(null);
+  const [previewHighlightSlideId, setPreviewHighlightSlideId] = useState<string | null>(null);
   const setSelectedId = (id: string | null) => {
     setSelectedIdState(id);
     if (id) {
@@ -490,6 +513,8 @@ export default function Home() {
   const undoRef = useRef<Snapshot[]>([]);
   const deckLoadedRef = useRef(false);
   const redoRef = useRef<Snapshot[]>([]);
+  const agentPreviewBaselineRef = useRef<SlideDoc[] | null>(null);
+  const agentViewedSlideIdRef = useRef<string | null>(null);
   const slidesRef = useRef(slides);
   const activeRef = useRef(activeSlide);
   const selectedRef = useRef(selectedId);
@@ -519,6 +544,7 @@ export default function Home() {
   const zoomLevel = manualZoom ?? defaultCanvasZoom;
   const slideScale = fitScale * zoomLevel;
   const activeSlideId = slides[activeSlide - 1]?.id;
+  const liveChangedSlideIds = new Set(agentPreview?.changedSlideIds ?? []);
   const activeAnnotations = annotations.filter((annotation) => annotation.slideId === activeSlideId);
   const activeRegionAnnotations = activeAnnotations.filter((annotation) => annotation.target.kind === "region");
   const activeElementAnnotations = activeAnnotations.filter((annotation) => annotation.target.kind === "element");
@@ -833,10 +859,16 @@ export default function Home() {
       };
     }
     if (activePendingServerRequests.length > 0) return { kind: "waiting", label: `確認待ち（${activePendingServerRequests.length}件）` };
+    if (agentPreview?.phase === "finalizing") return { kind: "running", label: "最終確認中…" };
+    if (agentPreview?.phase === "editing") {
+      const count = agentPreview.changedSlideIds.length;
+      return { kind: "running", label: count > 0 ? `${count}枚のスライドを編集中` : "スライドを編集中…" };
+    }
+    if (agentCompletion !== null) return { kind: "completed", label: `${agentCompletion}枚のスライドを更新` };
     const turnLabels: Record<Exclude<TurnPresentationState, "idle">, { kind: string; label: string }> = {
-      submission: { kind: "submission", label: "送信中…" },
-      accepted: { kind: "accepted", label: "受理済み・開始待ち" },
-      in_progress: { kind: "running", label: "実行中…" },
+      submission: { kind: "submission", label: "依頼を確認中…" },
+      accepted: { kind: "accepted", label: "依頼を確認中" },
+      in_progress: { kind: "running", label: "スライドを編集中…" },
     };
     if (turnPresentation !== "idle") return turnLabels[turnPresentation];
     if (turnSubmission.phase === "submitting") return { kind: "submission", label: "別の会話へ送信中…" };
@@ -857,16 +889,25 @@ export default function Home() {
   /* `applyDeck` controls whether the on-disk deck replaces the editor buffer. Status-only polls
      (retrying while Codex connects) pass false so they never clobber unsaved edits — the local
      buffer stays authoritative until a real project change (save, history/variation, agent turn). */
-  const applyServerState = useCallback((state: ServerState, applyDeck = true) => {
+  const applyServerState = useCallback((state: ServerState, applyDeck = true, preserveActiveSlide = false, preferredSlideId: string | null = null) => {
     if (applyDeck) {
+      const previousSlides = slidesRef.current;
       templatePreviewHtmlRef.current = null;
       templatePreviewSourceHtmlRef.current = null;
       setDeckTitle(state.deck.title);
       setDefaultTemplateId(state.deck.defaultTemplateId);
       const sourceSlides = state.deck.slides?.length ? state.deck.slides : initialSlides;
       const nextSlides = renumberSlides(sourceSlides.map(slideFromHtml));
+      if (state.agentPreview && !agentViewedSlideIdRef.current) {
+        agentViewedSlideIdRef.current = viewedSlideIdForHydration(previousSlides, nextSlides, activeRef.current, deckLoadedRef.current);
+      }
       slidesRef.current = nextSlides;
       setSlides(nextSlides);
+      if (preserveActiveSlide) {
+        const nextActiveSlide = preservedSlideNumber(previousSlides, nextSlides, activeRef.current, preferredSlideId);
+        activeRef.current = nextActiveSlide;
+        setActiveSlideSynced(nextActiveSlide);
+      }
       setDeckCss(defaultDeckCss);
       setTemplates(state.templates ?? []);
       setImportedTemplates(null);
@@ -885,6 +926,19 @@ export default function Home() {
     dispatchCodex({ type: "catalog", catalog: state.codex.catalog });
     dispatchCodex({ type: "pendingRequests", requests: state.codex.pendingRequests });
     dispatchCodex({ type: "activeTurns", activeTurns: state.codex.activeTurns });
+    if (state.agentPreview) {
+      agentPreviewBaselineRef.current = state.agentPreview.baseline.slides.map((slide) => ({ ...slide }));
+      setAgentPreview({
+        phase: state.agentPreview.phase,
+        changedSlideIds: [...state.agentPreview.changedSlideIds],
+        sequence: state.agentPreview.previewSequence,
+      });
+    } else if (Object.keys(state.codex.activeTurns).length === 0) {
+      agentPreviewBaselineRef.current = null;
+      agentViewedSlideIdRef.current = null;
+      setAgentPreview(null);
+      setPreviewHighlightSlideId(null);
+    }
     const models = state.codex.catalog.models ?? [];
     const firstModel = models[0] as any;
     const current = agentModelStore.read();
@@ -942,34 +996,82 @@ export default function Home() {
           for (const line of lines) {
             if (!line.trim()) continue;
             const envelope = JSON.parse(line);
-            eventSequenceRef.current = Math.max(eventSequenceRef.current, envelope.sequence ?? 0);
+            const envelopeSequence = Number(envelope.sequence ?? 0);
             if (envelope.type === "weave/project" || envelope.type === "codex/gap") {
               const projectEvent = envelope.type === "weave/project" ? projectEventDecision(envelope.payload) : null;
+              const generation = editGenerationRef.current;
+              const stateResponse = await fetch(`${apiBase}/state`);
+              if (!stateResponse.ok) throw new Error("プロジェクトの最新状態を取得できませんでした。");
+              const state = await stateResponse.json();
+              const unchanged = generation === editGenerationRef.current;
+              const projectStatus = envelope.type === "weave/project" ? envelope.payload?.status : null;
+              if (envelope.type === "weave/project" && !projectEventMatchesActivePreview(envelope.payload, state.agentPreview)) {
+                eventSequenceRef.current = Math.max(eventSequenceRef.current, envelopeSequence);
+                continue;
+              }
               if (projectEvent) {
                 setProjectEventDiagnostics(projectEvent.diagnostics);
                 if (projectEvent.error) setApiError(projectEvent.error);
-                if (!projectEvent.refreshState) continue;
               }
-              const generation = editGenerationRef.current;
-              const stateResponse = await fetch(`${apiBase}/state`);
-              if (stateResponse.ok) {
-                const state = await stateResponse.json();
-                const unchanged = generation === editGenerationRef.current;
-                if (envelope.type === "weave/project" && envelope.payload?.status === "updated" && unchanged) {
-                  const targets = changedTargets(slidesRef.current, state.deck?.slides ?? []);
-                  setChangedReview(targets);
-                  setChangedReviewIndex(0);
-                }
-                applyServerState(state, unchanged);
-                if (!unchanged) {
-                  markDirty();
-                  setApiError("編集中にプロジェクトの保存内容が変更されました。現在の編集は保持されています。もう一度保存して統合してください。");
-                }
+              if (projectEvent && !projectEvent.refreshState) {
+                agentPreviewBaselineRef.current = null;
+                agentViewedSlideIdRef.current = null;
+                setAgentPreview(null);
+                setPreviewHighlightSlideId(null);
+                eventSequenceRef.current = Math.max(eventSequenceRef.current, envelopeSequence);
+                continue;
               }
+              if (projectStatus === "preview" && unchanged) {
+                  const changedIds = Array.isArray(envelope.payload?.changedSlideIds)
+                    ? envelope.payload.changedSlideIds.filter((id: unknown): id is string => typeof id === "string")
+                    : [];
+                  if (!agentPreviewBaselineRef.current && state.agentPreview) {
+                    agentPreviewBaselineRef.current = state.agentPreview.baseline.slides.map((slide: SlideDoc) => ({ ...slide }));
+                  }
+                  setAgentPreview((current) => ({
+                    phase: "editing",
+                    changedSlideIds: [...new Set([...(current?.changedSlideIds ?? []), ...changedIds])],
+                    sequence: Number(envelope.payload?.previewSequence ?? current?.sequence ?? 0),
+                  }));
+                  const viewedSlideId = slidesRef.current[activeRef.current - 1]?.id;
+                  if (viewedSlideId && changedIds.includes(viewedSlideId)) setPreviewHighlightSlideId(viewedSlideId);
+              }
+              if (projectStatus === "updated" && unchanged) {
+                const eventBaseline = Array.isArray(envelope.payload?.baseline?.slides)
+                  ? envelope.payload.baseline.slides as SlideDoc[]
+                  : null;
+                const baseline = eventBaseline ?? state.agentPreview?.baseline.slides ?? agentPreviewBaselineRef.current ?? slidesRef.current;
+                const targets = changedTargets(baseline, state.deck?.slides ?? []);
+                setChangedReview(targets);
+                setChangedReviewIndex(0);
+                setAgentCompletion(changedSlideCount(baseline, state.deck?.slides ?? []));
+              }
+              const preserveViewingSlide = envelope.type === "codex/gap"
+                || ["preview", "updated", "error", "failed", "interrupted", "canceled"].includes(projectStatus);
+              const preferredSlideId = projectStatus && projectStatus !== "preview" ? agentViewedSlideIdRef.current : null;
+              applyServerState(state, unchanged, preserveViewingSlide, preferredSlideId);
+              if (projectStatus && projectStatus !== "preview") {
+                agentPreviewBaselineRef.current = null;
+                agentViewedSlideIdRef.current = null;
+                setAgentPreview(null);
+                setPreviewHighlightSlideId(null);
+              }
+              if (!unchanged) {
+                markDirty();
+                setApiError("編集中にプロジェクトの保存内容が変更されました。現在の編集は保持されています。もう一度保存して統合してください。");
+              }
+              eventSequenceRef.current = Math.max(eventSequenceRef.current, envelopeSequence);
               continue;
+            }
+            if (envelope.type === "codex/notification" && envelope.payload?.method === "turn/started") {
+              setAgentPreview((current) => current ? { ...current, phase: "editing" } : current);
+            }
+            if (envelope.type === "codex/notification" && envelope.payload?.method === "turn/completed") {
+              setAgentPreview((current) => current ? { ...current, phase: "finalizing" } : current);
             }
             const action = actionFromStreamEvent(envelope);
             if (action) dispatchCodex(action);
+            eventSequenceRef.current = Math.max(eventSequenceRef.current, envelopeSequence);
           }
         }
       } catch (error) {
@@ -980,6 +1082,18 @@ export default function Home() {
     void connect();
     return () => { canceled = true; if (retryTimer) clearTimeout(retryTimer); };
   }, [applyServerState]);
+
+  useEffect(() => {
+    if (!previewHighlightSlideId) return;
+    const timer = window.setTimeout(() => setPreviewHighlightSlideId(null), 260);
+    return () => window.clearTimeout(timer);
+  }, [previewHighlightSlideId, agentPreview?.sequence]);
+
+  useEffect(() => {
+    if (agentCompletion === null) return;
+    const timer = window.setTimeout(() => setAgentCompletion(null), 3_000);
+    return () => window.clearTimeout(timer);
+  }, [agentCompletion]);
 
   useEffect(() => {
     let canceled = false;
@@ -2375,10 +2489,15 @@ export default function Home() {
     setTurnSubmission({ phase: "submitting", threadId: codexState.activeThreadId, turnId: null });
     setShowVariationPrompt(false);
     setApiError(null);
+    setAgentCompletion(null);
     let accepted = false;
+    const requestDeck = deckPayload();
+    agentPreviewBaselineRef.current = requestDeck.slides.map((item) => ({ ...item }));
+    agentViewedSlideIdRef.current = requestDeck.slides[activeRef.current - 1]?.id ?? null;
+    setAgentPreview({ phase: "checking", changedSlideIds: [], sequence: 0 });
     try {
       // Variations are branch trials, so annotations stay on the canvas instead of being consumed.
-      const response = await fetch(`${apiBase}/variations/generate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt, deck: deckPayload(), clientUserMessageId: createMessageId(), model: selectedModel || undefined, effort: reasoningEffort, approvalPolicy, contextEnvelope: contextEnvelope(variationAnnotations, overflowingIds(liveOverflowMeasurements())) }) });
+      const response = await fetch(`${apiBase}/variations/generate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt, deck: requestDeck, clientUserMessageId: createMessageId(), model: selectedModel || undefined, effort: reasoningEffort, approvalPolicy, contextEnvelope: contextEnvelope(variationAnnotations, overflowingIds(liveOverflowMeasurements())) }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "デザイン案を生成できませんでした。");
       if (response.status !== 202 || typeof result.thread?.id !== "string" || typeof result.turn?.id !== "string") throw new Error("デザイン案の受付状態を確認できませんでした。");
@@ -2391,6 +2510,11 @@ export default function Home() {
       dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
     } catch (error) {
       if (!accepted) setTurnSubmission(IDLE_TURN_SUBMISSION);
+      if (!accepted) {
+        agentPreviewBaselineRef.current = null;
+        agentViewedSlideIdRef.current = null;
+        setAgentPreview(null);
+      }
       setApiError(error instanceof Error ? error.message : String(error));
     } finally {
       if (!accepted) turnInFlightRef.current = false;
@@ -2471,7 +2595,9 @@ export default function Home() {
     setTurnSubmission({ phase: "submitting", threadId: codexState.activeThreadId, turnId: null });
     shouldAutoScrollRef.current = true;
     setApiError(null);
+    setAgentCompletion(null);
     let accepted = false;
+    let steering = false;
     try {
       let threadId = codexState.activeThreadId;
       if (!threadId) {
@@ -2483,7 +2609,12 @@ export default function Home() {
         setTurnSubmission({ phase: "submitting", threadId, turnId: null });
       }
       if (!threadId) throw new Error("操作対象の会話を特定できませんでした。");
-      const steering = agentRunning;
+      steering = agentRunning;
+      if (!steering) {
+        agentPreviewBaselineRef.current = requestDeck.slides.map((item) => ({ ...item }));
+        agentViewedSlideIdRef.current = requestDeck.slides[activeRef.current - 1]?.id ?? null;
+        setAgentPreview({ phase: "checking", changedSlideIds: [], sequence: 0 });
+      }
       const runningTurnId = codexState.activeTurnId;
       const endpoint = steering ? "codex/turn/steer" : "codex/turn/start";
       const response = await fetch(`${apiBase}/${endpoint}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId, prompt: value, clientUserMessageId: createMessageId(), selectedId, deck: requestDeck, model: selectedModel || undefined, effort: reasoningEffort, approvalPolicy, contextEnvelope: requestEnvelope, attachments: referenceAttachments }) });
@@ -2517,6 +2648,11 @@ export default function Home() {
       setIncludeRegionAnnotations(true);
     } catch (error) {
       if (!accepted) setTurnSubmission(IDLE_TURN_SUBMISSION);
+      if (!accepted && !steering) {
+        agentPreviewBaselineRef.current = null;
+        agentViewedSlideIdRef.current = null;
+        setAgentPreview(null);
+      }
       setApiError(error instanceof Error ? error.message : String(error));
     } finally {
       if (!accepted) turnInFlightRef.current = false;
@@ -2823,7 +2959,7 @@ export default function Home() {
           <div className="slide-entry" key={slide.id}>
             {visibleIndex > 0 && index - visibleEntries[visibleIndex - 1].index > 1 && <button className="slide-gap" aria-label="前のスライドを表示" onClick={() => switchSlide(Math.max(1, slideNumber - 20))}>…</button>}
             <button
-              className={`slide-item ${activeSlide === slideNumber ? "active" : ""}`}
+              className={`slide-item ${activeSlide === slideNumber ? "active" : ""} ${liveChangedSlideIds.has(slide.id) ? "agent-updated" : ""}`}
               onClick={() => switchSlide(slideNumber)}
               disabled={turnBusy}
               title={`${slideNumber}枚目を開く: ${slide.title || "無題"}`}
@@ -2847,6 +2983,7 @@ export default function Home() {
               <span className="slide-number">{String(slideNumber).padStart(2, "0")}</span>
               {slideThumbnail(slide, index)}
               <span className="slide-name">{slide.title || "無題"}</span>
+              {liveChangedSlideIds.has(slide.id) && <span className="slide-live-marker">更新中</span>}
             </button>
             <button
               className="slide-menu-trigger"
@@ -3299,12 +3436,20 @@ export default function Home() {
                 </div>
               </section>
             ) : mode === "preview" ? (
-              <div className="slide-shell">
+              <div className={`slide-shell ${previewHighlightSlideId === activeSlideId ? "agent-preview-highlight" : ""}`}>
                 {/* The project stylesheet is the only thing styling the slide; the editor's
                     own chrome lives in globals.css and never overlaps these rules. */}
                 <style>{deckCss}</style>
-                <div className={`canvas-interaction-status ${pointerPicking ? "picking" : annotationMode ? "annotating" : recalledAnnotations.length > 0 ? "recalling" : draggedId ? "dragging" : editingId ? "editing" : selectedId ? "selected" : ""}`} role="status">
-                  {pointerPicking
+                <div className={`canvas-interaction-status ${agentPreview || agentCompletion !== null ? "agent-preview" : pointerPicking ? "picking" : annotationMode ? "annotating" : recalledAnnotations.length > 0 ? "recalling" : draggedId ? "dragging" : editingId ? "editing" : selectedId ? "selected" : ""}`} role={agentPreview || agentCompletion !== null ? undefined : "status"} aria-live={agentPreview || agentCompletion !== null ? undefined : "polite"} aria-busy={agentPreview !== null}>
+                  {agentPreview
+                    ? agentPreview.phase === "finalizing"
+                      ? "● Agentが最終確認中"
+                      : agentPreview.changedSlideIds.length > 0
+                        ? `● Agentが編集中 · ${agentPreview.changedSlideIds.length}枚を変更`
+                        : agentPreview.phase === "checking" ? "● Agentが依頼を確認中" : "● Agentがスライドを編集中"
+                    : agentCompletion !== null
+                    ? `● ${agentCompletion}枚のスライドを更新`
+                    : pointerPicking
                     ? "要素を指定中 · Agentへ示す要素をクリック · Escでキャンセル"
                     : annotationMode
                     ? `Mark for Agent · 変更したい範囲をドラッグ${recalledAnnotations.length > 0 ? ` · ${activeOverlayLabel}と比較中` : ""}`

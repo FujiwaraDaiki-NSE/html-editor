@@ -77,6 +77,7 @@ test("completed Agent turns gate ordinary updates and keep variation handling in
   assert.ok(ordinaryGate >= 0, "ordinary completion must run the committable audit");
   assert.ok(ordinaryGate < updated, "ordinary audit must run before the updated event");
   assert.match(completion, /status: "error",\n\s+error: error\.message/);
+  assert.match(completion, /status: "updated",[\s\S]*?baseline: pending\.preTurnDeck/);
   assert.match(completion, /\.\.\.\(error\.code \? \{ code: error\.code \} : \{\}\)/);
   assert.match(completion, /\.\.\.\(Array\.isArray\(error\.diagnostics\) \? \{ diagnostics: error\.diagnostics \} : \{\}\)/);
   assert.match(completion, /if \(pending\.variation\) \{[\s\S]*?commitIfChanged\([^\n]+pending\.root\)/);
@@ -90,7 +91,10 @@ test("completed Agent turns gate ordinary updates and keep variation handling in
   assert.match(page, /projectEventDecision\(envelope\.payload\)/);
   assert.match(page, /setProjectEventDiagnostics\(projectEvent\.diagnostics\)/);
   assert.match(page, /if \(projectEvent\.error\) setApiError\(projectEvent\.error\)/);
-  assert.match(page, /if \(!projectEvent\.refreshState\) continue/);
+  assert.match(
+    page,
+    /if \(projectEvent && !projectEvent\.refreshState\) \{[\s\S]*?setAgentPreview\(null\);[\s\S]*?eventSequenceRef\.current = Math\.max\([\s\S]*?continue;\n\s+\}/,
+  );
 });
 
 test("variation turns share prompt validation and editor annotation context", async () => {
