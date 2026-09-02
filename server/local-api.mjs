@@ -61,6 +61,7 @@ import { contextPromptRules, editorEnvelope } from "../shared/context.mjs";
 import { parseConfiguredPort } from "../scripts/dev-port.mjs";
 import { isAllowedWebOrigin } from "./dev-origin.mjs";
 import { routeMethodDecision } from "./route-methods.mjs";
+import { ProjectPreviewMonitor } from "./project-preview.mjs";
 
 const apiPort = Number(process.env.WEAVE_API_PORT ?? 4317);
 await initializeCurrentProject();
@@ -74,7 +75,16 @@ const migrationNotice = "Legacy .weave/chat.json history was removed. Conversati
 function pendingTurn(value) {
   let resolveFinalization;
   const finalization = new Promise((resolve) => { resolveFinalization = resolve; });
-  return { ...value, finalization, resolveFinalization };
+  return {
+    ...value,
+    turnId: null,
+    previewSnapshot: null,
+    previewChangedSlideIds: [],
+    previewSequence: 0,
+    previewMonitor: null,
+    finalization,
+    resolveFinalization,
+  };
 }
 
 function finishPendingTurn(threadId, pending) {
@@ -133,9 +143,11 @@ async function readJson(request, limit = 1_500_000) {
 
 async function statePayload() {
   const state = projectState();
+  const activePendingEntry = [...pendingTurns.entries()].find(([, turn]) => turn.root === projectRoot());
+  const activePending = activePendingEntry?.[1];
   const generatingBranches = new Set([...pendingTurns.values()].map((turn) => turn.branch).filter(Boolean));
   return {
-    deck: await readProject(),
+    deck: activePending?.previewSnapshot ?? activePending?.preTurnDeck ?? await readProject(),
     css: await readDeckCss(),
     templates: await readTemplates(),
     references: await readReferences(),
@@ -153,8 +165,48 @@ async function statePayload() {
       pendingRequests: codex.router.list(),
     },
     skills: await listSkills(projectRoot()),
+    agentPreview: activePending ? {
+      threadId: activePendingEntry[0],
+      turnId: activePending.turnId,
+      baseline: activePending.preTurnDeck,
+      changedSlideIds: activePending.previewChangedSlideIds,
+      previewSequence: activePending.previewSequence,
+      phase: !activePending.previewMonitor ? "checking" : activePending.previewMonitor.running ? "editing" : "finalizing",
+    } : null,
     migrationNotice,
   };
+}
+
+function startProjectPreview(pending, threadId, turnId) {
+  pending.turnId = turnId;
+  pending.previewSnapshot = pending.preTurnDeck;
+  pending.previewChangedSlideIds = [];
+  pending.previewSequence = 0;
+  pending.previewMonitor = new ProjectPreviewMonitor({
+    baseline: pending.preTurnDeck,
+    readSnapshot: async () => {
+      await assertCommittable(pending.root);
+      return await readProject(pending.root);
+    },
+    onSnapshot: (snapshot) => { pending.previewSnapshot = snapshot; },
+    pollInterval: 300,
+    settleMs: 400,
+    minPublishInterval: 700,
+    now: Date.now,
+    setIntervalFn: setInterval,
+    clearIntervalFn: clearInterval,
+    publish: ({ changedSlideIds, previewSequence }) => {
+      pending.previewChangedSlideIds = [...new Set([...pending.previewChangedSlideIds, ...changedSlideIds])];
+      pending.previewSequence = previewSequence;
+      codex.events.publish("weave/project", {
+        status: "preview",
+        threadId,
+        turnId,
+        changedSlideIds,
+        previewSequence,
+      });
+    },
+  }).start();
 }
 
 async function refreshSkillCatalog() {
@@ -259,6 +311,7 @@ Do not commit; Weave will commit after this turn.${serializeEditorContext(payloa
       effort: payload.effort,
       approvalPolicy: payload.approvalPolicy ?? "never",
     });
+    startProjectPreview(registeredPending, thread.id, result.turn.id);
     return { thread, turn: result.turn, branch };
   } catch (error) {
     if (registeredPending && registeredThreadId) finishPendingTurn(registeredThreadId, registeredPending);
@@ -285,17 +338,21 @@ codex.on("notification", (message) => {
   const threadId = message.params?.threadId;
   const pending = pendingTurns.get(threadId);
   if (!pending) return;
+  pending.previewMonitor?.stop();
   void (async () => {
     const status = message.params?.turn?.status;
     if (status !== "completed") {
       let cleanupError;
       try {
         await restoreFailedTurn(pending);
+        pending.previewSnapshot = pending.preTurnDeck;
       } catch (error) {
         cleanupError = error;
       }
       codex.events.publish("weave/project", {
         status: cleanupError ? "error" : status,
+        threadId,
+        turnId: pending.turnId,
         ...projectState(),
         ...(cleanupError ? { error: `Could not restore the project after the Agent turn: ${cleanupError.message}` } : {}),
         ...(cleanupError ? { cleanupError: cleanupError.message } : {}),
@@ -317,8 +374,12 @@ codex.on("notification", (message) => {
           await assertCommittable(pending.root);
         }
       }, pending.root);
+      pending.previewSnapshot = await readProject(pending.root);
       codex.events.publish("weave/project", {
         status: "updated",
+        threadId,
+        turnId: pending.turnId,
+        baseline: pending.preTurnDeck,
         ...projectState(),
         deck: await readProject(pending.root),
       });
@@ -326,12 +387,15 @@ codex.on("notification", (message) => {
       let cleanupError;
       try {
         await restoreFailedTurn(pending);
+        pending.previewSnapshot = pending.preTurnDeck;
       } catch (restoreError) {
         cleanupError = restoreError;
       }
       codex.events.publish("weave/project", {
         status: "error",
         error: error.message,
+        threadId,
+        turnId: pending.turnId,
         ...(error.code ? { code: error.code } : {}),
         ...(Array.isArray(error.diagnostics) ? { diagnostics: error.diagnostics } : {}),
         ...(cleanupError ? { cleanupError: cleanupError.message } : {}),
@@ -579,6 +643,7 @@ const server = createServer(async (request, response) => {
       pendingTurns.set(payload.threadId, pending);
       try {
         const result = await codex.startTurn({ ...payload, prompt: `${prompt}${serializeEditorContext(payload)}` });
+        startProjectPreview(pending, payload.threadId, result.turn.id);
         return sendJson(request, response, 202, result);
       } catch (error) {
         finishPendingTurn(payload.threadId, pending);

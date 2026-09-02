@@ -177,6 +177,7 @@ body {
 .slide-gap { flex: 0 0 auto; border: 0; background: transparent; color: var(--muted); cursor: pointer; }
 .slide-nav .slide-item { display: flex; align-items: center; border: 0; background: transparent; color: var(--muted); text-align: left; cursor: pointer; }
 .slide-nav .slide-item:disabled { cursor: not-allowed; opacity: .5; }
+.slide-nav .slide-item.agent-updated:disabled { opacity: 1; }
 .slide-nav .slide-item:hover:not(:disabled) { background: color-mix(in srgb, var(--panel-3) 60%, transparent); }
 .slide-nav .slide-item.active { background: var(--panel-3); color: var(--text); }
 .slide-nav .new-slide { flex: 0 0 auto; display: grid; place-items: center; border: 1px dashed var(--line-strong); border-radius: 5px; background: transparent; color: var(--muted); font-size: 13px; cursor: pointer; }
@@ -187,6 +188,7 @@ body {
 .slide-number { color: var(--soft); font: 8px/1 var(--font-geist-mono), monospace; text-align: center; }
 .slide-item.active .slide-number { color: var(--accent); }
 .slide-name { min-width: 0; overflow: hidden; font-size: var(--ui-meta); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.slide-live-marker { flex: 0 0 auto; padding: 2px 4px; border: 1px solid color-mix(in srgb, #58d7f5 55%, var(--line)); border-radius: 999px; color: #58d7f5; font-size: 7px; font-weight: 700; line-height: 1; }
 .slide-thumbnail { position: relative; flex: 0 0 auto; width: 66px; height: 37px; display: block; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 3px; background: #15191f; box-shadow: 0 3px 8px rgb(0 0 0 / .2); pointer-events: none; }
 .weave-app .slide-thumbnail > .weave-slide { width: 1280px; height: 720px; transform: scale(.0515625); transform-origin: top left; }
 .slide-thumbnail-empty { background: repeating-linear-gradient(135deg, var(--panel-3), var(--panel-3) 5px, var(--panel-2) 5px, var(--panel-2) 10px); }
@@ -208,6 +210,7 @@ body {
 .slide-rail .slide-entry { flex-direction: column; }
 .slide-rail .slide-item { flex-direction: column; gap: 3px; padding: 3px; border-radius: 5px; }
 .slide-rail .slide-name { display: none; }
+.slide-rail .slide-live-marker { position: absolute; right: 1px; bottom: 28px; padding: 2px 3px; color: #071216; background: #58d7f5; font-size: 6px; }
 .slide-rail .new-slide { width: 44px; height: 24px; margin-top: 2px; }
 .slide-rail .mini-slide { width: 44px; height: 26px; }
 .slide-rail .slide-thumbnail { width: 44px; height: 25px; }
@@ -513,6 +516,12 @@ button.project-card { cursor: pointer; }
 .canvas-interaction-status.annotating { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, var(--panel)); color: var(--accent); font-weight: 700; }
 .canvas-interaction-status.recalling { border-color: #58d7f5; background: color-mix(in srgb, #58d7f5 14%, var(--panel)); color: #58d7f5; font-weight: 700; }
 .canvas-interaction-status.picking { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, var(--panel)); color: var(--accent); font-weight: 700; }
+.canvas-interaction-status.agent-preview { border-color: #58d7f5; background: color-mix(in srgb, #58d7f5 12%, var(--panel)); color: #58d7f5; font-weight: 700; }
+.slide-shell.agent-preview-highlight .slide-viewport { animation: agent-preview-highlight 260ms ease-out; }
+@keyframes agent-preview-highlight {
+  from { box-shadow: var(--shadow), 0 0 0 3px color-mix(in srgb, #58d7f5 70%, transparent); }
+  to { box-shadow: var(--shadow), 0 0 0 3px transparent; }
+}
 /* The slide is authored at its design size and scaled to fit; the viewport is the window
    onto it. Everything inside comes from the project stylesheet (styles/deck.css) — the
    rules below are editor chrome only, and each undoes the scale so it stays crisp. */
