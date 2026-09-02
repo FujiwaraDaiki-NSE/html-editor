@@ -1,5 +1,3 @@
-const LOOPBACK_HTTP_ORIGIN = /^http:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?$/;
-
 export function isAllowedWebOrigin(origin, webPort, host) {
   if (origin === undefined) return true;
   if (typeof origin !== "string" || !Number.isInteger(webPort) || webPort < 1 || webPort > 65_535) return false;
@@ -14,7 +12,6 @@ export function isAllowedWebOrigin(origin, webPort, host) {
 
   const originPort = url.port === "" ? 80 : Number(url.port);
   if (originPort !== webPort) return false;
-  if (LOOPBACK_HTTP_ORIGIN.test(origin)) return true;
   if (typeof host !== "string") return false;
 
   try {

@@ -434,9 +434,10 @@ test("development web server exposes one strict network port and proxies the loo
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
   ]);
   assert.match(source, /resolveWebPort/);
-  assert.match(source, /WEB_BIND_HOST/);
+  assert.match(source, /WEAVE_WEB_HOST/);
+  assert.match(source, /parseConfiguredHost/);
   assert.match(source, /WEAVE_WEB_PORT/);
-  assert.match(source, /--hostname", WEB_BIND_HOST/);
+  assert.match(source, /--hostname", webHost/);
   assert.match(viteConfig, /strictPort: true/);
   assert.match(viteConfig, /"\/api"/);
   assert.match(viteConfig, /target: `http:\/\/127\.0\.0\.1:\$\{localApiPort\}`/);
