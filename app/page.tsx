@@ -81,7 +81,7 @@ type HistoryEntry = { id: string; shortId: string; message: string; date: string
 type ProjectSummary = { slug: string; title: string; slideCount: number; updatedAt: string | null; current: boolean; blocked: boolean; blockedCount: number; thumbnailHtml: string; css: string };
 type GalleryDialog = { kind: "rename"; slug: string; title: string } | { kind: "archive"; slug: string; title: string } | { kind: "dirty"; slug: string; title: string } | { kind: "create"; title: string } | { kind: "turn"; slug: string; title: string };
 
-const apiBase = "http://127.0.0.1:4317/api";
+const apiBase = "/api";
 const defaultCanvasZoom = 1;
 
 const accents = [

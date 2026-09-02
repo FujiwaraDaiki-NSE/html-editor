@@ -1,5 +1,7 @@
 import { createServer } from "node:net";
 
+export const WEB_BIND_HOST = "0.0.0.0";
+
 export function findAvailablePort(startPort) {
   assertPortNumber(startPort);
 
@@ -15,7 +17,7 @@ export function findAvailablePort(startPort) {
           reject(error);
         });
       });
-      probe.listen({ host: "127.0.0.1", port }, () => {
+      probe.listen({ host: WEB_BIND_HOST, port }, () => {
         probe.close((error) => error ? reject(error) : resolve(port));
       });
     };
@@ -43,7 +45,7 @@ export function assertPortAvailable(port) {
   return new Promise((resolve, reject) => {
     const probe = createServer();
     probe.once("error", (error) => probe.close(() => reject(error)));
-    probe.listen({ host: "127.0.0.1", port }, () => {
+    probe.listen({ host: WEB_BIND_HOST, port }, () => {
       probe.close((error) => error ? reject(error) : resolve());
     });
   });

@@ -19,6 +19,13 @@ test("allows only the configured loopback HTTP port", () => {
   assert.equal(isAllowedWebOrigin("http://localhost:3000", 3001), false);
 });
 
+test("allows a non-loopback web origin only when the proxy preserves the same host", () => {
+  assert.equal(isAllowedWebOrigin("http://192.168.1.20:3001", 3001, "192.168.1.20:3001"), true);
+  assert.equal(isAllowedWebOrigin("http://editor.local:3001", 3001, "editor.local:3001"), true);
+  assert.equal(isAllowedWebOrigin("http://192.168.1.20:3001", 3001, "127.0.0.1:4317"), false);
+  assert.equal(isAllowedWebOrigin("http://attacker.example:3001", 3001, "192.168.1.20:3001"), false);
+});
+
 test("accepts normalized and explicit HTTP port 80 origins", () => {
   assert.equal(isAllowedWebOrigin("http://127.0.0.1", 80), true);
   assert.equal(isAllowedWebOrigin("http://127.0.0.1:80", 80), true);

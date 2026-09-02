@@ -1,19 +1,19 @@
 import { spawn } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { resolveWebPort } from "./dev-port.mjs";
+import { resolveWebPort, WEB_BIND_HOST } from "./dev-port.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const webPort = await resolveWebPort(process.env.WEAVE_WEB_PORT);
 const childEnv = { ...process.env, WEAVE_WEB_PORT: String(webPort) };
-console.log(`Weave web: http://127.0.0.1:${webPort}`);
+console.log(`Weave web: http://${WEB_BIND_HOST}:${webPort}`);
 const children = [
   spawn(process.execPath, ["server/local-api.mjs"], {
     cwd: root,
     stdio: "inherit",
     env: childEnv,
   }),
-  spawn("npm", ["run", "dev:web", "--", "--host", "127.0.0.1", "--port", String(webPort), "--strictPort"], {
+  spawn("npm", ["run", "dev:web", "--", "--hostname", WEB_BIND_HOST, "--port", String(webPort)], {
     cwd: root,
     stdio: "inherit",
     env: childEnv,

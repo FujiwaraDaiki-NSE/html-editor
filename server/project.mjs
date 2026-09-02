@@ -19,7 +19,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspacesRoot = process.env.WEAVE_WORKSPACES_ROOT ? resolve(process.env.WEAVE_WORKSPACES_ROOT) : join(repoRoot, "workspaces");
 const archiveRoot = join(workspacesRoot, ".archive");
 const currentPath = process.env.WEAVE_WORKSPACES_ROOT ? join(dirname(workspacesRoot), ".weave", "current.json") : join(repoRoot, ".weave", "current.json");
-const assetApiBase = `http://127.0.0.1:${process.env.WEAVE_API_PORT ?? 4317}/api`;
+const assetApiBase = "/api";
 let currentProjectRoot = process.env.WEAVE_PROJECT_ROOT ? resolve(process.env.WEAVE_PROJECT_ROOT) : join(workspacesRoot, "northstar");
 export const projectRoot = () => currentProjectRoot;
 const manifestPath = (root = currentProjectRoot) => join(root, ".weave", "deck.json");

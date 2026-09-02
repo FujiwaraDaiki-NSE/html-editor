@@ -1,10 +1,8 @@
 const LOOPBACK_HTTP_ORIGIN = /^http:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?$/;
 
-export function isAllowedWebOrigin(origin, webPort) {
+export function isAllowedWebOrigin(origin, webPort, host) {
   if (origin === undefined) return true;
   if (typeof origin !== "string" || !Number.isInteger(webPort) || webPort < 1 || webPort > 65_535) return false;
-
-  if (!LOOPBACK_HTTP_ORIGIN.test(origin)) return false;
 
   let url;
   try {
@@ -12,7 +10,17 @@ export function isAllowedWebOrigin(origin, webPort) {
   } catch {
     return false;
   }
+  if (url.username || url.password || url.pathname !== "/" || url.search || url.hash) return false;
 
   const originPort = url.port === "" ? 80 : Number(url.port);
-  return originPort === webPort;
+  if (originPort !== webPort) return false;
+  if (LOOPBACK_HTTP_ORIGIN.test(origin)) return true;
+  if (typeof host !== "string") return false;
+
+  try {
+    const forwardedHost = new URL(`http://${host}`);
+    return forwardedHost.origin === url.origin;
+  } catch {
+    return false;
+  }
 }

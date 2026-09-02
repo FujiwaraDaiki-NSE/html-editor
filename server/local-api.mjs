@@ -93,7 +93,7 @@ function finishPendingTurn(threadId, pending) {
 }
 
 function hasAllowedOrigin(request) {
-  return isAllowedWebOrigin(request.headers.origin, webPort);
+  return isAllowedWebOrigin(request.headers.origin, webPort, request.headers.host);
 }
 
 function corsHeaders(request) {
