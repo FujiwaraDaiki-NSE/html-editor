@@ -2,7 +2,16 @@ import assert from "node:assert/strict";
 import { createServer } from "node:net";
 import test from "node:test";
 
-import { findAvailablePort, parseConfiguredPort, resolveWebPort } from "../scripts/dev-port.mjs";
+import {
+  DEFAULT_WEB_PORT,
+  findAvailablePort,
+  parseConfiguredPort,
+  resolveWebPort,
+} from "../scripts/dev-port.mjs";
+
+test("uses port 3444 as the default starting port", () => {
+  assert.equal(DEFAULT_WEB_PORT, 3444);
+});
 
 function listenOnEphemeralPort() {
   return new Promise((resolve, reject) => {

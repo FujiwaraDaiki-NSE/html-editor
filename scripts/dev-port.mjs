@@ -1,5 +1,7 @@
 import { createServer } from "node:net";
 
+export const DEFAULT_WEB_PORT = 3444;
+
 export function findAvailablePort(startPort) {
   assertPortNumber(startPort);
 
@@ -55,5 +57,5 @@ export async function resolveWebPort(configuredPort) {
     await assertPortAvailable(port);
     return port;
   }
-  return findAvailablePort(3000);
+  return findAvailablePort(DEFAULT_WEB_PORT);
 }
