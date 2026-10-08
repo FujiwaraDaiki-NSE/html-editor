@@ -406,7 +406,13 @@ export class CodexService extends EventEmitter {
     if (!clientUserMessageId) throw new Error("clientUserMessageId is required.");
     const dedupeKey = `${threadId}:${clientUserMessageId}`;
     if (this.sentMessages.has(dedupeKey)) return this.sentMessages.get(dedupeKey);
-    const request = this.client.request("turn/start", {
+    // thread/read can find persisted history without loading it in a restarted
+    // app-server. Resume the same thread before sending, within the deduped request.
+    const request = this.client.request("thread/resume", {
+      threadId,
+      cwd: this.projectRoot,
+      baseInstructions: this.instructions,
+    }).then(() => this.client.request("turn/start", {
       threadId,
       clientUserMessageId,
       input: turnInput(prompt, attachments, this.projectRoot),
@@ -423,7 +429,7 @@ export class CodexService extends EventEmitter {
       model: model ?? null,
       effort: effort ?? null,
       summary: "auto",
-    });
+    }));
     this.sentMessages.set(dedupeKey, request);
     try {
       const result = await request;

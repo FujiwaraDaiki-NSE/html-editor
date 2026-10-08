@@ -3049,6 +3049,7 @@ export default function Home() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "制作タスクを再開できませんでした。");
       dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
+      setApiError(null);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   };
 

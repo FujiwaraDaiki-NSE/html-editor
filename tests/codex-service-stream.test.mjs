@@ -94,6 +94,51 @@ test("new Threads receive both app-server source and a durable name marker", asy
   service.router.dispose();
 });
 
+test("sending after restart resumes the saved thread before starting a turn", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const client = new FakeClient();
+  const originalRequest = client.request.bind(client);
+  let loaded = false;
+  client.request = async (method, params) => {
+    if (method === "thread/resume") {
+      client.calls.push({ method, params });
+      loaded = true;
+      return { thread: { id: params.threadId } };
+    }
+    if (method === "turn/start") {
+      client.calls.push({ method, params });
+      if (!loaded) throw new Error(`thread not found: ${params.threadId}`);
+      return { turn: { id: "resumed-turn" } };
+    }
+    return originalRequest(method, params);
+  };
+  const service = new CodexService({ projectRoot: "/workspace", instructions: "current rules", client });
+  t.after(() => service.router.dispose());
+  const result = await service.startTurn({ threadId: "new", prompt: "continue", clientUserMessageId: "message-1" });
+  assert.equal(result.turn.id, "resumed-turn");
+  assert.deepEqual(client.calls.map(({ method }) => method), ["thread/read", "thread/resume", "turn/start"]);
+  assert.deepEqual(client.calls[1].params, { threadId: "new", cwd: "/workspace", baseInstructions: "current rules" });
+  assert.equal(client.calls[2].params.threadId, "new");
+});
+
+test("a failed resume does not start a turn or replace the saved thread", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const client = new FakeClient();
+  const originalRequest = client.request.bind(client);
+  client.request = async (method, params) => {
+    if (method === "thread/resume") {
+      client.calls.push({ method, params });
+      throw new Error("resume unavailable");
+    }
+    return originalRequest(method, params);
+  };
+  const service = new CodexService({ projectRoot: "/workspace", instructions: "test", client });
+  t.after(() => service.router.dispose());
+  await assert.rejects(service.startTurn({ threadId: "new", prompt: "continue", clientUserMessageId: "message-2" }), /resume unavailable/);
+  assert.deepEqual(client.calls.map(({ method }) => method), ["thread/read", "thread/resume"]);
+  assert.equal(service.activeTurns.size, 0);
+});
+
 test("event stream replays missed events and then forwards live events", () => {
   const stream = new CodexEventStream();
   stream.publish("codex/notification", { method: "turn/started" });
