@@ -313,7 +313,7 @@ body {
 .thread-switcher:hover span { color: var(--accent); }
 .popover-backdrop { position: fixed; z-index: 30; inset: 0; }
 
-.gallery { --thumb-width: 256px; --thumb-scale: calc(var(--thumb-width) / 1280px); position: absolute; z-index: 15; top: 48px; right: 0; bottom: 24px; left: 0; display: flex; flex-direction: column; background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(14px); }
+.gallery { --thumb-width: 256px; --thumb-scale: calc(var(--thumb-width) / 1280px); position: relative; grid-area: canvas; z-index: 15; min-width: 0; min-height: 0; overflow: auto; display: flex; flex-direction: column; background: var(--bg); }
 .gallery-head { display: flex; align-items: center; gap: 12px; padding: 20px 26px 16px; border-bottom: 1px solid var(--line); }
 .gallery-head h3 { margin: 0; font-size: 13px; font-weight: 600; }
 .gallery-head .count { color: var(--muted); font-size: 11px; }
@@ -1590,4 +1590,11 @@ button.project-card { cursor: pointer; }
     right: 0 !important;
     bottom: calc(100% + 6px) !important;
   }
+}
+
+@media (max-width: 900px) {
+  .workspace > .gallery { --thumb-width: min(256px, calc(100vw - 48px)); }
+  .gallery-head { flex-wrap: wrap; padding: 12px; }
+  .gallery-head .close-x { margin-left: auto; }
+  .gallery .name-row { flex-wrap: wrap; }
 }

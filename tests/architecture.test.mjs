@@ -218,8 +218,8 @@ test("commands are grouped by editing, project, and delivery intent", async () =
   assert.doesNotMatch(page, /className="canvas-tool-group slide-tools"/);
   assert.match(page, /className="slide-actions-menu" role="menu"/);
   assert.doesNotMatch(page, /className="topbar-popover project-menu"/);
-  assert.match(page, /className="project-switcher"[^>]*aria-haspopup="dialog"/);
-  assert.match(page, /className="gallery" role="dialog"/);
+  assert.match(page, /className="project-switcher"[^>]*aria-controls="project-gallery"/);
+  assert.match(page, /className="gallery" role="region"/);
   assert.match(page, /className="topbar-popover delivery-menu"/);
   assert.match(page, /<h3>表示<\/h3>/);
   assert.doesNotMatch(page, /className="icon-button"/);

@@ -3839,7 +3839,7 @@ export default function Home() {
   return (
     <main ref={appRootRef} className={`weave-app ${theme}`} data-density={density} data-ui-root="weave" style={{ "--accent": accent } as React.CSSProperties}>
       <header className="topbar">
-        <button ref={projectSwitcherRef} className="project-switcher" data-ui-id="project-switcher" aria-label="プロジェクトを開く" aria-expanded={galleryOpen} aria-haspopup="dialog" onClick={openGallery} data-help="プロジェクトの作成・切り替え・管理を開きます">
+        <button ref={projectSwitcherRef} className="project-switcher" data-ui-id="project-switcher" aria-label="プロジェクトを開く" aria-expanded={galleryOpen} aria-controls="project-gallery" onClick={openGallery} data-help="プロジェクトの作成・切り替え・管理を開きます">
           <span className="project-mark">W</span>
           <span><strong>{deckTitle}</strong><small>{project?.root.split("/").pop() ?? "ローカルプロジェクト"}</small></span>
           <span className="chevron">⌄</span>
@@ -4492,17 +4492,8 @@ export default function Home() {
           </fieldset>
           </>}
         </aside> : <button className="open-inspector" onClick={() => { setLeftPanelOpen(false); setInspectorOpen(true); }}>デザイン</button>}
-        <nav className="mobile-tabs" aria-label="作業画面">
-          <button className={mobileView === "canvas" ? "active" : ""} aria-pressed={mobileView === "canvas"} onClick={() => setMobileView("canvas")}>キャンバス</button>
-          <button className={mobileView === "slides" ? "active" : ""} aria-pressed={mobileView === "slides"} onClick={() => setMobileView("slides")}>スライド</button>
-          <button className={mobileView === "agent" ? "active" : ""} aria-pressed={mobileView === "agent"} onClick={() => showActivity("agent")}>Agent</button>
-          <button className={mobileView === "more" ? "active" : ""} aria-pressed={mobileView === "more"} onClick={() => { showActivity("settings"); setMobileView("more"); }}>その他{qualityReport.errors + qualityReport.warnings > 0 ? ` · ${qualityReport.errors + qualityReport.warnings}` : ""}</button>
-        </nav>
-        <nav className="mobile-slide-panel slide-nav" aria-label="スライド一覧">{slideNavigator}</nav>
-      </div>
-
       {galleryOpen && (
-        <div ref={galleryRef} className="gallery" role="dialog" aria-modal="true" aria-labelledby="gallery-title" tabIndex={-1} onPointerDown={() => setGalleryMenu(null)}>
+        <div ref={galleryRef} id="project-gallery" className="gallery" role="region" aria-labelledby="gallery-title" tabIndex={-1} onPointerDown={() => setGalleryMenu(null)}>
           <header className="gallery-head">
             {galleryView === "new" ? <button className="back-link" onClick={() => setGalleryView("list")}>← プロジェクト</button> : <h3 id="gallery-title">プロジェクト <span className="count">{galleryLoading ? "読み込み中…" : galleryProjects.length}</span></h3>}
             {galleryView === "new" && <h3 id="gallery-title">新しいプロジェクト</h3>}
@@ -4559,6 +4550,16 @@ export default function Home() {
           </>}
         </div>
       )}
+        <nav className="mobile-tabs" aria-label="作業画面">
+          <button className={mobileView === "canvas" ? "active" : ""} aria-pressed={mobileView === "canvas"} onClick={() => setMobileView("canvas")}>キャンバス</button>
+          <button className={mobileView === "slides" ? "active" : ""} aria-pressed={mobileView === "slides"} onClick={() => setMobileView("slides")}>スライド</button>
+          <button className={mobileView === "agent" ? "active" : ""} aria-pressed={mobileView === "agent"} onClick={() => showActivity("agent")}>Agent</button>
+          <button className={mobileView === "more" ? "active" : ""} aria-pressed={mobileView === "more"} onClick={() => { showActivity("settings"); setMobileView("more"); }}>その他{qualityReport.errors + qualityReport.warnings > 0 ? ` · ${qualityReport.errors + qualityReport.warnings}` : ""}</button>
+        </nav>
+        <nav className="mobile-slide-panel slide-nav" aria-label="スライド一覧">{slideNavigator}</nav>
+      </div>
+
+
 
       {skillDialog && (
         <div className="skill-dialog-backdrop" role="presentation" onPointerDown={(event) => { if (event.target === event.currentTarget && skillBusyKey === null) setSkillDialog(null); }}>
