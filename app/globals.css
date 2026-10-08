@@ -478,7 +478,7 @@ button.project-card { cursor: pointer; }
 .slide-diagnostic-badge.error { color: #ef756d; }
 .slide-diagnostic-badge.suggestion { color: #7eaef8; }
 
-.change-review-panel { position: absolute; z-index: 12; right: 12px; top: 52px; width: min(420px, calc(100% - 24px)); max-height: calc(100% - 108px); overflow: auto; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--panel); box-shadow: var(--shadow); }
+.change-review-panel { border: 1px solid var(--line-strong); border-radius: 8px; background: var(--panel); box-shadow: var(--shadow); }
 .change-review-panel > summary { min-height: 38px; padding: 0 10px; display: flex; align-items: center; justify-content: space-between; cursor: pointer; }
 .change-review-panel > header { position: sticky; top: 0; padding: 8px; display: flex; justify-content: space-between; background: var(--panel); border-bottom: 1px solid var(--line); }
 .change-review-list { display: grid; gap: 8px; padding: 8px; }
@@ -671,8 +671,8 @@ button.project-card { cursor: pointer; }
 
 .canvas-area { min-height: 0; position: relative; container-type: size; display: grid; place-items: center; overflow: hidden; background-color: #0c0e11; background-image: radial-gradient(#23272d 1px, transparent 1px); background-size: 18px 18px; }
 .light .canvas-area { background-color: #dfe1e5; background-image: radial-gradient(#c8cbd0 1px, transparent 1px); }
-.slide-shell { position: relative; width: min(calc(100cqw - 24px), calc(177.7778cqh - 131.5556px), 1280px); aspect-ratio: 16 / 10; display: grid; place-items: center; }
-.canvas-interaction-status { position: absolute; z-index: 5; bottom: calc(95% + 1px); left: 50%; translate: -50% 0; min-height: 24px; padding: 0 9px; display: flex; align-items: center; border: 1px solid var(--line-strong); border-radius: 999px; background: color-mix(in srgb, var(--panel) 92%, transparent); color: var(--muted); box-shadow: 0 4px 12px rgb(0 0 0 / .18); font-size: 8px; white-space: nowrap; pointer-events: none; }
+.slide-shell { position: relative; width: min(calc(100cqw - 24px), calc((100cqh - 112px) * 16 / 9)); aspect-ratio: 16 / 9; display: grid; place-items: center; }
+.canvas-interaction-status { position: absolute; z-index: 5; bottom: calc(100% + 8px); left: 50%; translate: -50% 0; min-height: 24px; padding: 0 9px; display: flex; align-items: center; border: 1px solid var(--line-strong); border-radius: 999px; background: color-mix(in srgb, var(--panel) 92%, transparent); color: var(--muted); box-shadow: 0 4px 12px rgb(0 0 0 / .18); font-size: 8px; white-space: nowrap; pointer-events: none; }
 .canvas-interaction-status.selected { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); color: var(--text); }
 .canvas-interaction-status.dragging { border-color: var(--accent); background: var(--accent); color: #211a0f; font-weight: 700; }
 .canvas-interaction-status.editing { border-style: dashed; color: var(--accent); }
@@ -695,7 +695,7 @@ button.project-card { cursor: pointer; }
 .slide-viewport > .weave-slide { position: absolute; left: 0; top: 0; transform: scale(var(--slide-scale)); transform-origin: top left; }
 /* The annotation layer sits beside the viewport, not inside it: the viewport's children are
    replaced wholesale by innerHTML on every slide injection. It is sized and placed to coincide
-   with the viewport's own box (the shell is 16/10 and centres a 16/9 viewport), scaled like
+   with the viewport's own box (the shell and viewport both use 16/9), scaled like
    .weave-slide so its coordinate space is the 1280x720 slide, and translated by the viewport's
    scroll so the two stay pinned together once the canvas is zoomed past fit. */
 .annotation-overlay { position: absolute; z-index: 4; left: 0; top: 50%; width: 100%; aspect-ratio: 16 / 9; translate: 0 -50%; overflow: hidden; pointer-events: none; }
@@ -806,7 +806,7 @@ button.project-card { cursor: pointer; }
 .inspector .scale-options button.active { background: var(--accent); border-color: var(--accent); color: #211a0f; }
 .inspector .scale-custom { width: 54px; height: 24px; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--panel); color: inherit; font-size: 11px; }
 
-.canvas-toolbar { position: absolute; top: calc(95% + 1px); left: 50%; transform: translateX(-50%); min-height: 31px; padding: 3px; display: flex; align-items: center; gap: 0; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel); box-shadow: 0 7px 18px rgba(0,0,0,.28); }
+.canvas-toolbar { position: absolute; top: calc(100% + 8px); left: 50%; transform: translateX(-50%); min-height: 31px; padding: 3px; display: flex; align-items: center; gap: 0; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel); box-shadow: 0 7px 18px rgba(0,0,0,.28); }
 .canvas-tool-group { min-height: 23px; padding: 0 3px; display: flex; align-items: center; gap: 1px; }
 .canvas-tool-group + .canvas-tool-group { border-left: 1px solid var(--line-strong); }
 .canvas-toolbar button { height: 23px; min-width: 24px; border: 0; border-radius: 3px; background: transparent; color: var(--muted); font-size: 9px; cursor: pointer; }
@@ -986,7 +986,7 @@ button.project-card { cursor: pointer; }
 .selection-toolbar button { padding: 0 9px; border: 0; border-radius: 4px; background: transparent; color: var(--text); cursor: pointer; }
 .selection-toolbar button:hover { background: var(--panel-3); }
 .selection-toolbar button.danger { color: var(--danger); }
-.changed-review { position: absolute; z-index: 11; top: 9%; right: 3%; padding: 5px; display: flex; align-items: center; gap: 4px; border: 1px solid color-mix(in srgb, #58d7f5 55%, var(--line)); border-radius: 7px; background: var(--panel); box-shadow: var(--shadow); }
+.changed-review { padding: 5px; display: flex; align-items: center; gap: 4px; border: 1px solid color-mix(in srgb, #58d7f5 55%, var(--line)); border-radius: 7px; background: var(--panel); box-shadow: var(--shadow); }
 .changed-review span { display: grid; min-width: 92px; }
 .changed-review button { padding: 0 8px; border: 0; border-radius: 4px; background: var(--panel-3); cursor: pointer; }
 .slide-viewport [data-agent-changed="true"] { outline: 4px solid #58d7f5 !important; outline-offset: 4px; animation: agent-change-pulse 1.6s ease-in-out infinite; }
@@ -1082,7 +1082,6 @@ button.project-card { cursor: pointer; }
   .statusbar { display: none; }
   .panel-resizer { display: none; }
   .selection-toolbar { top: 10%; max-width: 92%; overflow-x: auto; }
-  .changed-review { top: auto; right: 4%; bottom: 12%; }
   .variation-compare-grid { grid-template-columns: 1fr; }
   .variation-card-preview > div > .weave-slide { transform: scale(calc((100vw - 28px) / 1280)); }
 }
@@ -1302,7 +1301,7 @@ button.project-card { cursor: pointer; }
   .save-button { min-width: 48px; }
   .canvas-area { padding-bottom: 44px; }
   .slide-shell {
-    width: min(calc(100% - 24px), calc((100dvh - 206px) * 16 / 9));
+    width: min(calc(100cqw - 24px), calc((100cqh - 48px) * 16 / 9));
     aspect-ratio: 16 / 9;
   }
   .weave-app .canvas-toolbar {
@@ -1321,4 +1320,26 @@ button.project-card { cursor: pointer; }
     right: 8px;
     bottom: calc(112px + env(safe-area-inset-bottom));
   }
+}
+
+/* Review occupies its own row, so neither its controls nor details cover the slide. */
+.canvas-workspace { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+.canvas-workspace > .canvas-area { flex: 1; min-width: 0; }
+.review-dock { flex: 0 1 auto; min-height: 0; max-height: 35%; display: flex; flex-direction: column; border-top: 1px solid var(--line-strong); background: var(--panel); }
+.review-dock-heading { flex-wrap: wrap; flex-shrink: 0; min-height: 40px; padding: 4px 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.review-dock-heading button, .review-toggle { min-height: 32px; padding: 4px 10px; border: 1px solid var(--line-strong); border-radius: 5px; background: var(--panel-3); color: var(--text); cursor: pointer; }
+.review-toggle[aria-expanded="true"] { border-color: var(--accent); }
+.review-dock-content { min-height: 0; overflow: auto; padding: 0 8px 8px; }
+.review-dock .changed-review { flex-wrap: wrap; border: 0; box-shadow: none; margin-left: auto; padding: 0; }
+.review-dock .change-review-panel { box-shadow: none; }
+.review-dock .change-review-panel > summary::before { content: "▸"; margin-right: 8px; }
+.review-dock .change-review-panel[open] > summary::before { content: "▾"; }
+.review-dock .change-review-panel > summary strong { margin-left: auto; }
+.review-empty { margin: 8px; color: var(--muted); }
+@media (max-width: 900px) {
+  .review-dock-heading button { min-height: 44px; }
+  .review-dock-heading > button { margin-left: auto; }
+  .review-dock .changed-review { order: 1; flex-basis: 100%; }
+  .review-toggle { padding-inline: 6px; }
+  .review-dock { margin-bottom: 52px; }
 }
