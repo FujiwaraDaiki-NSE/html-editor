@@ -19,6 +19,11 @@ test("Agent production tasks separate messages, work logs, and blocking requests
   assert.match(page, /className="work-details"/);
   assert.match(page, /className="work-items"/);
   assert.match(page, /className="blocking-region"/);
+  assert.match(page, /チャットへ戻る/);
+  assert.match(page, /return-chat-history/);
+  assert.match(page, /return-chat-skills/);
+  assert.match(page, /return-chat-shortcuts/);
+  assert.match(page, /return-chat-settings/);
   assert.match(page, /activePendingServerRequests\.length > 0/);
   assert.match(page, /response\.status !== 202/);
   assert.match(page, /phase: "accepted"/);
@@ -32,6 +37,11 @@ test("Agent production tasks separate messages, work logs, and blocking requests
   assert.match(page, /aria-label="制作タスクのやり取り" aria-busy=\{turnBusy\}/);
   assert.match(page, /role="status" aria-live="polite" aria-busy=\{turnBusy\}/);
   assert.match(page, /data-turn-state=\{turnPresentation\}/);
+  assert.match(page, /const turnWorkLabel = codexState\.editing \? "スライドを編集中…" : "操作を進めています…"/);
+  const sendMessageStart = page.indexOf("const sendMessage = async () =>");
+  const interruptStart = page.indexOf("const interruptAgent = async () =>", sendMessageStart);
+  assert.ok(sendMessageStart >= 0 && interruptStart > sendMessageStart);
+  assert.doesNotMatch(page.slice(sendMessageStart, interruptStart), /setAgentPreview\(\{ phase: "checking"/);
   assert.match(page, /thread-popover" role="dialog" aria-modal="true"/);
   assert.match(page, /onThreadDialogKeyDown/);
   assert.match(page, /input\[type="search"\]/);
@@ -77,8 +87,9 @@ test("pending request attribution keeps only the active thread in header scope",
     request("active", { threadId: "thread-1" }),
     request("other", { threadId: "thread-2" }),
     request("unknown", {}),
+    { ...request("editor-child", { threadId: "editor-child" }), parentThreadId: "thread-1" },
   ], "thread-1");
-  assert.deepEqual(groups.active.map(({ id }) => id), ["active"]);
+  assert.deepEqual(groups.active.map(({ id }) => id), ["active", "editor-child"]);
   assert.deepEqual(groups.other.map(({ id }) => id), ["other"]);
   assert.deepEqual(groups.unscoped.map(({ id }) => id), ["unknown"]);
 });

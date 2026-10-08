@@ -46,6 +46,8 @@ export type PendingServerRequest = {
   method: string;
   params: Record<string, unknown>;
   createdAt: number;
+  /** Parent chat used for display when an internal editor child asks for approval. */
+  parentThreadId?: string | null;
 };
 
 export type CodexCatalog = {
@@ -64,6 +66,8 @@ export type CodexUIState = {
   items: Record<string, ItemState>;
   activeThreadId: string | null;
   activeTurnId: string | null;
+  /** Whether the project editor is currently applying an edit turn. */
+  editing: boolean;
   pendingRequests: Record<string, PendingServerRequest>;
   connection: CodexConnectionState;
   catalog: CodexCatalog;
@@ -76,6 +80,7 @@ export type CodexAction =
   | { type: "threadsLoaded"; threads: Array<Record<string, any>>; archived?: boolean }
   | { type: "threadLoaded"; thread: Record<string, any>; activate?: boolean }
   | { type: "activateThread"; threadId: string | null }
+  | { type: "editing"; editing: boolean }
   | { type: "activeTurns"; activeTurns: Record<string, string> }
   | { type: "pendingRequests"; requests: PendingServerRequest[] }
   | { type: "catalog"; catalog: Partial<CodexCatalog> }

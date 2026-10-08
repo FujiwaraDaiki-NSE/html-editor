@@ -103,6 +103,36 @@ test("restores active per-Thread turn state after a page reload", () => {
   assert.equal(state.turns["turn-live"].status, "running");
 });
 
+test("editor child notifications stay in history without stealing the visible chat", () => {
+  let state = codexReducer(initialCodexState, {
+    type: "event",
+    sequence: 1,
+    method: "thread/started",
+    params: { thread: { id: "chat-parent", name: "Weave · Chat" }, purpose: "chat" },
+  });
+  state = codexReducer(state, {
+    type: "event",
+    sequence: 2,
+    method: "turn/started",
+    params: { threadId: "chat-parent", turn: { id: "chat-turn" }, purpose: "chat" },
+  });
+  state = codexReducer(state, {
+    type: "event",
+    sequence: 3,
+    method: "thread/started",
+    params: { thread: { id: "editor-child", name: "Weave · Editor\u2063weave-editor-v1" }, purpose: "editor" },
+  });
+  state = codexReducer(state, {
+    type: "event",
+    sequence: 4,
+    method: "turn/started",
+    params: { threadId: "editor-child", turn: { id: "editor-turn" }, purpose: "editor" },
+  });
+  assert.equal(state.activeThreadId, "chat-parent");
+  assert.equal(state.activeTurnId, "chat-turn");
+  assert.deepEqual(state.threads["editor-child"].turnIds, ["editor-turn"]);
+});
+
 test("interruption finalizes both the Turn and its running Items", () => {
   let state = replay(fixture.slice(0, 4));
   state = codexReducer(state, {

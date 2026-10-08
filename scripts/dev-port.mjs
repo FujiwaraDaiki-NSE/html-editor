@@ -1,6 +1,8 @@
 import { createServer, isIPv4 } from "node:net";
 import { networkInterfaces } from "node:os";
 
+export const DEFAULT_WEB_PORT = 3444;
+
 export function parseConfiguredHost(value) {
   if (typeof value !== "string" || value.trim() !== value || !isIPv4(value) || value === "0.0.0.0") {
     throw new TypeError("WEAVE_WEB_HOST must be a concrete local IPv4 interface address.");
@@ -69,5 +71,5 @@ export async function resolveWebPort(configuredPort, host) {
     await assertPortAvailable(port, host);
     return port;
   }
-  return findAvailablePort(3000, host);
+  return findAvailablePort(DEFAULT_WEB_PORT, host);
 }

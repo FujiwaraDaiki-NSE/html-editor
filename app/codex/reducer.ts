@@ -3,6 +3,13 @@ import type { CodexAction, CodexUIState, ItemState, ThreadState, TurnState } fro
 
 const OUTPUT_LIMIT = 100_000;
 const TERMINAL_STATUSES = new Set(["completed", "failed", "interrupted", "canceled", "cancelled"]);
+const EDITOR_THREAD_MARKER = "\u2063weave-editor-v1";
+
+function isEditorThreadPayload(value: any): boolean {
+  if (!value || typeof value !== "object") return false;
+  if (value.purpose === "editor") return true;
+  return [value.name, value.thread?.name].some((name) => typeof name === "string" && name.includes(EDITOR_THREAD_MARKER));
+}
 
 export const initialCodexState: CodexUIState = {
   threads: {},
@@ -11,6 +18,7 @@ export const initialCodexState: CodexUIState = {
   items: {},
   activeThreadId: null,
   activeTurnId: null,
+  editing: false,
   pendingRequests: {},
   connection: { status: "connecting", error: null },
   catalog: { models: [], skills: [], hooks: [], mcpServers: [], account: null, modelProvider: null },
@@ -146,8 +154,13 @@ function applyEvent(state: CodexUIState, method: string, params: Record<string, 
   const itemId = params.itemId ?? params.item?.id;
 
   if (method === "thread/started") {
+    const editorEvent = isEditorThreadPayload(params);
     hydrateThread(state, params.thread);
-    state.activeThreadId = params.thread.id;
+    if (editorEvent) {
+      state.threads[params.thread.id] = threadFrom({ id: params.thread.id, purpose: "editor" }, state.threads[params.thread.id]);
+    } else {
+      state.activeThreadId = params.thread.id;
+    }
     return;
   }
   if (method === "thread/status/changed") {
@@ -175,11 +188,16 @@ function applyEvent(state: CodexUIState, method: string, params: Record<string, 
     return;
   }
   if (method === "turn/started") {
+    const editorEvent = isEditorThreadPayload(params) || isEditorThreadPayload(state.threads[threadId]?.raw);
     const turn = turnFrom(params.turn ?? { id: turnId }, threadId, state.turns[turnId]);
     state.turns[turn.id] = turn;
     ensureTurn(state, threadId, turn.id);
-    state.activeThreadId = threadId;
-    state.activeTurnId = turn.id;
+    if (editorEvent) {
+      state.threads[threadId] = threadFrom({ id: threadId, purpose: "editor" }, state.threads[threadId]);
+    } else {
+      state.activeThreadId = threadId;
+      state.activeTurnId = turn.id;
+    }
     return;
   }
   if (method === "turn/diff/updated") {
@@ -275,6 +293,7 @@ export function codexReducer(current: CodexUIState, action: CodexAction): CodexU
   if (action.type === "catalog") {
     return { ...current, catalog: { ...current.catalog, ...action.catalog } };
   }
+  if (action.type === "editing") return { ...current, editing: action.editing };
   if (action.type === "activateThread") return { ...current, activeThreadId: action.threadId };
   const state: CodexUIState = structuredClone(current);
   if (action.type === "activeTurns") {
@@ -304,7 +323,7 @@ export function codexReducer(current: CodexUIState, action: CodexAction): CodexU
   if (action.type === "threadLoaded") {
     hydrateThread(state, action.thread);
     if (!state.threadOrder.includes(action.thread.id)) state.threadOrder.unshift(action.thread.id);
-    if (action.activate) state.activeThreadId = action.thread.id;
+    if (action.activate && !isEditorThreadPayload(action.thread)) state.activeThreadId = action.thread.id;
     return state;
   }
   if (action.sequence <= current.lastEventSequence) return current;

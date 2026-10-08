@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>チャットからの画面操作 — 開発者向けサマリー</title>
+<style>
+body{font:16px/1.8 system-ui,sans-serif;color:#1c2431;background:#f5f7fa;margin:0}main{max-width:960px;margin:auto;padding:48px 24px}h1{line-height:1.4}section{background:white;border:1px solid #dce2e9;border-radius:12px;padding:24px;margin:20px 0}code{background:#edf1f7;padding:2px 5px;border-radius:4px}table{border-collapse:collapse;width:100%}th,td{padding:12px;border-bottom:1px solid #dce2e9;text-align:left;vertical-align:top}small{color:#596576}
+</style>
+<main>
+<small>Weave · 2026年10月8日</small>
+<h1>チャットを起点に、画面を見ながら操作する</h1>
+<p>サイドバーを常設し、エージェントがプロジェクト管理や表示変更などの既存UIを操作できるようにする。操作対象の強調表示により、ユーザーが操作する場所を学べる。</p>
+<section><h2>責務</h2><table>
+<tr><th>場所</th><th>役割</th></tr>
+<tr><td>Codexの動的ツール</td><td>画面の読み取り、クリック、入力、選択、キー操作を要求する。</td></tr>
+<tr><td>メインチャット</td><td>読み取り専用の会話がUI操作を調整する。プロジェクトを切り替えても会話の履歴を引き継ぎ、画面操作だけの依頼では編集ロックや復旧スナップショットを作成しない。</td></tr>
+<tr><td>スライド編集</td><td><code>weave_ui.edit_slides</code>が既存の編集処理へ委譲する。選択範囲・実行方式・スキル変更権限を守り、編集結果の検証と復旧処理を終えてからメインチャットへ返す。内部の編集スレッドはタスク一覧に表示しない。</td></tr>
+<tr><td>ローカルAPI</td><td>会話とブラウザーセッションを関連付け、要求と応答を照合する。切断・期限切れ・重複応答を扱う。</td></tr>
+<tr><td>ブラウザー</td><td>現在の画面から対象と利用可能な操作を取得し、対象を強調表示してから既存のUIイベントを実行する。</td></tr>
+<tr><td>既存の保存・プロジェクトAPI</td><td>変更の受け付け、整合性の検証、保存結果を決定する。</td></tr>
+</table></section>
+<section><h2>操作の流れ</h2><ol>
+<li>エージェントが現在の画面にある操作対象を読み取る。</li>
+<li>対象を指定して操作を要求する。</li>
+<li>ブラウザーが対象を再確認し、位置と操作名を表示する。</li>
+<li>既存のボタン・入力欄の操作を実行し、画面の状態を返す。</li>
+<li>エージェントが結果を読み、必要な次の操作へ進む。</li>
+</ol><p>クリックイベントの送出と、保存やプロジェクト切り替えの完了は別の事実として扱う。対象が存在しない、複数に一致する、無効になったなどの場合は操作を拒否する。</p></section>
+<section><h2>UIと操作対象</h2><p>チャット以外のタブを選んでもサイドバー領域を維持する。画面内の入力・確認ダイアログは人間とエージェントが共用する。パスワード、ファイル選択、エージェント自身の承認や送信などの制御は画面操作ツールの対象にしない。</p><p>任意のJavaScriptやCSSセレクターを受け取って実行する仕組みは設けない。ブラウザーが返す対象情報を使って操作する。</p></section>
+<section><h2>確認方法</h2><p><code>npm run lint</code>、<code>npm run typecheck</code>、<code>npm test</code>で静的検査・ビルド・自動テストを行う。GUIではサイドバーの維持、チャットからの操作、対象の強調表示、プロジェクト管理、狭い画面の表示を確認する。</p><p>開発環境はNext.js互換の既存vinext起動経路を使用する。このリポジトリにはCompose設定はなく、Web・ローカルAPI・Codex app-serverを<code>npm run dev</code>で起動する。</p></section>
+<section><h2>検証結果</h2><p>2026年10月8日、プロダクションビルド・295件の自動テスト・型検査・ESLintを通過。実際のCodexとChromeを使い、新規プロジェクト作成と切り替え、選択スライドの編集、分割表示、名前付きマイルストーンの保存を確認した。集中表示と390×844の画面でもサイドバーが残ることを確認した。</p><p>中断したターンの遅延操作、複数タブの所有権、期限切れ再接続、内部編集会話の表示混入、親チャットでの編集承認は回帰テストで検証する。内部編集の承認要求には表示先の親会話IDを付け、実際の応答先となる要求IDと子会話IDは変更しない。</p></section>
+</main>
+</html>

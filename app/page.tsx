@@ -17,8 +17,10 @@ import { AnnotationAttachment } from "./components/AnnotationAttachment";
 import { AnnotationLegend } from "./components/AnnotationLegend";
 import { AnnotationOverlay } from "./components/AnnotationOverlay";
 import type { Annotation, AnnotationGestureKind, AnnotationRect, PointerCandidate, ResizeHandle } from "./components/AnnotationOverlay";
+import { useEditorDialog } from "./components/EditorDialog";
 import { textExcerptOfNode } from "./components/editable-text-utils";
 import { sourceElementIdAtOffset, sourceOffsetForElement, validateEditableSlideSource } from "./editor-source";
+import { installUiBridge, type UiBridge, type UiBridgeStatus, type UiRequest } from "./ui-bridge";
 import { ItemCard } from "./codex/components/ItemCard";
 import { ServerRequestCard } from "./codex/components/ServerRequestCard";
 import { codexReducer, initialCodexState } from "./codex/reducer";
@@ -89,6 +91,7 @@ type ServerState = {
     connection: { status: "connecting" | "connected" | "reconnecting" | "disconnected" | "incompatible"; error: string | null; cliVersion?: string | null };
     version: { matches: boolean; running: string; generated: string; warning: string | null } | null;
     catalog: { models: any[]; skills: any[]; hooks: any[]; mcpServers: any[]; account: Record<string, any> | null; modelProvider: Record<string, any> | null };
+    editing: boolean;
     activeTurns: Record<string, string>;
     pendingRequests: Array<{ id: string | number; method: string; params: Record<string, any>; createdAt: number }>;
   };
@@ -278,6 +281,14 @@ type AgentPreviewState = {
   changedSlideIds: string[];
   sequence: number;
 };
+type UiRequestOwner = {
+  requestId: string;
+  sessionId: string;
+  threadId: string;
+  turnId: string;
+  operation: UiRequest["operation"];
+  target: UiRequest["target"];
+};
 type BlockDragSession = {
   id: string;
   node: HTMLElement;
@@ -412,6 +423,7 @@ const markReorder = (session: BlockDragSession, event: { timeStamp: number; clie
 };
 
 export default function Home() {
+  const { prompt: editorPrompt, confirm: editorConfirm, dialog: editorDialog } = useEditorDialog();
   const [deckTitle, setDeckTitle] = useState("第3四半期 戦略デッキ");
   const [slides, setSlides] = useState<SlideDoc[]>(initialSlides);
   const [templates, setTemplates] = useState<TemplateDoc[]>([]);
@@ -487,6 +499,7 @@ export default function Home() {
   const [objectTreeOpen, setObjectTreeOpen] = useState(true);
   const [canvasFocused, setCanvasFocused] = useState(false);
   const [announcement, setAnnouncement] = useState("エディターの準備ができました");
+  const [uiOperation, setUiOperation] = useState<UiBridgeStatus>({ phase: "idle", requestId: null, label: "", message: "" });
   const [saveMessage, setSaveMessage] = useState("");
   const [defaultTemplateId, setDefaultTemplateId] = useState("");
   const [importedTemplates, setImportedTemplates] = useState<TemplateDoc[] | null>(null);
@@ -519,6 +532,7 @@ export default function Home() {
   const [mergeConflicts, setMergeConflicts] = useState<MergeConflict[]>([]);
   const [revertedChangeIds, setRevertedChangeIds] = useState<Set<string>>(new Set());
   const [changedReviewIndex, setChangedReviewIndex] = useState(0);
+  const [reviewOpen, setReviewOpen] = useState(false);
   const [agentPreview, setAgentPreview] = useState<AgentPreviewState | null>(null);
   const [agentCompletion, setAgentCompletion] = useState<number | null>(null);
   const [previewHighlightSlideId, setPreviewHighlightSlideId] = useState<string | null>(null);
@@ -539,6 +553,15 @@ export default function Home() {
   };
 
   const canvasRef = useRef<HTMLDivElement>(null);
+  const appRootRef = useRef<HTMLElement>(null);
+  const uiBridgeRef = useRef<UiBridge | null>(null);
+  const uiSessionRef = useRef<{ sessionId: string; token: string; threadId: string | null }>({ sessionId: "", token: "", threadId: null });
+  const uiSessionRevisionRef = useRef(0);
+  const uiSessionQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const uiSessionLeaseRef = useRef<{ threadId: string | null; replaced: boolean }>({ threadId: null, replaced: false });
+  const uiRequestOwnerRef = useRef<UiRequestOwner | null>(null);
+  const uiExpectedProjectOperationRef = useRef<UiRequestOwner | null>(null);
+  const uiActiveThreadRef = useRef<string | null>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const annotationScrollRef = useRef<HTMLDivElement>(null);
   const presenterRef = useRef<HTMLDivElement>(null);
@@ -636,6 +659,230 @@ export default function Home() {
     setMobileView(view);
     if (view === "skills") void loadSkills();
   };
+
+  const isUiRequestCurrent = useCallback((request: UiRequest) => {
+    const owner = uiRequestOwnerRef.current;
+    const session = uiSessionRef.current;
+    return !!owner
+      && owner.requestId === request.requestId
+      && owner.sessionId === session.sessionId
+      && owner.threadId === session.threadId
+      && owner.threadId === uiActiveThreadRef.current;
+  }, []);
+
+  useEffect(() => {
+    const bridge = installUiBridge({
+      root: appRootRef.current,
+      isRequestCurrent: isUiRequestCurrent,
+      onStatus: (status) => {
+        setUiOperation(status);
+        if (status.message) setAnnouncement(status.message);
+      },
+    });
+    uiBridgeRef.current = bridge;
+    return () => {
+      bridge?.dispose();
+      uiBridgeRef.current = null;
+    };
+  }, [isUiRequestCurrent]);
+
+  const syncUiSession = useCallback(async (threadId: string, allowReclaim = false) => {
+    if (uiSessionLeaseRef.current.threadId !== threadId) uiSessionLeaseRef.current = { threadId, replaced: false };
+    if (uiSessionLeaseRef.current.replaced && !allowReclaim) throw new Error("別のブラウザがこの会話のUI操作を引き継いだため、画面操作を再開できません。画面上で依頼を実行すると再接続します。");
+    const revision = uiSessionRevisionRef.current;
+    const current = uiSessionRef.current;
+    const patchSession = current.sessionId !== "";
+    const requestSession = (method: "POST" | "PATCH") => method === "PATCH"
+      ? fetch(`${apiBase}/ui/session`, { method, headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: current.sessionId, token: current.token, threadId, claim: allowReclaim }) })
+      : fetch(`${apiBase}/ui/session`, { method, headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId, claim: allowReclaim }) });
+    let response = await requestSession(patchSession ? "PATCH" : "POST");
+    let result = await response.json();
+    const expired = patchSession && result?.code === "WEAVE_UI_SESSION_EXPIRED";
+    const replaced = patchSession && ["WEAVE_UI_UNAUTHORIZED", "WEAVE_UI_REPLACED", "WEAVE_UI_OWNERSHIP_REQUIRED"].includes(result?.code);
+    if (replaced && !allowReclaim) {
+      uiSessionLeaseRef.current = { threadId, replaced: true };
+      throw new Error("別のブラウザがこの会話のUI操作を引き継いだため、画面操作を停止しました。画面上で依頼を実行すると再接続します。");
+    }
+    if (expired || replaced) {
+      /* Dispatching threadLoaded activates the new thread before its effect
+         runs. The effect increments the revision and queues a heartbeat while
+         this explicit bind is still in flight. Keep the response when the
+         active thread is still the one this bind targeted; discard only a
+         response for a thread that is no longer displayed. */
+      if (revision !== uiSessionRevisionRef.current && uiActiveThreadRef.current !== threadId) return;
+      uiSessionRef.current = { sessionId: "", token: "", threadId: null };
+      response = await requestSession("POST");
+      result = await response.json();
+    }
+    const token = typeof result?.token === "string" ? result.token : current.token;
+    if (!response.ok || typeof result?.sessionId !== "string" || typeof token !== "string" || !token) throw new Error(result?.error ?? "AgentのUIセッションを開始できませんでした。");
+    if (revision !== uiSessionRevisionRef.current && uiActiveThreadRef.current !== threadId) {
+      await fetch(`${apiBase}/ui/session`, { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: result.sessionId, token }) });
+      return;
+    }
+    uiSessionRef.current = { sessionId: result.sessionId, token, threadId };
+    uiSessionLeaseRef.current = { threadId, replaced: false };
+  }, []);
+
+  const enqueueUiSessionSync = useCallback((threadId: string, allowReclaim = false) => {
+    const job = uiSessionQueueRef.current.then(() => syncUiSession(threadId, allowReclaim));
+    uiSessionQueueRef.current = job.catch(() => undefined);
+    return job;
+  }, [syncUiSession]);
+
+  const releaseUiSession = useCallback(async (session: { sessionId: string; token: string }) => {
+    if (!session.sessionId || !session.token) return;
+    const response = await fetch(`${apiBase}/ui/session`, { method: "DELETE", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: session.sessionId, token: session.token }) });
+    if (!response.ok && response.status !== 401) {
+      const result = await response.json();
+      throw new Error(result?.error ?? "AgentのUIセッションを終了できませんでした。");
+    }
+  }, []);
+
+  const enqueueUiSessionRelease = useCallback((session: { sessionId: string; token: string }) => {
+    const job = uiSessionQueueRef.current.then(() => releaseUiSession(session));
+    uiSessionQueueRef.current = job.catch(() => undefined);
+    return job;
+  }, [releaseUiSession]);
+
+  /* A newly-created chat must have a browser session before its first turn is
+     submitted. The active-thread effect also performs this work eventually,
+     but sendMessage awaits this helper so the app-server can bind the session
+     atomically while starting the turn. */
+  const ensureUiSessionForThread = useCallback(async (threadId: string) => {
+    if (!threadId) throw new Error("UIセッションの制作タスクを特定できませんでした。");
+    uiActiveThreadRef.current = threadId;
+    /* Explicit user actions (send/open/resume/fork) must touch the server even
+       when the local ref still points at this thread. A suspended browser can
+       otherwise keep a token past the five minute TTL and send a turn with a
+       dead lease. Background heartbeats continue to use the non-reclaiming
+       path in the active-thread effect. */
+    uiSessionRevisionRef.current += 1;
+    await enqueueUiSessionSync(threadId, true);
+    const session = uiSessionRef.current;
+    if (!session.sessionId || !session.token || session.threadId !== threadId || uiActiveThreadRef.current !== threadId) {
+      throw new Error("AgentのUIセッションを制作タスクへ結合できませんでした。");
+    }
+    return session;
+  }, [enqueueUiSessionSync]);
+
+  useEffect(() => {
+    const threadId = codexState.activeThreadId;
+    uiSessionRevisionRef.current += 1;
+    const expectedProjectOperation = uiExpectedProjectOperationRef.current;
+    const preserveProjectOperation = !!expectedProjectOperation
+      && expectedProjectOperation.threadId === threadId
+      && uiRequestOwnerRef.current?.requestId === expectedProjectOperation.requestId;
+    if (!preserveProjectOperation) {
+      uiRequestOwnerRef.current = null;
+      uiExpectedProjectOperationRef.current = null;
+    }
+    uiActiveThreadRef.current = threadId;
+    if (!threadId) {
+      const current = uiSessionRef.current;
+      uiSessionRef.current = { ...current, threadId: null };
+      uiSessionLeaseRef.current = { threadId: null, replaced: false };
+      uiRequestOwnerRef.current = null;
+      uiExpectedProjectOperationRef.current = null;
+      void enqueueUiSessionRelease(current).catch((error) => setApiError(error instanceof Error ? error.message : String(error)));
+      return;
+    }
+    let canceled = false;
+    let syncing = false;
+    const sync = () => {
+      if (syncing) return;
+      syncing = true;
+      void enqueueUiSessionSync(threadId, false).catch((error) => {
+        if (!canceled) setApiError(error instanceof Error ? error.message : String(error));
+      }).finally(() => { syncing = false; });
+    };
+    sync();
+    const heartbeat = window.setInterval(sync, 60_000);
+    return () => { canceled = true; window.clearInterval(heartbeat); };
+  }, [codexState.activeThreadId, enqueueUiSessionRelease, enqueueUiSessionSync]);
+
+  const handleUiToolEvent = useCallback(async (payload: any) => {
+    if (payload?.phase !== "requested") {
+      const owner = uiRequestOwnerRef.current;
+      const terminalPhase = typeof payload?.phase === "string" && payload.phase !== "session-ready" && payload.phase !== "session-active";
+      const sameRequest = terminalPhase
+        && owner
+        && typeof payload?.requestId === "string"
+        && payload.requestId === owner.requestId
+        && payload.sessionId === owner.sessionId
+        && payload.threadId === owner.threadId
+        && payload.turnId === owner.turnId;
+      if (sameRequest) {
+        uiRequestOwnerRef.current = null;
+        if (uiExpectedProjectOperationRef.current?.requestId === owner.requestId) uiExpectedProjectOperationRef.current = null;
+        if (payload.phase !== "completed") {
+          const message = typeof payload.error === "string" && payload.error ? payload.error : "AgentのUI操作が中断されたため、画面操作を中止しました。";
+          setUiOperation({ phase: "error", requestId: owner.requestId, label: "UI操作", message });
+          setAnnouncement(message);
+        }
+      }
+      return;
+    }
+    if (typeof payload.requestId !== "string" || typeof payload.sessionId !== "string" || !uiSessionRef.current.sessionId || payload.sessionId !== uiSessionRef.current.sessionId) return;
+    const bridge = uiBridgeRef.current;
+    if (!bridge) return;
+    const request = payload.request as UiRequest | undefined;
+    if (!request || request.version !== 1 || request.requestId !== payload.requestId || !request.operation) return;
+    const session = uiSessionRef.current;
+    if (!session.sessionId || !session.token) return;
+    const requestThreadId = typeof payload.threadId === "string" ? payload.threadId : "";
+    const initialOwner: UiRequestOwner = {
+      requestId: request.requestId,
+      sessionId: session.sessionId,
+      threadId: requestThreadId,
+      turnId: typeof payload.turnId === "string" ? payload.turnId : "",
+      operation: request.operation,
+      target: request.target,
+    };
+    uiRequestOwnerRef.current = initialOwner;
+    const result = requestThreadId === "" || requestThreadId !== session.threadId
+      ? {
+          version: 1 as const,
+          requestId: request.requestId,
+          operation: request.operation,
+          status: "rejected" as const,
+          target: null,
+          controls: [],
+          outcome: null,
+          error: { code: "thread_inactive", message: "このUI要求の制作タスクは現在表示されていません。" },
+        }
+      : await bridge.perform(request);
+    const ownsResponse = uiRequestOwnerRef.current?.requestId === initialOwner.requestId
+      && uiRequestOwnerRef.current.sessionId === initialOwner.sessionId
+      && uiRequestOwnerRef.current.threadId === initialOwner.threadId
+      && uiRequestOwnerRef.current.turnId === initialOwner.turnId
+      && uiSessionRef.current.sessionId === initialOwner.sessionId
+      && uiSessionRef.current.threadId === initialOwner.threadId;
+    const responseResult = ownsResponse ? result : {
+      ...result,
+      status: "rejected" as const,
+      outcome: null,
+      error: { code: "request_stale", message: "画面または制作タスクが切り替わったため、操作を中止しました。" },
+    };
+    try {
+      const response = await fetch(`${apiBase}/ui/response`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sessionId: initialOwner.sessionId,
+          token: session.token,
+          response: responseResult,
+        }),
+      });
+      const responseBody = await response.json();
+      if (!response.ok) throw new Error(responseBody?.error ?? "UI操作の結果をAgentへ返せませんでした。");
+    } catch (error) {
+      setApiError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (uiRequestOwnerRef.current?.requestId === initialOwner.requestId) uiRequestOwnerRef.current = null;
+      if (uiExpectedProjectOperationRef.current?.requestId === initialOwner.requestId) uiExpectedProjectOperationRef.current = null;
+    }
+  }, []);
 
   useEffect(() => { document.documentElement.style.setProperty("--weave-sidebar-width", `${sidebarWidth}px`); }, [sidebarWidth]);
   useEffect(() => {
@@ -1062,15 +1309,16 @@ export default function Home() {
       return { kind: "running", label: count > 0 ? `${count}枚のスライドを編集中` : "スライドを編集中…" };
     }
     if (agentCompletion !== null) return { kind: "completed", label: `${agentCompletion}枚のスライドを更新` };
+    const turnWorkLabel = codexState.editing ? "スライドを編集中…" : "操作を進めています…";
     const turnLabels: Record<Exclude<TurnPresentationState, "idle">, { kind: string; label: string }> = {
       submission: { kind: "submission", label: "依頼を確認中…" },
       accepted: { kind: "accepted", label: "依頼を確認中" },
-      in_progress: { kind: "running", label: "スライドを編集中…" },
+      in_progress: { kind: "running", label: turnWorkLabel },
     };
     if (turnPresentation !== "idle") return turnLabels[turnPresentation];
     if (turnSubmission.phase === "submitting") return { kind: "submission", label: "別タスクへ送信中…" };
     if (turnSubmission.phase === "accepted") return { kind: "accepted", label: "別タスクで開始待ち" };
-    if (codexState.activeTurnId) return { kind: "running", label: "別タスクで実行中…" };
+    if (codexState.activeTurnId) return { kind: "running", label: codexState.editing ? "別タスクで実行中 · スライドを編集中…" : "別タスクで実行中 · 操作を進めています…" };
     return null;
   })();
   const catalogSkills = useMemo(() => codexState.catalog.skills.flatMap((entry: any) => entry?.skills ?? [entry]).filter(Boolean), [codexState.catalog.skills]);
@@ -1081,7 +1329,7 @@ export default function Home() {
     return nameMatches.length === 1 ? nameMatches[0] : undefined;
   };
   const visibleSkills = useMemo(() => skills.filter((skill) => skill.scope === skillScope && (!skillSearch.trim() || `${skill.name} ${skill.description}`.toLowerCase().includes(skillSearch.trim().toLowerCase()))), [skillScope, skillSearch, skills]);
-  const activityLabel = activityView === "history" ? "バージョン履歴" : activityView === "shortcuts" ? "ショートカット" : activityView === "skills" ? "スキル" : activityView === "settings" ? "設定" : "Agent";
+  const activityLabel = activityView === "history" ? "バージョン履歴" : activityView === "shortcuts" ? "ショートカット" : activityView === "skills" ? "スキル" : activityView === "settings" ? "設定" : "チャット";
 
   /* `applyDeck` controls whether the on-disk deck replaces the editor buffer. Status-only polls
      (retrying while Codex connects) pass false so they never clobber unsaved edits — the local
@@ -1123,6 +1371,7 @@ export default function Home() {
     dispatchCodex({ type: "connection", connection: state.codex.connection });
     setAgentProjectReady(state.codex.projectReady);
     dispatchCodex({ type: "catalog", catalog: state.codex.catalog });
+    dispatchCodex({ type: "editing", editing: state.codex.editing });
     dispatchCodex({ type: "pendingRequests", requests: state.codex.pendingRequests });
     dispatchCodex({ type: "activeTurns", activeTurns: state.codex.activeTurns });
     if (state.agentPreview) {
@@ -1196,6 +1445,11 @@ export default function Home() {
             if (!line.trim()) continue;
             const envelope = JSON.parse(line);
             const envelopeSequence = Number(envelope.sequence ?? 0);
+            if (envelope.type === "weave/ui") {
+              void handleUiToolEvent(envelope.payload);
+              eventSequenceRef.current = Math.max(eventSequenceRef.current, envelopeSequence);
+              continue;
+            }
             if (envelope.type === "weave/project" || envelope.type === "codex/gap") {
               const projectEvent = envelope.type === "weave/project" ? projectEventDecision(envelope.payload) : null;
               const generation = editGenerationRef.current;
@@ -1247,18 +1501,21 @@ export default function Home() {
                   : null;
                 const baseline = eventBaseline ?? state.agentPreview?.baseline.slides ?? agentPreviewBaselineRef.current ?? slidesRef.current;
                 const serverConflicts = Array.isArray(envelope.payload?.conflicts) ? envelope.payload.conflicts : [];
+                let reviewConflicts = serverConflicts;
                 if (!unchanged && envelope.payload?.baseline) {
                   const localMerge = mergeEditorDecks({ base: envelope.payload.baseline, agent: state.deck, current: { title: deckTitleRef.current, defaultTemplateId: defaultTemplateIdRef.current, slides: slidesRef.current } });
                   setDeckTitle(localMerge.deck.title);
                   setDefaultTemplateId(localMerge.deck.defaultTemplateId);
                   setSlidesSynced(localMerge.deck.slides.map(slideFromHtml));
-                  setMergeConflicts([...serverConflicts, ...localMerge.conflicts]);
+                  reviewConflicts = [...serverConflicts, ...localMerge.conflicts];
+                  setMergeConflicts(reviewConflicts);
                 } else setMergeConflicts(serverConflicts);
                 const agentChanges = Array.isArray(envelope.payload?.changes?.changes) ? envelope.payload.changes.changes : [];
                 const agentSlideIds = new Set(agentChanges.map((change: any) => change.slideId).filter(Boolean));
                 const targets = changedTargets(baseline, state.deck?.slides ?? []).filter((target) => agentSlideIds.has(target.slideId));
                 setChangedReview(targets);
                 setStructuredChanges(agentChanges);
+                setReviewOpen(targets.length > 0 || agentChanges.length > 0 || reviewConflicts.length > 0);
                 setRevertedChangeIds(new Set());
                 setChangedReviewIndex(0);
                 setAgentCompletion(changedSlideCount(baseline, state.deck?.slides ?? []));
@@ -1298,7 +1555,7 @@ export default function Home() {
     };
     void connect();
     return () => { canceled = true; if (retryTimer) clearTimeout(retryTimer); };
-  }, [applyServerState]);
+  }, [applyServerState, handleUiToolEvent]);
 
   useEffect(() => {
     if (!previewHighlightSlideId) return;
@@ -2459,7 +2716,11 @@ export default function Home() {
     setHistoryState({ undo: 0, redo: 0 });
   };
 
-  const resetProjectEditor = () => {
+  const resetProjectEditor = (preserveUiRequest = false) => {
+    if (!preserveUiRequest) {
+      uiRequestOwnerRef.current = null;
+      uiExpectedProjectOperationRef.current = null;
+    }
     activeRef.current = 1;
     setActiveSlide(1);
     setSelectedId(null);
@@ -2473,8 +2734,31 @@ export default function Home() {
     templatePreviewHtmlRef.current = null;
     templatePreviewSourceHtmlRef.current = null;
     setActiveVariation("main");
-    dispatchCodex({ type: "activateThread", threadId: null });
     reinject();
+  };
+
+  /* A project card can be clicked by the generic Agent UI bridge. That click
+     intentionally causes the card and gallery to disappear, so keep its
+     request owner through the resulting project hydration. Human project
+     switches still cancel any unrelated in-flight operation. */
+  const preserveAgentProjectOperation = (targetId: string) => {
+    const owner = uiRequestOwnerRef.current;
+    const expected = owner
+      && owner.operation === "click"
+      && owner.target?.id === targetId
+      && owner.threadId === uiActiveThreadRef.current;
+    if (!expected) {
+      uiRequestOwnerRef.current = null;
+      uiExpectedProjectOperationRef.current = null;
+      return false;
+    }
+    uiExpectedProjectOperationRef.current = owner;
+    return true;
+  };
+
+  const cancelUiOperationFromHuman = () => {
+    uiRequestOwnerRef.current = null;
+    uiExpectedProjectOperationRef.current = null;
   };
 
   const closeGallery = () => {
@@ -2521,6 +2805,7 @@ export default function Home() {
 
   const switchProject = async (target: ProjectSummary, interrupt = false) => {
     if (target.current) { closeGallery(); return; }
+    const preserveUiRequest = preserveAgentProjectOperation(`project-${target.slug}`);
     setGallerySwitching(target.slug);
     try {
       const response = await fetch(`${apiBase}/projects/current`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ slug: target.slug, ...(interrupt ? { interrupt: true } : {}) }) });
@@ -2529,7 +2814,7 @@ export default function Home() {
         throw new Error(result.error ?? "プロジェクトを切り替えられませんでした。");
       }
       applyServerState(result as ServerState);
-      resetProjectEditor();
+      resetProjectEditor(preserveUiRequest);
       closeGallery();
       setApiError(null);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
@@ -2552,13 +2837,14 @@ export default function Home() {
   const createProject = async () => {
     const title = newProjectTitle.trim();
     if (!title) return;
+    const preserveUiRequest = preserveAgentProjectOperation("create-project");
     setNewProjectCreating(true);
     try {
       const response = await fetch(`${apiBase}/projects`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ title, templateId: newProjectTemplate }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "プロジェクトを作成できませんでした。");
       applyServerState(result as ServerState);
-      resetProjectEditor();
+      resetProjectEditor(preserveUiRequest);
       closeGallery();
       setNewProjectTitle("");
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
@@ -2580,7 +2866,8 @@ export default function Home() {
   const thumbHtml = (html: string, css: string, title: string) => html ? <iframe className="project-live" sandbox="" title={title} loading="lazy" srcDoc={`<!doctype html><html><head><style>${css}</style><style>html,body{width:${designWidth}px;height:${designHeight}px;margin:0;overflow:hidden;background:#0d1017}body > .weave-slide{width:${designWidth}px;height:${designHeight}px}</style></head><body>${html}</body></html>`} /> : null;
 
   const saveProject = async () => {
-    const requestedName = saveMessage.trim() || window.prompt("マイルストーン名", `${deckTitle} レビュー版`)?.trim();
+    const promptedName = saveMessage.trim() || await editorPrompt("マイルストーン名", `${deckTitle} レビュー版`);
+    const requestedName = promptedName?.trim();
     if (!requestedName) return false;
     try {
       const generation = editGenerationRef.current;
@@ -2674,7 +2961,7 @@ export default function Home() {
     try {
       if (file.size > 4_000_000) throw new Error("編集用データは4 MB以下にしてください。");
       const bundle = parsePortableBundle(JSON.parse(await file.text()));
-      if (!window.confirm(`編集中の内容を「${bundle.deck.title}」に置き換えますか？読み込み後も元に戻せます。`)) return;
+      if (!(await editorConfirm(`編集中の内容を「${bundle.deck.title}」に置き換えますか？読み込み後も元に戻せます。`))) return;
       checkpoint();
       setDeckTitle(String(bundle.deck.title));
       setDefaultTemplateId(bundle.deck.defaultTemplateId);
@@ -2964,39 +3251,78 @@ export default function Home() {
     let steering = false;
     try {
       let threadId = codexState.activeThreadId;
+      let startedChatThread = false;
       if (!threadId) {
-        const startResponse = await fetch(`${apiBase}/codex/thread/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ approvalPolicy, model: selectedModel || undefined }) });
+        const startResponse = await fetch(`${apiBase}/codex/thread/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ purpose: "chat", approvalPolicy, model: selectedModel || undefined }) });
         const started = await startResponse.json();
         if (!startResponse.ok) throw new Error(started.error ?? "会話を開始できませんでした。");
-        threadId = started.thread.id;
+        const startedThreadId = started.thread?.id;
+        if (typeof startedThreadId !== "string" || !startedThreadId) throw new Error("会話の制作タスクを特定できませんでした。");
+        threadId = startedThreadId;
+        startedChatThread = true;
         dispatchCodex({ type: "threadLoaded", thread: started.thread, activate: true });
-        setTurnSubmission({ phase: "submitting", threadId, turnId: null });
+        await ensureUiSessionForThread(startedThreadId);
+        setTurnSubmission({ phase: "submitting", threadId: startedThreadId, turnId: null });
       }
       if (!threadId) throw new Error("操作対象の制作タスクを特定できませんでした。");
+      let requestThreadId: string = threadId;
       steering = agentRunning;
+      if (!steering && !startedChatThread) {
+        const prepareResponse = await fetch(`${apiBase}/codex/thread/prepare`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ threadId: requestThreadId, approvalPolicy, model: selectedModel || undefined }),
+        });
+        const prepared = await prepareResponse.json();
+        if (!prepareResponse.ok) throw new Error(prepared.error ?? "会話をUI操作へ接続できませんでした。");
+        const preparedThreadId = prepared.thread?.id;
+        if (typeof preparedThreadId !== "string" || !preparedThreadId) throw new Error("UI操作用の会話を特定できませんでした。");
+        let preparedThread = prepared.thread;
+        if (prepared.migrated === true) {
+          const readResponse = await fetch(`${apiBase}/codex/thread/read`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ threadId: preparedThreadId }),
+          });
+          const read = await readResponse.json();
+          if (!readResponse.ok || !read.thread || read.thread.id !== preparedThreadId) throw new Error(read.error ?? "移行後の会話履歴を読み込めませんでした。");
+          preparedThread = read.thread;
+        }
+        requestThreadId = preparedThreadId;
+        dispatchCodex({ type: "threadLoaded", thread: preparedThread, activate: true });
+        if (prepared.migrated === true && typeof prepared.sourceThreadId === "string" && prepared.sourceThreadId !== preparedThreadId) {
+          setAnnotationAttachments((current) => current.map((attachment) => attachment.threadId === prepared.sourceThreadId ? { ...attachment, threadId: preparedThreadId } : attachment));
+        }
+        setTurnSubmission({ phase: "submitting", threadId: requestThreadId, turnId: null });
+      }
+      const uiSession = await ensureUiSessionForThread(requestThreadId);
       if (!steering) {
         agentPreviewBaselineRef.current = requestDeck.slides.map((item) => ({ ...item }));
         agentViewedSlideIdRef.current = requestDeck.slides[activeRef.current - 1]?.id ?? null;
-        setAgentPreview({ phase: "checking", changedSlideIds: [], sequence: 0 });
       }
       const runningTurnId = codexState.activeTurnId;
       const endpoint = steering ? "codex/turn/steer" : "codex/turn/start";
-      const response = await fetch(`${apiBase}/${endpoint}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId, prompt: value, clientUserMessageId: createMessageId(), selectedId, deck: requestDeck, model: selectedModel || undefined, effort: reasoningEffort, approvalPolicy, contextEnvelope: requestEnvelope, attachments: referenceAttachments }) });
+      const response = await fetch(`${apiBase}/${endpoint}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: requestThreadId, purpose: "chat", prompt: value, clientUserMessageId: createMessageId(), selectedId, deck: requestDeck, model: selectedModel || undefined, effort: reasoningEffort, approvalPolicy, contextEnvelope: requestEnvelope, attachments: referenceAttachments, uiSession: { sessionId: uiSession.sessionId, token: uiSession.token } }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Agentへの依頼を開始できませんでした。");
       if (response.status !== 202 || (!steering && typeof result.turn?.id !== "string") || (steering && typeof result.turnId !== "string")) throw new Error("Agentへの依頼受付状態を確認できませんでした。");
+      if (result.thread && typeof result.thread.id === "string") {
+        requestThreadId = result.thread.id;
+        dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
+        await ensureUiSessionForThread(requestThreadId);
+      }
       if (!steering) {
         accepted = true;
         if (isTerminalTurnStatus(result.turn.status)) {
           turnInFlightRef.current = false;
           setTurnSubmission(IDLE_TURN_SUBMISSION);
-        } else setTurnSubmission({ phase: "accepted", threadId, turnId: result.turn.id });
+        } else setTurnSubmission({ phase: "accepted", threadId: requestThreadId, turnId: result.turn.id });
       } else setTurnSubmission(IDLE_TURN_SUBMISSION);
       if (turnAnnotations.length > 0 && slide) {
         const turnId = steering ? runningTurnId ?? result.turn?.id ?? result.turnId ?? null : result.turn?.id ?? result.turnId ?? null;
         setAnnotationAttachments((current) => [...current, {
           id: createMessageId(),
-          threadId,
+          threadId: requestThreadId,
           turnId,
           slideId: slide.id,
           slideLabel: `スライド ${slideNumber}${slide.title ? ` · ${slide.title}` : ""}`,
@@ -3035,10 +3361,11 @@ export default function Home() {
   const newThread = async () => {
     clearTurnSubmission();
     try {
-      const response = await fetch(`${apiBase}/codex/thread/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ approvalPolicy, model: selectedModel || undefined }) });
+      const response = await fetch(`${apiBase}/codex/thread/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ purpose: "chat", approvalPolicy, model: selectedModel || undefined }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "制作タスクを開始できませんでした。");
       dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
+      await ensureUiSessionForThread(result.thread.id);
       setApiError(null);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   };
@@ -3049,6 +3376,8 @@ export default function Home() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "制作タスクを再開できませんでした。");
       dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
+      await ensureUiSessionForThread(result.thread.id);
+      setApiError(null);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   };
 
@@ -3072,7 +3401,23 @@ export default function Home() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "制作タスクを複製できませんでした。");
       dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
+      await ensureUiSessionForThread(result.thread.id);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
+  };
+
+  const renameActiveThread = async () => {
+    const threadId = codexState.activeThreadId;
+    if (!threadId) return;
+    const currentName = displayThreadName(codexState.threads[threadId]?.name) ?? "";
+    const name = await editorPrompt("タスク名", currentName);
+    if (name === null) return;
+    await threadAction("name", { name });
+  };
+
+  const deleteActiveThread = async () => {
+    if (!codexState.activeThreadId) return;
+    if (!(await editorConfirm("この制作タスクを完全に削除しますか？"))) return;
+    await threadAction("delete");
   };
 
   const manageGoal = async () => {
@@ -3083,7 +3428,7 @@ export default function Home() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "制作タスクの目標を取得できませんでした。");
       const current = result.goal?.objective ?? result.objective ?? "";
-      const objective = window.prompt("制作タスクの目標（空欄にすると解除します）", current);
+      const objective = await editorPrompt("制作タスクの目標（空欄にすると解除します）", current);
       if (objective === null) return;
       await threadAction(objective.trim() ? "goalSet" : "goalClear", objective.trim() ? { objective } : {});
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
@@ -3214,7 +3559,7 @@ export default function Home() {
   };
 
   const deleteManagedSkill = async (skill: SkillEntry) => {
-    if (!window.confirm(`スキル「${skill.name}」を削除しますか？`)) return;
+    if (!(await editorConfirm(`スキル「${skill.name}」を削除しますか？`))) return;
     await runSkillMutation(`${skill.scope}:${skill.name}`, () => fetch(`${apiBase}/skills/${skill.scope}/${encodeURIComponent(skill.name)}`, { method: "DELETE" }), "スキルを削除しました。");
   };
 
@@ -3258,15 +3603,15 @@ export default function Home() {
       let path: string;
       let body: Record<string, unknown>;
       if (kind === "resource") {
-        const uri = window.prompt("MCPリソースのURI", server.resources?.[0]?.uri ?? "");
+        const uri = await editorPrompt("MCPリソースのURI", String(server.resources?.[0]?.uri ?? ""));
         if (!uri) return;
         path = "resource/read";
         body = { server: server.name, uri, threadId: codexState.activeThreadId };
       } else {
         if (!codexState.activeThreadId) throw new Error("MCPツールを呼び出す前にWeave会話を選択してください。");
-        const tool = window.prompt("MCPツール名", Object.keys(server.tools ?? {})[0] ?? "");
+        const tool = await editorPrompt("MCPツール名", String(Object.keys(server.tools ?? {})[0] ?? ""));
         if (!tool) return;
-        const raw = window.prompt("ツールの引数（JSON）", "{}");
+        const raw = await editorPrompt("ツールの引数（JSON）", "{}");
         if (raw === null) return;
         path = "tool/call";
         body = { server: server.name, tool, arguments: JSON.parse(raw), threadId: codexState.activeThreadId };
@@ -3322,6 +3667,8 @@ export default function Home() {
             {visibleIndex > 0 && index - visibleEntries[visibleIndex - 1].index > 1 && <button className="slide-gap" aria-label="前のスライドを表示" onClick={() => switchSlide(Math.max(1, slideNumber - 20))}>…</button>}
             <button
               className={`slide-item ${activeSlide === slideNumber ? "active" : ""} ${selectedSlideIds.has(slide.id) ? "selected" : ""} ${liveChangedSlideIds.has(slide.id) ? "agent-updated" : ""}`}
+              data-ui-id={`slide-${slide.id}`}
+              data-ui-role="slide"
               aria-pressed={selectedSlideIds.has(slide.id)}
               onClick={(event) => { setSelectedSlideIds((current) => { if (!(event.metaKey || event.ctrlKey || event.shiftKey)) return new Set([slide.id]); const next = new Set(current); if (next.has(slide.id) && next.size > 1) next.delete(slide.id); else next.add(slide.id); return next; }); switchSlide(slideNumber); }}
               title={`${slideNumber}枚目を開く: ${slide.title || "無題"}`}
@@ -3399,9 +3746,11 @@ export default function Home() {
     );
   });
 
+  const chatReturnButton = (id: string) => <button type="button" className="activity-panel-chat-return" data-ui-id={id} onClick={() => showActivity("agent")} aria-label="チャットへ戻る">チャットへ戻る</button>;
+
   const historySidebar = (
     <section className="activity-panel history-panel" aria-label="バージョン履歴">
-      <header className="activity-panel-heading"><span>バージョン履歴</span><button className="panel-close" aria-label="バージョン履歴を閉じる" onClick={() => setLeftPanelOpen(false)}>×</button></header>
+      <header className="activity-panel-heading"><span>バージョン履歴</span>{chatReturnButton("return-chat-history")}</header>
       <div className="activity-panel-body">
         {(project?.backgroundTasks?.length ?? 0) > 0 && <section className="background-task-list" aria-label="このプロジェクトのバックグラウンドタスク"><strong>バックグラウンド</strong>{project!.backgroundTasks!.map((task, index) => <p key={`${task.threadId ?? "recovery"}-${index}`}><span>{task.variation ? "探索案" : "Agentタスク"}</span><small>{task.status === "running" ? "実行中" : task.status === "starting" ? "開始中" : task.status === "interrupted" ? "復旧可能" : task.status}</small></p>)}</section>}
         <div className="repository-summary">
@@ -3429,15 +3778,15 @@ export default function Home() {
 
   const skillsSidebar = (
     <section className="activity-panel skills-panel" aria-label="スキルライブラリ">
-      <header className="activity-panel-heading"><span>スキル</span><small>{skills.length}件</small><button className="panel-close" aria-label="スキルを閉じる" onClick={() => setLeftPanelOpen(false)}>×</button></header>
+      <header className="activity-panel-heading"><span>スキル</span><small>{skills.length}件</small>{chatReturnButton("return-chat-skills")}</header>
       <div className="activity-panel-body skills-sidebar">
         <div className="skills-intro"><strong>再利用できる指示</strong><p>Codexが使うプロジェクト固有・共通スキルを管理します。</p></div>
         <div className="skills-actions">
-          <button className="sidebar-primary-action" type="button" onClick={openNewSkillDialog} disabled={skillBusyKey !== null || agentRunning}>新しいスキル</button>
+          <button className="sidebar-primary-action" type="button" onClick={openNewSkillDialog} disabled={skillBusyKey !== null || codexState.editing}>新しいスキル</button>
           <input ref={skillInputRef} className="sr-only" type="file" accept="SKILL.md,.md,text/markdown" onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadManagedSkill(file); }} />
-          <button className="skills-upload-button" type="button" onClick={() => skillInputRef.current?.click()} disabled={skillBusyKey !== null || agentRunning}>SKILL.mdをアップロード</button>
+          <button className="skills-upload-button" type="button" data-ui-agent-exclude="true" onClick={() => skillInputRef.current?.click()} disabled={skillBusyKey !== null || codexState.editing}>SKILL.mdをアップロード</button>
         </div>
-        {agentRunning && <p className="activity-warning">Agentの処理が完了してからスキルを変更してください。</p>}
+        {codexState.editing && <p className="activity-warning">スライドの編集処理が完了してからスキルを変更してください。</p>}
         <div className="skills-tabs" role="tablist" aria-label="スキルの適用範囲">
           {(["project", "common"] as SkillScope[]).map((scope) => <button key={scope} type="button" role="tab" aria-selected={skillScope === scope} className={skillScope === scope ? "active" : ""} onClick={() => { setSkillScope(scope); setSkillDraft((current) => ({ ...current, scope })); }}>{scope === "project" ? "プロジェクト固有" : "共通"}<small>{skills.filter((skill) => skill.scope === scope).length}</small></button>)}
         </div>
@@ -3449,11 +3798,11 @@ export default function Home() {
             const supportsToggle = skill.valid && typeof catalogSkill?.enabled === "boolean";
             const key = `${skill.scope}:${skill.name}`;
             return <article className="skill-card" key={key} aria-busy={skillBusyKey === key}>
-              <div className="skill-card-head"><div><strong>{skill.name}</strong><span className={`skill-scope-badge ${skill.scope}`}>{skill.scope === "project" ? "固有" : "共通"}</span>{!skill.valid && <span className="skill-invalid-badge">要修復</span>}</div><button type="button" aria-label={`${skill.name}を編集`} onClick={() => openEditSkillDialog(skill)} disabled={skillBusyKey !== null || agentRunning}>{skill.valid ? "編集" : "修復"}</button></div>
+              <div className="skill-card-head"><div><strong>{skill.name}</strong><span className={`skill-scope-badge ${skill.scope}`}>{skill.scope === "project" ? "固有" : "共通"}</span>{!skill.valid && <span className="skill-invalid-badge">要修復</span>}</div><button type="button" aria-label={`${skill.name}を編集`} onClick={() => openEditSkillDialog(skill)} disabled={skillBusyKey !== null || codexState.editing}>{skill.valid ? "編集" : "修復"}</button></div>
               <p>{skill.valid ? skill.description : skill.error}</p>
               <code title={skill.path}>{skill.path}</code>
-              {supportsToggle && <label className="skill-enable-toggle"><span>Codexで有効</span><input type="checkbox" checked={catalogSkill.enabled} onChange={(event) => void updateSkill(catalogSkill, event.target.checked)} disabled={skillBusyKey !== null || agentRunning} /></label>}
-              <footer><button type="button" onClick={() => void moveManagedSkill(skill)} disabled={!skill.valid || skillBusyKey !== null || agentRunning}>{skill.scope === "project" ? "共通に格上げ" : "プロジェクト固有へ格下げ"}</button><button type="button" className="danger" onClick={() => void deleteManagedSkill(skill)} disabled={skillBusyKey !== null || agentRunning}>削除</button></footer>
+              {supportsToggle && <label className="skill-enable-toggle"><span>Codexで有効</span><input type="checkbox" checked={catalogSkill.enabled} onChange={(event) => void updateSkill(catalogSkill, event.target.checked)} disabled={skillBusyKey !== null || codexState.editing} /></label>}
+              <footer><button type="button" onClick={() => void moveManagedSkill(skill)} disabled={!skill.valid || skillBusyKey !== null || codexState.editing}>{skill.scope === "project" ? "共通に格上げ" : "プロジェクト固有へ格下げ"}</button><button type="button" className="danger" onClick={() => void deleteManagedSkill(skill)} disabled={skillBusyKey !== null || codexState.editing}>削除</button></footer>
             </article>;
           })}
           {visibleSkills.length === 0 && <p className="skills-empty">{skillSearch.trim() ? "条件に一致するスキルはありません。" : skillScope === "project" ? "プロジェクト固有のスキルはまだありません。" : "共通スキルはまだありません。"}</p>}
@@ -3464,33 +3813,33 @@ export default function Home() {
 
   const shortcutsSidebar = (
     <section className="activity-panel shortcuts-panel" aria-label="キーボードショートカット">
-      <header className="activity-panel-heading"><span>キーボードショートカット</span><button className="panel-close" aria-label="ショートカットを閉じる" onClick={() => setLeftPanelOpen(false)}>×</button></header>
+      <header className="activity-panel-heading"><span>キーボードショートカット</span>{chatReturnButton("return-chat-shortcuts")}</header>
       <div className="activity-panel-body"><dl><dt>← / →</dt><dd>前／次のスライド</dd><dt>ダブルクリック／Enter</dt><dd>選択したテキストを編集</dd><dt>@</dt><dd>メッセージ欄から要素をAgentへ示す</dd><dt>A</dt><dd>Mark for Agentを切り替え</dd><dt>Esc</dt><dd>編集や範囲指定、プレゼンを終了</dd><dt>⌘/Ctrl Z</dt><dd>元に戻す</dd><dt>⌘/Ctrl Shift Z</dt><dd>やり直す</dd><dt>?</dt><dd>この画面を開く</dd></dl></div>
     </section>
   );
 
   const settingsSidebar = (
     <section className="activity-panel settings-panel" aria-label="設定">
-      <header className="activity-panel-heading"><span>設定</span><button className="panel-close" aria-label="設定を閉じる" onClick={() => setLeftPanelOpen(false)}>×</button></header>
+      <header className="activity-panel-heading"><span>設定</span>{chatReturnButton("return-chat-settings")}</header>
       <div className="activity-panel-body settings-sidebar">
         <nav className="more-navigation" aria-label="その他の機能"><button onClick={() => { setActivityView("history"); setMobileView("history"); }}>履歴とマイルストーン</button><button onClick={(event) => togglePopover("quality", event.currentTarget)}>品質チェック</button><button onClick={() => showActivity("skills")}>スキル</button><button onClick={() => showActivity("shortcuts")}>ヘルプとショートカット</button></nav>
-        <section><h3>表示</h3><label><span>カラーモード</span><select value={theme} onChange={(event) => setTheme(event.target.value as "dark" | "light")}><option value="dark">ダーク</option><option value="light">ライト</option></select></label><label><span>表示密度</span><select value={density} onChange={(event) => densityStore.write(event.target.value as Density)}><option value="comfortable">通常</option><option value="compact">コンパクト</option></select></label><p>スライド一覧は左、デザイン・Agent・変更レビューは右の単一コンテキストパネルに表示します。</p></section>
+        <section><h3>表示</h3><label><span>カラーモード</span><select value={theme} onChange={(event) => setTheme(event.target.value as "dark" | "light")}><option value="dark">ダーク</option><option value="light">ライト</option></select></label><label><span>表示密度</span><select value={density} onChange={(event) => densityStore.write(event.target.value as Density)}><option value="comfortable">通常</option><option value="compact">コンパクト</option></select></label><p>スライド一覧は左、チャットを常に表示するコンテキストパネルは右にあります。タブでデザインや変更レビューへ切り替えられます。</p></section>
         <section><h3>Agent</h3>
           <label><span>承認方法</span><select value={approvalPolicy} onChange={(event) => setApprovalPolicy(event.target.value)}><option value="never">確認しない</option><option value="on-request">必要なとき確認</option><option value="untrusted">未確認コマンドのみ</option></select></label>
           {codexState.catalog.modelProvider && <pre className="settings-output">{JSON.stringify(codexState.catalog.modelProvider, null, 2)}</pre>}
         </section>
-        <section><h3>アカウント</h3>{codexState.catalog.account ? <div className="setting-row"><span>{String(codexState.catalog.account.type ?? "サインイン済み")}</span><button onClick={() => { void fetch(`${apiBase}/codex/account/logout`, { method: "POST" }).catch((error) => setApiError(error.message)); }}>ログアウト</button></div> : <><button onClick={() => void login("chatgpt")}>ChatGPTでサインイン</button><div className="api-key-row"><input type="password" value={apiKeyDraft} onChange={(event) => setApiKeyDraft(event.target.value)} placeholder="APIキー" /><button disabled={!apiKeyDraft} onClick={() => void login("apiKey")}>キーを使用</button></div></>}</section>
+        <section><h3>アカウント</h3>{codexState.catalog.account ? <div className="setting-row"><span>{String(codexState.catalog.account.type ?? "サインイン済み")}</span><button data-ui-agent-exclude="true" onClick={() => { void fetch(`${apiBase}/codex/account/logout`, { method: "POST" }).catch((error) => setApiError(error.message)); }}>ログアウト</button></div> : <><button data-ui-agent-exclude="true" onClick={() => void login("chatgpt")}>ChatGPTでサインイン</button><div className="api-key-row"><input type="password" value={apiKeyDraft} onChange={(event) => setApiKeyDraft(event.target.value)} placeholder="APIキー" /><button data-ui-agent-exclude="true" disabled={!apiKeyDraft} onClick={() => void login("apiKey")}>キーを使用</button></div></>}</section>
         <section><h3>フック</h3>{codexState.catalog.hooks.flatMap((entry: any) => entry.hooks ?? [entry]).map((hook: any, index: number) => <div className="setting-row" key={hook.name ?? hook.event ?? index}><span>{hook.name ?? hook.event ?? "設定済みフック"}</span><small>{hook.enabled === false ? "無効" : "有効"}</small></div>)}</section>
-        <section><h3>MCPサーバー</h3>{codexState.catalog.mcpServers.map((server: any) => <div className="setting-row" key={server.name}><span>{server.name}</span><small>{server.status ?? server.authStatus ?? "設定済み"}</small>{server.resources?.length > 0 && <button onClick={() => void invokeMcp(server, "resource")}>リソース</button>}{Object.keys(server.tools ?? {}).length > 0 && <button disabled={!codexState.activeThreadId} onClick={() => void invokeMcp(server, "tool")}>ツール</button>}<button onClick={() => { void fetch(`${apiBase}/codex/mcp/oauth`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: server.name }) }).then(async (response) => { const result = await response.json(); if (!response.ok) throw new Error(result.error); const url = result.authorizationUrl ?? result.url; if (url && window.confirm(`${server.name}のOAuth認証ページを開きますか？`)) window.open(url, "_blank", "noopener,noreferrer"); }).catch((error) => setApiError(error.message)); }}>OAuth</button></div>)}</section>
+        <section><h3>MCPサーバー</h3>{codexState.catalog.mcpServers.map((server: any) => <div className="setting-row" key={server.name}><span>{server.name}</span><small>{server.status ?? server.authStatus ?? "設定済み"}</small>{server.resources?.length > 0 && <button onClick={() => void invokeMcp(server, "resource")}>リソース</button>}{Object.keys(server.tools ?? {}).length > 0 && <button disabled={!codexState.activeThreadId} onClick={() => void invokeMcp(server, "tool")}>ツール</button>}<button data-ui-agent-exclude="true" onClick={() => { void fetch(`${apiBase}/codex/mcp/oauth`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: server.name }) }).then(async (response) => { const result = await response.json(); if (!response.ok) throw new Error(result.error); const url = result.authorizationUrl ?? result.url; if (url && window.confirm(`${server.name}のOAuth認証ページを開きますか？`)) window.open(url, "_blank", "noopener,noreferrer"); }).catch((error) => setApiError(error.message)); }}>OAuth</button></div>)}</section>
         {mcpResult && <pre className="settings-output">{mcpResult}</pre>}
       </div>
     </section>
   );
 
   return (
-    <main className={`weave-app ${theme}`} data-density={density} style={{ "--accent": accent } as React.CSSProperties}>
+    <main ref={appRootRef} className={`weave-app ${theme}`} data-density={density} data-ui-root="weave" style={{ "--accent": accent } as React.CSSProperties}>
       <header className="topbar">
-        <button ref={projectSwitcherRef} className="project-switcher" aria-label="プロジェクトを開く" aria-expanded={galleryOpen} aria-haspopup="dialog" onClick={openGallery} data-help="プロジェクトの作成・切り替え・管理を開きます">
+        <button ref={projectSwitcherRef} className="project-switcher" data-ui-id="project-switcher" aria-label="プロジェクトを開く" aria-expanded={galleryOpen} aria-controls="project-gallery" onClick={openGallery} data-help="プロジェクトの作成・切り替え・管理を開きます">
           <span className="project-mark">W</span>
           <span><strong>{deckTitle}</strong><small>{project?.root.split("/").pop() ?? "ローカルプロジェクト"}</small></span>
           <span className="chevron">⌄</span>
@@ -3504,10 +3853,10 @@ export default function Home() {
           <small>{activeSlide} / {slides.length} 枚目</small>
         </div>
         <div className="top-actions">
-          <button className="more-button" onClick={() => showActivity("settings")} aria-label="その他の機能">その他</button>
-          <button className="delivery-button" onClick={(event) => togglePopover("delivery", event.currentTarget)} aria-expanded={openPopover === "delivery"} aria-haspopup="menu" data-help="プレゼン表示、書き出し、印刷を選びます">プレゼン・書き出し <span aria-hidden="true">⌄</span></button>
+          <button className="more-button" data-ui-id="open-settings" onClick={() => showActivity("settings")} aria-label="その他の機能">その他</button>
+          <button className="delivery-button" data-ui-id="open-delivery" onClick={(event) => togglePopover("delivery", event.currentTarget)} aria-expanded={openPopover === "delivery"} aria-haspopup="menu" data-help="プレゼン表示、書き出し、印刷を選びます">プレゼン・書き出し <span aria-hidden="true">⌄</span></button>
           <input ref={importRef} className="sr-only" type="file" accept=".json,.weave.json,application/json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importBundle(file); }} />
-          <button className="save-button" onClick={() => void saveProject()} data-help="現在のドラフトへ名前を付け、長期履歴として残します"><span>◇</span> マイルストーン</button>
+          <button className="save-button" data-ui-id="create-milestone" onClick={() => void saveProject()} data-help="現在のドラフトへ名前を付け、長期履歴として残します"><span>◇</span> マイルストーン</button>
         </div>
       </header>
 
@@ -3517,7 +3866,7 @@ export default function Home() {
           <div className="topbar-popover delivery-menu" role="menu" aria-label="プレゼンと書き出し">
             <button role="menuitem" onClick={() => { dismissPopover(false); openPresenter(); }}><span>プレゼンを開始</span><small>全画面のプレゼン画面を開きます</small></button>
             <button role="menuitem" onClick={() => { dismissPopover(false); exportDeck(); }}><span>HTMLを書き出す</span><small>オフラインで使える資料を保存します</small></button>
-            <button role="menuitem" onClick={() => { dismissPopover(false); printDeck(); }}><span>印刷／PDF</span><small>システムの印刷画面を開きます</small></button>
+            <button role="menuitem" data-ui-agent-exclude="true" onClick={() => { dismissPopover(false); printDeck(); }}><span>印刷／PDF</span><small>システムの印刷画面を開きます</small></button>
             <button role="menuitem" onClick={() => { dismissPopover(false); downloadBundle(); }}><span>編集用データを保存</span><small>編集可能なWeaveプロジェクトを保存します</small></button>
           </div>
         </>
@@ -3541,25 +3890,24 @@ export default function Home() {
 
         {leftPanelOpen ? <aside className="left-panel">
           <div className="panel-resizer" role="separator" aria-orientation="vertical" aria-label="サイドバーの幅を変更" aria-valuenow={sidebarWidth} aria-valuemin={280} aria-valuemax={560} tabIndex={0} onPointerDown={startSidebarResize} onKeyDown={(event) => { if (event.key === "ArrowLeft") { event.preventDefault(); adjustSidebarWidth(-16); } if (event.key === "ArrowRight") { event.preventDefault(); adjustSidebarWidth(16); } }} />
-          {activityView === "agent" ? <section className="agent-panel" aria-label="Agent制作タスク" aria-busy={turnBusy}>
-            <div className="context-panel-switcher" role="tablist" aria-label="コンテキストパネル"><button role="tab" aria-selected="false" onClick={() => { setLeftPanelOpen(false); setInspectorOpen(true); setInspectorView("design"); }}>デザイン</button><button role="tab" aria-selected="true">Agent</button><button role="tab" aria-selected="false" onClick={() => { setChangedReviewIndex(0); setLeftPanelOpen(false); }}>変更レビュー{changedReview.length > 0 ? ` ${changedReview.length}` : ""}</button></div>
+          {activityView === "agent" ? <section className="agent-panel" aria-label="チャット" aria-busy={turnBusy}>
+            <div className="context-panel-switcher" role="tablist" aria-label="コンテキストパネル"><button role="tab" aria-selected="false" data-ui-id="tab-design" onClick={() => { setLeftPanelOpen(false); setInspectorOpen(true); setInspectorView("design"); setMobileView("inspector"); }}>デザイン</button><button role="tab" aria-selected="true" data-ui-id="tab-agent">Agent</button><button role="tab" aria-selected="false" data-ui-id="tab-review" onClick={() => { setChangedReviewIndex(0); setReviewOpen(true); setMobileView("canvas"); }}>変更レビュー{changedReview.length > 0 ? ` ${changedReview.length}` : ""}</button></div>
             <div className="agent-heading">
               <div className="agent-heading-main">
                 <h2 className="agent-heading-title">
-                  <button className="thread-switcher" onClick={(event) => togglePopover("threads", event.currentTarget)} aria-expanded={openPopover === "threads"} aria-haspopup="dialog" title="制作タスクを切り替えます"><span>{activeThreadName}</span><em aria-hidden="true">⌄</em></button>
+                <button className="thread-switcher" data-ui-agent-exclude="true" onClick={(event) => togglePopover("threads", event.currentTarget)} aria-expanded={openPopover === "threads"} aria-haspopup="dialog" title="制作タスクを切り替えます"><span>{activeThreadName}</span><em aria-hidden="true">⌄</em></button>
                 </h2>
                 <span className={`agent-state agent-state-${agentHeaderState?.kind ?? "idle"}`} role="status" aria-live="polite" aria-busy={turnBusy} data-turn-state={turnPresentation} data-status={agentHeaderState?.kind ?? "idle"}>{agentHeaderState?.label ?? ""}</span>
               </div>
               <div className="agent-heading-actions">
-                <button className="new-thread-button" onClick={() => void newThread()} aria-label="新しい制作タスク" title="新しい制作タスクを開始します">＋</button>
-                <button className="thread-menu-trigger" onClick={(event) => toggleThreadMenu(event.currentTarget)} aria-expanded={threadMenuOpen} aria-haspopup="menu" aria-label="制作タスクの操作" title="制作タスクの名前変更、別の方向、アーカイブ、削除">…</button>
-                <button className="panel-close" onClick={() => setLeftPanelOpen(false)} aria-label="Agentパネルを閉じる" title="Agentパネルを閉じます">×</button>
+                <button className="new-thread-button" data-ui-agent-exclude="true" onClick={() => void newThread()} aria-label="新しい制作タスク" title="新しい制作タスクを開始します">＋</button>
+                <button className="thread-menu-trigger" data-ui-agent-exclude="true" onClick={(event) => toggleThreadMenu(event.currentTarget)} aria-expanded={threadMenuOpen} aria-haspopup="menu" aria-label="制作タスクの操作" title="制作タスクの名前変更、別の方向、アーカイブ、削除">…</button>
               </div>
             </div>
             {openPopover === "threads" && (
               <>
                 <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
-                <div ref={threadDialogRef} className="thread-popover" role="dialog" aria-modal="true" aria-label="制作タスクを切り替え" tabIndex={-1} onKeyDown={onThreadDialogKeyDown}>
+                <div ref={threadDialogRef} className="thread-popover" role="dialog" aria-modal="true" data-ui-agent-exclude="true" aria-label="制作タスクを切り替え" tabIndex={-1} onKeyDown={onThreadDialogKeyDown}>
                   <div className="thread-popover-heading">
                     <strong>制作タスク</strong>
                     <button type="button" onClick={() => { dismissPopover(); void newThread(); }}>＋ 新しいタスク</button>
@@ -3582,13 +3930,13 @@ export default function Home() {
             {threadMenuOpen && (
               <>
                 <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
-                <div ref={threadMenuRef} className="thread-actions-menu" role="menu" tabIndex={-1} aria-label={`${activeThreadName}の操作`} onKeyDown={onThreadMenuKeyDown}>
+                <div ref={threadMenuRef} className="thread-actions-menu" data-ui-agent-exclude="true" role="menu" tabIndex={-1} aria-label={`${activeThreadName}の操作`} onKeyDown={onThreadMenuKeyDown}>
                   <strong>制作タスクの操作</strong>
-                  <button role="menuitem" disabled={!codexState.activeThreadId} onClick={() => { const name = window.prompt("タスク名", displayThreadName(codexState.threads[codexState.activeThreadId!]?.name) ?? ""); if (name !== null) { dismissPopover(); void threadAction("name", { name }); } }}>タスク名を変更</button>
+                  <button role="menuitem" disabled={!codexState.activeThreadId} onClick={() => { dismissPopover(); void renameActiveThread(); }}>タスク名を変更</button>
                   <button role="menuitem" disabled={!codexState.activeThreadId} onClick={() => { dismissPopover(); void forkThread(); }}>別の方向で試す</button>
                   <button role="menuitem" disabled={!codexState.activeThreadId} onClick={() => { dismissPopover(); void threadAction(activeThread?.archived ? "unarchive" : "archive"); }}>{activeThread?.archived ? "アーカイブから戻す" : "アーカイブ"}</button>
                   <details className="advanced-task-actions"><summary>詳細操作</summary><button role="menuitem" disabled={!codexState.activeThreadId} onClick={() => { dismissPopover(); void manageGoal(); }}>内部ゴール</button><button role="menuitem" disabled={!codexState.activeThreadId} onClick={() => { dismissPopover(); void threadAction("compact"); }}>履歴を整理</button></details>
-                  <button role="menuitem" className="danger" disabled={!codexState.activeThreadId} onClick={() => { if (window.confirm("この制作タスクを完全に削除しますか？")) { dismissPopover(); void threadAction("delete"); } }}>削除</button>
+                  <button role="menuitem" className="danger" disabled={!codexState.activeThreadId} onClick={() => { dismissPopover(); void deleteActiveThread(); }}>削除</button>
                 </div>
               </>
             )}
@@ -3632,7 +3980,7 @@ export default function Home() {
               <div ref={messagesEndRef} className="messages-end" />
             </div>
             <div className="composer-dock" data-turn-state={turnPresentation} aria-busy={turnBusy}>
-              {pendingServerRequests.length > 0 && <section className="blocking-region" role="region" aria-live="assertive" aria-label="確認が必要な操作" data-pending-count={pendingServerRequests.length}>
+              {pendingServerRequests.length > 0 && <section className="blocking-region" data-ui-agent-exclude="true" role="region" aria-live="assertive" aria-label="確認が必要な操作" data-pending-count={pendingServerRequests.length}>
                 <div className="blocking-heading"><strong>{activePendingServerRequests.length > 0 ? "確認が必要です" : "確認が必要な要求があります"}</strong><span>{pendingServerRequests.length}件</span></div>
                 {pendingRequestGroups.unscoped.length > 0 && <p className="blocking-notice" role="status">会話を特定できない確認が {pendingRequestGroups.unscoped.length}件あります。</p>}
                 {pendingRequestGroups.other.length > 0 && <p className="blocking-notice" role="status">別の会話に属する確認が {pendingRequestGroups.other.length}件あります。対象の会話を選ぶと操作できます。</p>}
@@ -3644,7 +3992,7 @@ export default function Home() {
                   </div>;
                 })}
               </section>}
-              <div className="chat-box"
+            <div className="chat-box" data-ui-agent-exclude="true"
               onDragOver={(event) => event.preventDefault()}
               onDrop={(event) => { event.preventDefault(); void uploadReferences(event.dataTransfer.files); }}
               onPaste={(event) => { const files = event.clipboardData.files; if (files.length > 0) { event.preventDefault(); void uploadReferences(files); } }}
@@ -3691,7 +4039,7 @@ export default function Home() {
                       </div>;
                     })}
                     </div>
-                    <button className="reference-add" type="button" onClick={() => referenceInputRef.current?.click()}>＋ ファイルを追加</button>
+                    <button className="reference-add" type="button" data-ui-agent-exclude="true" onClick={() => referenceInputRef.current?.click()}>＋ ファイルを追加</button>
                   </section>
                   </>}
                 </aside>
@@ -3726,7 +4074,7 @@ export default function Home() {
                   <button type="button" aria-label={`${attachment.name}を添付から外す`} onClick={() => setReferenceAttachments((current) => current.filter((item) => item.path !== attachment.path))}>×</button>
                 </div>)}
               </div>}
-              <textarea ref={promptRef} value={promptDraft} onChange={onPromptChange} onCompositionStart={() => { compositionRef.current = true; }} onCompositionEnd={onPromptCompositionEnd} onKeyDown={onPromptKeyDown} placeholder={agentReady ? "Agentにこのスライドの編集を依頼…" : "Codexへの接続を待っています…"} aria-label="Agentへのメッセージ" aria-busy={turnBusy} maxLength={20000} disabled={!agentReady} />
+              <textarea ref={promptRef} value={promptDraft} onChange={onPromptChange} onCompositionStart={() => { compositionRef.current = true; }} onCompositionEnd={onPromptCompositionEnd} onKeyDown={onPromptKeyDown} placeholder={agentReady ? "プロジェクト作成、スライド編集、画面の操作を依頼…" : "Codexへの接続を待っています…"} aria-label="Agentへのメッセージ" aria-busy={turnBusy} maxLength={20000} disabled={!agentReady} />
               <div className="chat-actions">
                 <input ref={referenceInputRef} className="sr-only" type="file" multiple onChange={(event) => { if (event.target.files) void uploadReferences(event.target.files); }} />
                 <button className={`attach-button${openPopover === "references" ? " active" : ""}`} type="button" onClick={(event) => togglePopover("references", event.currentTarget)} disabled={!agentReady} aria-expanded={openPopover === "references"} aria-haspopup="dialog" aria-label="参照資料" title="Agentへ渡すファイルやフォルダーを選びます">📎</button>
@@ -3767,6 +4115,7 @@ export default function Home() {
               {variations.length > 0 && <button className="compare-variations" onClick={() => void openVariationCompare()} disabled={variationCompareLoading}>{variationCompareLoading ? "読み込み中…" : "探索案を比較"}</button>}
             </div>
             <div className="editor-tab-actions">
+              <button className="review-toggle" aria-expanded={reviewOpen} onClick={() => setReviewOpen((value) => !value)}>変更レビュー{mergeConflicts.length > 0 ? ` · 競合 ${mergeConflicts.length}` : ""}</button>
               {activeVariation.startsWith("weave/variation/") && (
                 <>
                   <button className="archive-direction" onClick={() => void setExplorationState(activeVariation, "paused")}>保留</button>
@@ -3774,14 +4123,15 @@ export default function Home() {
                   <button className="use-direction" onClick={() => void acceptVariation()}>案全体を採用</button>
                 </>
               )}
-              <div className="view-toggle" role="group" aria-label="編集表示">
-                <button className={mode === "preview" ? "active" : ""} onClick={() => { if (mode !== "preview") reinject(); setMode("preview"); }}>▣ <span>ビジュアル</span></button>
-                <button className={mode === "split" ? "active" : ""} onClick={() => openSourceEditor("split")}>◫ <span>分割</span></button>
-                <button className={mode === "source" ? "active" : ""} onClick={() => openSourceEditor("source")}>‹› <span>HTML編集</span></button>
+              <div className="view-toggle" data-mode={mode} role="group" aria-label="編集表示">
+                <button className={mode === "preview" ? "active" : ""} aria-pressed={mode === "preview"} onClick={() => { if (mode !== "preview") reinject(); setMode("preview"); }}>▣ <span>ビジュアル</span></button>
+                <button className={mode === "split" ? "active" : ""} aria-pressed={mode === "split"} onClick={() => openSourceEditor("split")}>◫ <span>分割</span></button>
+                <button className={mode === "source" ? "active" : ""} aria-pressed={mode === "source"} onClick={() => openSourceEditor("source")}>‹› <span>HTML編集</span></button>
               </div>
             </div>
           </div>
 
+          <div className="canvas-workspace">
           <div className="canvas-area">
             {showVariationPrompt && (
               <div className="variation-prompt">
@@ -3874,33 +4224,11 @@ export default function Home() {
                     onGestureEnd={onAnnotationGestureEnd}
                   />
                 </div>
-                {changedReview.length > 0 && <div className="changed-review" role="status">
-                  <span><strong>Agentの変更</strong><small>{changedReviewIndex + 1} / {changedReview.length}</small></span>
-                  <button onClick={() => reviewChangedTarget(changedReviewIndex - 1)} aria-label="前の変更箇所">←</button>
-                  <button onClick={() => reviewChangedTarget(changedReviewIndex + 1)} aria-label="次の変更箇所">→</button>
-                  <button onClick={() => { setChangedReview([]); setSelectedId(null); }}>確認完了</button>
-                </div>}
-                {(structuredChanges.length > 0 || mergeConflicts.length > 0) && <details className="change-review-panel">
-                  <summary>変更レビュー <strong>{structuredChanges.length + mergeConflicts.length}件</strong></summary>
-                  {mergeConflicts.length > 0 && <section className="merge-conflicts" aria-label="競合の解決"><header><strong>同じ箇所の競合</strong><small>箇所ごとに残す内容を選んでください</small></header>{mergeConflicts.map((conflict) => <article key={conflict.path}>
-                    <strong>{conflict.slideId ? `スライド ${conflict.slideId}` : "デッキ全体"}{conflict.elementId ? ` · ${conflict.elementId}` : ""}</strong>
-                    <p>{conflict.explanation}</p>
-                    <div className="change-before-after"><span><small>現在の編集</small><code>{typeof conflict.current === "string" ? conflict.current.slice(0, 180) : JSON.stringify(conflict.current)?.slice(0, 180)}</code></span><span><small>Agentの変更</small><code>{typeof conflict.agent === "string" ? conflict.agent.slice(0, 180) : JSON.stringify(conflict.agent)?.slice(0, 180)}</code></span></div>
-                    <footer><button onClick={() => resolveMergeConflict(conflict, "current")}>現在の編集を保持</button><button onClick={() => resolveMergeConflict(conflict, "agent")}>Agentの変更を採用</button></footer>
-                  </article>)}</section>}
-                  <header><span>意味単位の変更セット</span><button onClick={() => applyReviewGroup({ kind: "all" })}>すべて戻す</button></header>
-                  <div className="change-review-list">{structuredChanges.map((change) => <article key={change.id} data-reverted={revertedChangeIds.has(change.id) ? "true" : undefined}>
-                    <button className="change-target" onClick={() => { const index = slidesRef.current.findIndex((slide) => slide.id === change.slideId); if (index >= 0) switchSlide(index + 1); if (change.elementId) setSelectedId(change.elementId); }}><strong>{change.slideId ? `スライド ${change.slideId}` : "デッキ全体"}</strong><span>{change.type === "text" ? "テキスト変更" : change.type === "style" ? "スタイル変更" : change.type === "layout" ? "レイアウト変更" : change.type}</span></button>
-                    <p>{change.reason}</p>
-                    <div className="change-before-after"><span><small>変更前</small><code>{typeof change.before === "string" ? change.before.slice(0, 180) : JSON.stringify(change.before)?.slice(0, 180)}</code></span><span><small>変更後</small><code>{typeof change.after === "string" ? change.after.slice(0, 180) : JSON.stringify(change.after)?.slice(0, 180)}</code></span></div>
-                    <footer><button onClick={() => applyReviewChange(change)}>{revertedChangeIds.has(change.id) ? "この変更を再適用" : "この変更だけ戻す"}</button>{change.slideId && <button onClick={() => applyReviewGroup({ kind: "slide", slideId: change.slideId })}>このスライドを戻す</button>}</footer>
-                  </article>)}</div>
-                </details>}
                 {selectedId && sel && !annotationMode && <div className="selection-toolbar" data-placement={selectionToolbarPosition.placement} style={{ left: selectionToolbarPosition.left, top: selectionToolbarPosition.top }} role="toolbar" aria-label="選択した要素の簡易操作">
                   {!sel.container && sel.kind !== "image" && <button onClick={beginEditSelected}>編集</button>}
                   {!sel.container && sel.kind !== "image" && <button aria-label="太字を切り替える" onClick={() => { const node = selectedNode(); if (!node) return; checkpoint(); node.classList.toggle("font-bold"); syncFromDom(); markDirty(); }}>太字</button>}
                   {agentReady && <button onClick={referenceSelectedElement}>Agentへ指示</button>}
-                  <button className="mobile-detail-action" onClick={() => { setLeftPanelOpen(false); setInspectorOpen(true); setMobileView("inspector"); }}>詳細</button>
+                  <button className="mobile-detail-action" data-ui-id="open-detail" onClick={() => { setLeftPanelOpen(false); setInspectorOpen(true); setInspectorView("design"); setMobileView("inspector"); }}>詳細</button>
                   <button onClick={copySelectedStyle}>スタイルをコピー</button>
                   <button onClick={pasteSelectedStyle} disabled={styleClipboard === null}>貼り付け</button>
                   {!outline.some((item) => item.id === selectedId && item.locked) && <button onClick={duplicateSelected}>複製</button>}
@@ -3925,7 +4253,7 @@ export default function Home() {
                       className={canvasFocused ? "active" : ""}
                       aria-label={canvasFocused ? "集中表示を終了" : "キャンバスに集中"}
                       aria-pressed={canvasFocused}
-                      title={canvasFocused ? "編集パネルを表示します" : "パネルを隠してキャンバスを広く表示します"}
+                      title={canvasFocused ? "通常のキャンバス表示に戻します" : "サイドバーを残してキャンバスを広く表示します"}
                       onClick={() => setCanvasFocused((value) => !value)}
                     >⛶</button>
                   </div>
@@ -3956,7 +4284,7 @@ export default function Home() {
                     <div className="block-picker" role="menu">
                       <small>{sel?.container ? `${blockLabels[sel.kind] ?? sel.kind}の中に追加` : "ブロックを追加"}</small>
                       {blockKinds.map((kind) => (
-                        <button key={kind} role="menuitem" onClick={() => addBlock(kind)}>
+                          <button key={kind} role="menuitem" data-ui-agent-exclude={kind === "image" ? "true" : undefined} onClick={() => addBlock(kind)}>
                           <i>{blockIcons[kind]}</i>
                           <span><strong>{blockLabels[kind]}</strong><small>{sel?.container ? "選択中のコンテナ内へ追加" : "スライドの流れへ追加"}</small></span>
                         </button>
@@ -3982,12 +4310,42 @@ export default function Home() {
             )}
           </div>
 
+          {reviewOpen && <section className="review-dock" aria-label="変更レビュー" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setReviewOpen(false); } }}>
+            <header className="review-dock-heading"><strong>変更レビュー</strong>
+                {changedReview.length > 0 && <div className="changed-review" role="status">
+                  <span><strong>Agentの変更</strong><small>{changedReviewIndex + 1} / {changedReview.length}</small></span>
+                  <button onClick={() => reviewChangedTarget(changedReviewIndex - 1)} aria-label="前の変更箇所">←</button>
+                  <button onClick={() => reviewChangedTarget(changedReviewIndex + 1)} aria-label="次の変更箇所">→</button>
+                  <button onClick={() => { setChangedReview([]); setSelectedId(null); setReviewOpen(false); }}>確認完了</button>
+                </div>}
+<button onClick={() => setReviewOpen(false)} aria-label="変更レビューを閉じる">閉じる ×</button></header>
+            <div className="review-dock-content">
+                {(structuredChanges.length > 0 || mergeConflicts.length > 0) && <details className="change-review-panel">
+                  <summary>変更の詳細 <strong>{structuredChanges.length + mergeConflicts.length}件</strong></summary>
+                  {mergeConflicts.length > 0 && <section className="merge-conflicts" aria-label="競合の解決"><header><strong>同じ箇所の競合</strong><small>箇所ごとに残す内容を選んでください</small></header>{mergeConflicts.map((conflict) => <article key={conflict.path}>
+                    <strong>{conflict.slideId ? `スライド ${conflict.slideId}` : "デッキ全体"}{conflict.elementId ? ` · ${conflict.elementId}` : ""}</strong>
+                    <p>{conflict.explanation}</p>
+                    <div className="change-before-after"><span><small>現在の編集</small><code>{typeof conflict.current === "string" ? conflict.current.slice(0, 180) : JSON.stringify(conflict.current)?.slice(0, 180)}</code></span><span><small>Agentの変更</small><code>{typeof conflict.agent === "string" ? conflict.agent.slice(0, 180) : JSON.stringify(conflict.agent)?.slice(0, 180)}</code></span></div>
+                    <footer><button onClick={() => resolveMergeConflict(conflict, "current")}>現在の編集を保持</button><button onClick={() => resolveMergeConflict(conflict, "agent")}>Agentの変更を採用</button></footer>
+                  </article>)}</section>}
+                  <header><span>意味単位の変更セット</span><button onClick={() => applyReviewGroup({ kind: "all" })}>すべて戻す</button></header>
+                  <div className="change-review-list">{structuredChanges.map((change) => <article key={change.id} data-reverted={revertedChangeIds.has(change.id) ? "true" : undefined}>
+                    <button className="change-target" onClick={() => { const index = slidesRef.current.findIndex((slide) => slide.id === change.slideId); if (index >= 0) switchSlide(index + 1); if (change.elementId) setSelectedId(change.elementId); }}><strong>{change.slideId ? `スライド ${change.slideId}` : "デッキ全体"}</strong><span>{change.type === "text" ? "テキスト変更" : change.type === "style" ? "スタイル変更" : change.type === "layout" ? "レイアウト変更" : change.type}</span></button>
+                    <p>{change.reason}</p>
+                    <div className="change-before-after"><span><small>変更前</small><code>{typeof change.before === "string" ? change.before.slice(0, 180) : JSON.stringify(change.before)?.slice(0, 180)}</code></span><span><small>変更後</small><code>{typeof change.after === "string" ? change.after.slice(0, 180) : JSON.stringify(change.after)?.slice(0, 180)}</code></span></div>
+                    <footer><button onClick={() => applyReviewChange(change)}>{revertedChangeIds.has(change.id) ? "この変更を再適用" : "この変更だけ戻す"}</button>{change.slideId && <button onClick={() => applyReviewGroup({ kind: "slide", slideId: change.slideId })}>このスライドを戻す</button>}</footer>
+                  </article>)}</div>
+                </details>}
+            {changedReview.length === 0 && structuredChanges.length === 0 && mergeConflicts.length === 0 && <p className="review-empty">確認する変更はありません。</p>}
+            </div>
+          </section>}
+          </div>
           {slideNav === "filmstrip" && <nav className="slide-nav filmstrip" aria-label="スライド一覧">{slideNavigator}</nav>}
         </section>
 
         {inspectorOpen ? <aside className="inspector">
-          <div className="context-panel-switcher" role="tablist" aria-label="コンテキストパネル"><button role="tab" aria-selected="true">デザイン</button><button role="tab" aria-selected="false" onClick={() => { setInspectorOpen(false); setActivityView("agent"); setLeftPanelOpen(true); }}>Agent</button><button role="tab" aria-selected="false" onClick={() => { setInspectorOpen(false); setChangedReviewIndex(0); }}>変更レビュー{changedReview.length > 0 ? ` ${changedReview.length}` : ""}</button></div>
-          <div className="inspector-heading"><span>詳細インスペクター</span><button aria-label="インスペクターを閉じる" onClick={() => setInspectorOpen(false)}>×</button></div>
+          <div className="context-panel-switcher" role="tablist" aria-label="コンテキストパネル"><button role="tab" aria-selected="true" data-ui-id="tab-design">デザイン</button><button role="tab" aria-selected="false" data-ui-id="tab-agent" onClick={() => { setInspectorOpen(false); setActivityView("agent"); setLeftPanelOpen(true); setMobileView("agent"); }}>Agent</button><button role="tab" aria-selected="false" data-ui-id="tab-review" onClick={() => { setChangedReviewIndex(0); setReviewOpen(true); setMobileView("canvas"); }}>変更レビュー{changedReview.length > 0 ? ` ${changedReview.length}` : ""}</button></div>
+          <div className="inspector-heading"><span>詳細インスペクター</span></div>
           <div className="inspector-tabs" role="tablist" aria-label="インスペクターの表示">
             <button role="tab" aria-selected={inspectorView === "layers"} className={inspectorView === "layers" ? "active" : ""} onClick={() => setInspectorView("layers")}>レイヤー</button>
             <button role="tab" aria-selected={inspectorView === "design"} className={inspectorView === "design" ? "active" : ""} onClick={() => setInspectorView("design")}>デザイン</button>
@@ -4086,7 +4444,7 @@ export default function Home() {
                 {sel.kind === "list" && propertyRows(listSchema)}
                 {!containerLike && sel.kind !== "image" && <div className="property-row"><span>選択範囲</span><div className="scale-options"><button onMouseDown={(event) => event.preventDefault()} onClick={() => formatSelection("strong")}>太字</button><button onMouseDown={(event) => event.preventDefault()} onClick={() => formatSelection("span")}>アクセント</button></div></div>}
               </section>
-              {sel.kind === "image" && <section className="property-section"><div className="property-heading"><span>画像</span></div>{propertyRows(imageSchema)}<label><span>代替テキスト</span><input value={sel.read.alt} onChange={(event) => setAlt(event.target.value)} /></label><button className="inspector-action" onClick={() => { replacingImageRef.current = true; imageInputRef.current?.click(); }}>画像を置き換え</button></section>}
+              {sel.kind === "image" && <section className="property-section"><div className="property-heading"><span>画像</span></div>{propertyRows(imageSchema)}<label><span>代替テキスト</span><input value={sel.read.alt} onChange={(event) => setAlt(event.target.value)} /></label><button className="inspector-action" data-ui-agent-exclude="true" onClick={() => { replacingImageRef.current = true; imageInputRef.current?.click(); }}>画像を置き換え</button></section>}
               {containerLike && <section className="property-section"><div className="property-heading"><span>装飾</span></div>{propertyRows(decorationSchema)}</section>}
               {sel.kind === "table" && <section className="property-section"><div className="property-heading"><span>表</span></div><div className="table-actions"><button onClick={() => editTable("add-row")}>＋ 行</button><button onClick={() => editTable("remove-row")}>− 行</button><button onClick={() => editTable("add-column")}>＋ 列</button><button onClick={() => editTable("remove-column")}>− 列</button></div></section>}
             </>
@@ -4134,21 +4492,12 @@ export default function Home() {
           </fieldset>
           </>}
         </aside> : <button className="open-inspector" onClick={() => { setLeftPanelOpen(false); setInspectorOpen(true); }}>デザイン</button>}
-        <nav className="mobile-tabs" aria-label="作業画面">
-          <button className={mobileView === "canvas" ? "active" : ""} aria-pressed={mobileView === "canvas"} onClick={() => setMobileView("canvas")}>キャンバス</button>
-          <button className={mobileView === "slides" ? "active" : ""} aria-pressed={mobileView === "slides"} onClick={() => setMobileView("slides")}>スライド</button>
-          <button className={mobileView === "agent" ? "active" : ""} aria-pressed={mobileView === "agent"} onClick={() => showActivity("agent")}>Agent</button>
-          <button className={mobileView === "more" ? "active" : ""} aria-pressed={mobileView === "more"} onClick={() => { showActivity("settings"); setMobileView("more"); }}>その他{qualityReport.errors + qualityReport.warnings > 0 ? ` · ${qualityReport.errors + qualityReport.warnings}` : ""}</button>
-        </nav>
-        <nav className="mobile-slide-panel slide-nav" aria-label="スライド一覧">{slideNavigator}</nav>
-      </div>
-
       {galleryOpen && (
-        <div ref={galleryRef} className="gallery" role="dialog" aria-modal="true" aria-labelledby="gallery-title" tabIndex={-1} onPointerDown={() => setGalleryMenu(null)}>
+        <div ref={galleryRef} id="project-gallery" className="gallery" role="region" aria-labelledby="gallery-title" tabIndex={-1} onPointerDown={() => setGalleryMenu(null)}>
           <header className="gallery-head">
             {galleryView === "new" ? <button className="back-link" onClick={() => setGalleryView("list")}>← プロジェクト</button> : <h3 id="gallery-title">プロジェクト <span className="count">{galleryLoading ? "読み込み中…" : galleryProjects.length}</span></h3>}
             {galleryView === "new" && <h3 id="gallery-title">新しいプロジェクト</h3>}
-            {galleryView === "list" && <button className="ghost-button" onClick={() => importRef.current?.click()}>編集用データを読み込む</button>}
+                {galleryView === "list" && <button className="ghost-button" data-ui-agent-exclude="true" onClick={() => importRef.current?.click()}>編集用データを読み込む</button>}
             {apiError && <span className="gallery-error">{apiError}</span>}
             <button className="close-x" aria-label="プロジェクト一覧を閉じる" onClick={closeGallery}>×</button>
           </header>
@@ -4165,7 +4514,7 @@ export default function Home() {
                 <input id="new-project-title" className="name-field" value={newProjectTitle} onChange={(event) => setNewProjectTitle(event.target.value)} autoFocus />
                 <code>workspaces/{projectSlug(newProjectTitle)}</code>
                 <button className="ghost-button" onClick={() => setGalleryView("list")}>キャンセル</button>
-                <button className="primary-button" disabled={!newProjectTitle.trim() || newProjectCreating} onClick={() => void createProject()}>{newProjectCreating ? "作成中…" : "作成して開く"}</button>
+                <button className="primary-button" data-ui-id="create-project" disabled={!newProjectTitle.trim() || newProjectCreating} onPointerDown={cancelUiOperationFromHuman} onClick={() => void createProject()}>{newProjectCreating ? "作成中…" : "作成して開く"}</button>
               </div>
             </div>
           ) : (
@@ -4175,7 +4524,7 @@ export default function Home() {
                 <div className="gallery-grid">
                   <button className="new-project-card" onClick={() => { setGalleryView("new"); setGalleryMenu(null); }}><b>＋</b><span>新しいプロジェクト</span></button>
                   {galleryProjects.map((item) => <div key={item.slug} className="project-card-wrap">
-                    <button className={`project-card ${item.current ? "current" : ""}`} onClick={() => void switchProject(item)} disabled={!!gallerySwitching} aria-label={`${item.title}を開く`}>
+                    <button className={`project-card ${item.current ? "current" : ""}`} data-ui-id={`project-${item.slug}`} onPointerDown={cancelUiOperationFromHuman} onClick={() => void switchProject(item)} disabled={!!gallerySwitching} aria-label={`${item.title}を開く`}>
                       <span className="project-thumb">
                         {gallerySwitching === item.slug ? <span className="thumb-loading">読み込み中…</span> : thumbHtml(item.thumbnailHtml, item.css, item.title)}
                         {item.current && <span className="card-pill">開いています</span>}
@@ -4201,6 +4550,16 @@ export default function Home() {
           </>}
         </div>
       )}
+        <nav className="mobile-tabs" aria-label="作業画面">
+          <button className={mobileView === "canvas" ? "active" : ""} aria-pressed={mobileView === "canvas"} onClick={() => setMobileView("canvas")}>キャンバス</button>
+          <button className={mobileView === "slides" ? "active" : ""} aria-pressed={mobileView === "slides"} onClick={() => setMobileView("slides")}>スライド</button>
+          <button className={mobileView === "agent" ? "active" : ""} aria-pressed={mobileView === "agent"} onClick={() => showActivity("agent")}>Agent</button>
+          <button className={mobileView === "more" ? "active" : ""} aria-pressed={mobileView === "more"} onClick={() => { showActivity("settings"); setMobileView("more"); }}>その他{qualityReport.errors + qualityReport.warnings > 0 ? ` · ${qualityReport.errors + qualityReport.warnings}` : ""}</button>
+        </nav>
+        <nav className="mobile-slide-panel slide-nav" aria-label="スライド一覧">{slideNavigator}</nav>
+      </div>
+
+
 
       {skillDialog && (
         <div className="skill-dialog-backdrop" role="presentation" onPointerDown={(event) => { if (event.target === event.currentTarget && skillBusyKey === null) setSkillDialog(null); }}>
@@ -4220,22 +4579,25 @@ export default function Home() {
           }}>
             <header><strong id="skill-dialog-title">{skillDialog.mode === "create" ? "新しいスキル" : `${skillDialog.source?.name ?? "スキル"}を編集`}</strong><button type="button" aria-label="スキル編集を閉じる" onClick={() => { if (skillBusyKey === null) setSkillDialog(null); }}>×</button></header>
             <div className="skill-dialog-body">
-              <label className="skill-dialog-field"><span>適用範囲</span><select value={skillDraft.scope} disabled={skillDialog.mode === "edit" || skillBusyKey !== null || agentRunning} onChange={(event) => setSkillDraft((current) => ({ ...current, scope: event.target.value as SkillScope }))}><option value="project">プロジェクト固有 · このデッキ</option><option value="common">共通 · すべてのプロジェクト</option></select></label>
-              <label className="skill-dialog-field"><span>名前</span><input autoFocus className="skill-name-input" value={skillDraft.name} required pattern="[a-z0-9]+(-[a-z0-9]+)*" maxLength={63} disabled={skillBusyKey !== null || agentRunning} onChange={(event) => setSkillDraft((current) => ({ ...current, name: event.target.value }))} /><small className="skill-dialog-help">英小文字のkebab-case、63文字以内。</small></label>
-              <label className="skill-dialog-field"><span>説明</span><input value={skillDraft.description} required maxLength={20000} disabled={skillBusyKey !== null || agentRunning} onChange={(event) => setSkillDraft((current) => ({ ...current, description: event.target.value }))} /></label>
-              <label className="skill-dialog-field"><span>指示内容</span><textarea value={skillDraft.body} required maxLength={900000} disabled={skillBusyKey !== null || agentRunning} onChange={(event) => setSkillDraft((current) => ({ ...current, body: event.target.value }))} /></label>
-              <label className="skill-dialog-field"><span>その他のYAML frontmatter <small>（任意）</small></span><textarea value={skillDraft.frontmatter} disabled={skillBusyKey !== null || agentRunning} onChange={(event) => setSkillDraft((current) => ({ ...current, frontmatter: event.target.value }))} placeholder={'license: MIT\nmetadata:\n  short-description: 例'} /></label>
+              <label className="skill-dialog-field"><span>適用範囲</span><select value={skillDraft.scope} disabled={skillDialog.mode === "edit" || skillBusyKey !== null || codexState.editing} onChange={(event) => setSkillDraft((current) => ({ ...current, scope: event.target.value as SkillScope }))}><option value="project">プロジェクト固有 · このデッキ</option><option value="common">共通 · すべてのプロジェクト</option></select></label>
+              <label className="skill-dialog-field"><span>名前</span><input autoFocus className="skill-name-input" value={skillDraft.name} required pattern="[a-z0-9]+(-[a-z0-9]+)*" maxLength={63} disabled={skillBusyKey !== null || codexState.editing} onChange={(event) => setSkillDraft((current) => ({ ...current, name: event.target.value }))} /><small className="skill-dialog-help">英小文字のkebab-case、63文字以内。</small></label>
+              <label className="skill-dialog-field"><span>説明</span><input value={skillDraft.description} required maxLength={20000} disabled={skillBusyKey !== null || codexState.editing} onChange={(event) => setSkillDraft((current) => ({ ...current, description: event.target.value }))} /></label>
+              <label className="skill-dialog-field"><span>指示内容</span><textarea value={skillDraft.body} required maxLength={900000} disabled={skillBusyKey !== null || codexState.editing} onChange={(event) => setSkillDraft((current) => ({ ...current, body: event.target.value }))} /></label>
+              <label className="skill-dialog-field"><span>その他のYAML frontmatter <small>（任意）</small></span><textarea value={skillDraft.frontmatter} disabled={skillBusyKey !== null || codexState.editing} onChange={(event) => setSkillDraft((current) => ({ ...current, frontmatter: event.target.value }))} placeholder={'license: MIT\nmetadata:\n  short-description: 例'} /></label>
               {skillStatus.state !== "idle" && <div className={`skill-status ${skillStatus.state}`} role={skillStatus.state === "error" ? "alert" : "status"} aria-live="polite" aria-busy={skillStatus.state === "busy"}>{skillStatus.message}</div>}
             </div>
-            <footer className="skill-dialog-actions"><button type="button" onClick={() => setSkillDialog(null)} disabled={skillBusyKey !== null}>キャンセル</button><button className="primary-button" type="submit" disabled={skillBusyKey !== null || agentRunning || !skillDraft.name.trim() || !skillDraft.description.trim() || !skillDraft.body.trim()}>{skillBusyKey !== null ? "保存中…" : skillDialog.mode === "create" ? "スキルを作成" : "変更を保存"}</button></footer>
+            <footer className="skill-dialog-actions"><button type="button" onClick={() => setSkillDialog(null)} disabled={skillBusyKey !== null}>キャンセル</button><button className="primary-button" type="submit" disabled={skillBusyKey !== null || codexState.editing || !skillDraft.name.trim() || !skillDraft.description.trim() || !skillDraft.body.trim()}>{skillBusyKey !== null ? "保存中…" : skillDialog.mode === "create" ? "スキルを作成" : "変更を保存"}</button></footer>
           </form>
         </div>
       )}
+
+      {editorDialog}
 
       <footer className="statusbar">
         <div>
           <button className={`quality-button ${qualityReport.ok ? "ok" : "error"}`} onClick={(event) => togglePopover("quality", event.currentTarget)} aria-expanded={openPopover === "quality"}>品質 {qualityReport.errors ? `エラー ${qualityReport.errors}` : qualityReport.warnings ? `警告 ${qualityReport.warnings}` : qualityReport.suggestions ? `提案 ${qualityReport.suggestions}` : "✓"}</button>
           {draftSync === "error" ? <button className="draft-retry" onClick={() => { lastDraftFingerprintRef.current = ""; setDraftSync("saving"); setSlides((current) => [...current]); }}>同期できていません — 再試行</button> : <span role="status">{draftSync === "saving" ? "保存中…" : draftSync === "offline" ? "オフライン — 端末内に保存済み" : "同期済み"}</span>}
+          {uiOperation.phase !== "idle" && <span className={`ui-operation-status ui-operation-status-${uiOperation.phase}`} role="status" aria-live="polite" aria-busy={uiOperation.phase === "pointing" || uiOperation.phase === "performing"} data-ui-operation-phase={uiOperation.phase}>{uiOperation.message}</span>}
           {apiError && <span className="status-error">{apiError}</span>}
         </div>
         <div><span>HTML</span><span>UTF-8</span><span>スペース: 2</span>{!agentReady && <button className="connection offline" onClick={() => setConnectionEpoch((value) => value + 1)} title="Agentへの接続をやり直す"><i /> Agentへ再接続</button>}</div>
@@ -4272,7 +4634,7 @@ export default function Home() {
             <span>{presentSlide} / {slides.length}</span>
             <button onClick={() => setPresentSlide((value) => Math.min(slides.length, value + 1))}>次へ →</button>
             <small>{slides[presentSlide - 1]?.notes || "発表者ノートはありません"}</small>
-            <button onClick={() => document.documentElement.requestFullscreen?.()}>全画面</button>
+            <button data-ui-agent-exclude="true" onClick={() => document.documentElement.requestFullscreen?.()}>全画面</button>
             <button onClick={() => setShowPresenter(false)}>終了</button>
           </footer>
         </div>
