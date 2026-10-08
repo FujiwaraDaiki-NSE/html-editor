@@ -4123,10 +4123,10 @@ export default function Home() {
                   <button className="use-direction" onClick={() => void acceptVariation()}>案全体を採用</button>
                 </>
               )}
-              <div className="view-toggle" role="group" aria-label="編集表示">
-                <button className={mode === "preview" ? "active" : ""} onClick={() => { if (mode !== "preview") reinject(); setMode("preview"); }}>▣ <span>ビジュアル</span></button>
-                <button className={mode === "split" ? "active" : ""} onClick={() => openSourceEditor("split")}>◫ <span>分割</span></button>
-                <button className={mode === "source" ? "active" : ""} onClick={() => openSourceEditor("source")}>‹› <span>HTML編集</span></button>
+              <div className="view-toggle" data-mode={mode} role="group" aria-label="編集表示">
+                <button className={mode === "preview" ? "active" : ""} aria-pressed={mode === "preview"} onClick={() => { if (mode !== "preview") reinject(); setMode("preview"); }}>▣ <span>ビジュアル</span></button>
+                <button className={mode === "split" ? "active" : ""} aria-pressed={mode === "split"} onClick={() => openSourceEditor("split")}>◫ <span>分割</span></button>
+                <button className={mode === "source" ? "active" : ""} aria-pressed={mode === "source"} onClick={() => openSourceEditor("source")}>‹› <span>HTML編集</span></button>
               </div>
             </div>
           </div>

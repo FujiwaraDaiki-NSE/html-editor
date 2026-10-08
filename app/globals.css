@@ -680,11 +680,21 @@ button.project-card { cursor: pointer; }
 .use-direction { height: 26px; padding: 0 9px; border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line)); border-radius: 4px; background: color-mix(in srgb, var(--accent) 12%, var(--panel-2)); color: var(--accent); font-size: 8px; font-weight: 600; cursor: pointer; }
 .archive-direction { height: 26px; padding: 0 7px; border: 0; background: transparent; color: var(--muted); font-size: 8px; cursor: pointer; }
 .archive-direction:hover { color: var(--text); }
-.view-toggle { margin-right: 7px; padding: 2px; display: flex; border-radius: 5px; background: #0d0f12; border: 1px solid var(--line); }
-.light .view-toggle { background: #e2e4e7; }
-.view-toggle button { height: 25px; padding: 0 8px; border: 0; border-radius: 3px; background: transparent; color: var(--muted); font-size: 10px; cursor: pointer; }
-.view-toggle button.active { background: var(--panel-3); color: var(--text); box-shadow: 0 1px 4px rgba(0,0,0,.22); }
-.view-toggle span { margin-left: 3px; font-size: 8px; }
+.view-toggle { position: relative; isolation: isolate; flex: 0 0 auto; width: 300px; margin-right: 7px; padding: 3px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-radius: 9px; background: var(--bg); border: 1px solid var(--line-strong); box-shadow: inset 0 1px 3px rgba(0,0,0,.15); }
+.view-toggle::before { content: ""; position: absolute; z-index: -1; top: 3px; bottom: 3px; left: 3px; width: calc((100% - 6px) / 3); border-radius: 6px; background: var(--accent); box-shadow: 0 1px 4px rgba(0,0,0,.24); transition: transform 180ms ease; }
+.view-toggle[data-mode="split"]::before { transform: translateX(100%); }
+.view-toggle[data-mode="source"]::before { transform: translateX(200%); }
+.view-toggle button { min-width: 0; min-height: 26px; height: 26px; padding: 0 6px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; white-space: nowrap; transition: color 180ms ease; }
+.view-toggle button:hover { color: var(--text); }
+.view-toggle button.active { background: transparent; color: #211706; font-weight: 700; box-shadow: none; }
+.view-toggle span { margin-left: 4px; font-size: 12px; }
+@media (max-width: 900px) {
+  .view-toggle { width: 228px; margin-right: 4px; }
+  .view-toggle button, .view-toggle span { font-size: 11px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .view-toggle::before, .view-toggle button { transition: none; }
+}
 
 .canvas-area { min-height: 0; position: relative; container-type: size; display: grid; place-items: center; overflow: hidden; background-color: #0c0e11; background-image: radial-gradient(#23272d 1px, transparent 1px); background-size: 18px 18px; }
 .light .canvas-area { background-color: #dfe1e5; background-image: radial-gradient(#c8cbd0 1px, transparent 1px); }
