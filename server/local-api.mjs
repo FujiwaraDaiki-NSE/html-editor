@@ -23,6 +23,7 @@ import {
   removeReference,
   syncReferenceFolder,
   projectRoot,
+  workspacesRoot,
   listProjects,
   createProject,
   renameProject,
@@ -77,16 +78,18 @@ import { parseConfiguredPort } from "../scripts/dev-port.mjs";
 import { isAllowedWebOrigin } from "./dev-origin.mjs";
 import { routeMethodDecision } from "./route-methods.mjs";
 import { ProjectPreviewMonitor } from "./project-preview.mjs";
+import { chatInstructions, delegatedEditorContext } from "./chat-workflow.mjs";
 
 const apiPort = Number(process.env.WEAVE_API_PORT ?? 4317);
 await initializeCurrentProject();
 const webPort = parseConfiguredPort(process.env.WEAVE_WEB_PORT);
-const codex = new CodexService({ projectRoot: projectRoot(), instructions: agentInstructions });
+const codex = new CodexService({ projectRoot: projectRoot(), workspaceRoot: workspacesRoot, instructions: agentInstructions, chatInstructions });
 let codexProjectRoot = projectRoot();
 // Pending work is keyed by thread but every entry carries its immutable project
 // root. This allows project switching while another project's turn is settling.
 const pendingTurns = new Map();
 const startingRoots = new Set();
+const chatTurns = new Map();
 const recoveredSnapshots = await readAllRecoverySnapshots();
 for (const snapshot of recoveredSnapshots) {
   if (snapshot.agentFileSnapshot) await restoreAgentManagedFiles(snapshot);
@@ -226,7 +229,9 @@ async function statePayload() {
       version: codex.version,
       catalog: codex.catalog,
       activeTurns: Object.fromEntries(codex.activeTurns),
-      pendingRequests: codex.router.list(),
+      pendingRequests: codex.pendingRequests(),
+      ui: codex.uiTools.snapshot(),
+      editing: activePending !== undefined || startingRoots.has(projectRoot()),
     },
     skills: await listSkills(projectRoot()),
     agentPreview: activePending ? {
@@ -389,12 +394,12 @@ function requireTurnPrompt(payload) {
 
 function activeProjectTurn() {
   const root = projectRoot();
-  return startingRoots.has(root) || [...pendingTurns.values()].some((turn) => turn.root === root)
-    || (pendingTurns.size === 0 && codex.activeTurns.size > 0);
+  return startingRoots.has(root) || [...pendingTurns.values()].some((turn) => turn.root === root);
 }
 
-function agentStartBlocked() {
-  return projectLifecycleBusy || startingRoots.size > 0 || pendingTurns.size > 0 || codexProjectRoot !== projectRoot() || codex.activeTurns.size > 0;
+function agentStartBlocked(parentThreadId = null) {
+  return projectLifecycleBusy || startingRoots.size > 0 || pendingTurns.size > 0 || codexProjectRoot !== projectRoot()
+    || [...codex.activeTurns.keys()].some((threadId) => threadId !== parentThreadId);
 }
 
 async function runProjectLifecycle(operation, { allowPending = false } = {}) {
@@ -447,8 +452,8 @@ function serializeEditorContext(payload) {
   return `\n\nEditor context envelope:\n${JSON.stringify(envelope)}\n\nContext rules:\n${contextPromptRules}${annotationRules}`;
 }
 
-async function startEditorTurn(payload, { variation = false } = {}) {
-  if (agentStartBlocked()) throw new Error("Another Agent task is running. Editing remains available and Agent will reconnect to this project when it finishes.");
+async function startEditorTurn(payload, { variation = false, parentThreadId = null } = {}) {
+  if (agentStartBlocked(parentThreadId)) throw new Error("Another Agent task is running. Editing remains available and Agent will reconnect to this project when it finishes.");
   const prompt = requireTurnPrompt(payload);
   const workflow = workflowFromPayload(payload);
   const root = projectRoot();
@@ -473,9 +478,13 @@ async function startEditorTurn(payload, { variation = false } = {}) {
     const thread = await codex.startThread({
       approvalPolicy: payload.approvalPolicy ?? "never",
       model: payload.model,
+      purpose: "editor",
+      cwd: root,
+      parentThreadId,
     });
     registeredPending = pendingTurn({ prompt, branch, variation, workflow, deckTitle: deck.title, root, preTurnDeck: deck, baseDeck: deck, baseRevision: recoverySnapshot.baseRevision, preTurnCss, projectSkillSnapshot, recoverySnapshot, agentFileSnapshot });
     registeredPending.threadId = thread.id;
+    registeredPending.parentThreadId = parentThreadId;
     registeredThreadId = thread.id;
     pendingTurns.set(thread.id, registeredPending);
     startingRoots.delete(root);
@@ -491,10 +500,12 @@ Do not commit; Weave will commit after this turn.${serializeEditorContext(payloa
       model: payload.model,
       effort: payload.effort,
       approvalPolicy: payload.approvalPolicy ?? "never",
+      purpose: "editor",
+      cwd: root,
     });
     startProjectPreview(registeredPending, thread.id, result.turn.id);
     await updateRecoverySnapshot(recoverySnapshot, { workflow, status: "running", threadId: thread.id, turnId: result.turn.id }, root);
-    return { thread, turn: result.turn, branch };
+    return { thread, turn: result.turn, branch, pending: registeredPending };
   } catch (error) {
     startingRoots.delete(root);
     if (registeredPending && registeredThreadId) finishPendingTurn(registeredThreadId, registeredPending);
@@ -531,6 +542,12 @@ async function restoreFailedTurn(pending) {
 codex.on("notification", (message) => {
   if (message.method !== "turn/completed") return;
   const threadId = message.params?.threadId;
+  if (chatTurns.has(threadId)) {
+    chatTurns.delete(threadId);
+    for (const [childId, child] of pendingTurns) {
+      if (child.parentThreadId === threadId) void codex.interruptTurn(childId).catch(() => {});
+    }
+  }
   const pending = pendingTurns.get(threadId);
   if (!pending) return;
   pending.acceptingDrafts = false;
@@ -538,6 +555,7 @@ codex.on("notification", (message) => {
   void (async () => {
     const status = message.params?.turn?.status;
     if (status !== "completed") {
+      pending.outcome = { success: false, error: `Slide editing ${status}.` };
       let cleanupError;
       try {
         await restoreFailedTurn(pending);
@@ -588,6 +606,7 @@ codex.on("notification", (message) => {
       recentAgentMerges.set(pending.root, { base: pending.baseDeck, agent: pending.previewSnapshot, expiresAt: Date.now() + 10_000 });
       recoveryTasks.delete(pending.root);
       await discardRecoverySnapshot(pending.recoverySnapshot, pending.root);
+      pending.outcome = { success: true, result: { projectRoot: pending.root, title: pending.previewSnapshot.title, slideCount: pending.previewSnapshot.slides.length, execution: pending.workflow.execution, changeCount: pending.changeSet.changes.length, conflictCount: pending.conflicts.length } };
       codex.events.publish("weave/project", {
         status: "updated",
         projectRoot: pending.root,
@@ -601,6 +620,7 @@ codex.on("notification", (message) => {
         deck: await readProject(pending.root),
       });
     } catch (error) {
+      pending.outcome = { success: false, error: error.message };
       let cleanupError;
       try {
         await restoreFailedTurn(pending);
@@ -627,6 +647,45 @@ codex.on("notification", (message) => {
     }
   })();
 });
+
+codex.onEditSlides = async (params, args) => {
+  const chat = chatTurns.get(params.threadId);
+  if (!chat || codex.activeTurns.get(params.threadId) !== params.turnId) throw new Error("The requesting chat turn is no longer active.");
+  const root = projectRoot();
+  const deck = await readProject(root);
+  const contextEnvelope = delegatedEditorContext(args, deck);
+  if (root === chat.root) {
+    const allowed = chat.contextEnvelope.modificationScope;
+    if (allowed.kind !== "deck") {
+      if (args.scope.kind === "deck" || args.scope.slideIds.some((id) => !allowed.slideIds.includes(id)) || (allowed.kind === "element" && (args.scope.kind !== "element" || args.scope.elementId !== allowed.elementId))) throw new Error("The requested edit exceeds the user's selected scope.");
+    }
+    if (args.execution !== chat.contextEnvelope.executionMode) throw new Error("The requested execution mode differs from the user's selected mode.");
+    if (args.allowSkillChanges && chat.contextEnvelope.allowSkillChanges !== true) throw new Error("The user has not enabled project skill changes for this turn.");
+    Object.assign(contextEnvelope, {
+      ...(chat.contextEnvelope.annotations ? { annotations: chat.contextEnvelope.annotations } : {}),
+      ...(chat.contextEnvelope.attachments ? { attachments: chat.contextEnvelope.attachments } : {}),
+    });
+  }
+  const started = await startEditorTurn({
+    prompt: args.prompt,
+    deck,
+    contextEnvelope,
+    clientUserMessageId: `edit-${params.callId}`,
+    model: chat.model,
+    effort: chat.effort,
+    approvalPolicy: chat.approvalPolicy,
+  }, { parentThreadId: params.threadId });
+  await started.pending.finalization;
+  if (!started.pending.outcome) throw new Error("The slide editor did not report an outcome.");
+  if (started.pending.outcome.success) {
+    const child = await codex.readThread(started.thread.id);
+    const turn = child.turns?.find((item) => item.id === started.turn.id);
+    const messages = Array.isArray(turn?.items) ? turn.items.filter((item) => item.type === "agentMessage" && typeof item.text === "string").map((item) => item.text).join("\n") : "";
+    started.pending.outcome.result.message = messages.slice(0, 16_000);
+    started.pending.outcome.result.messageTruncated = messages.length > 16_000;
+  }
+  return started.pending.outcome;
+};
 
 const server = createServer(async (request, response) => {
   try {
@@ -689,6 +748,9 @@ const server = createServer(async (request, response) => {
       });
       codex.events.attach(response, Number.isFinite(sequence) ? sequence : 0);
       return;
+    }
+    if (request.method === "GET" && url.pathname === "/api/ui/state") {
+      return sendJson(request, response, 200, codex.uiTools.snapshot());
     }
     if (request.method === "GET" && url.pathname === "/api/codex/threads") {
       return sendJson(request, response, 200, await codex.listThreads({
@@ -895,7 +957,8 @@ const server = createServer(async (request, response) => {
       return sendJson(request, response, 200, await statePayload());
     }
     if (url.pathname === "/api/variations/generate") {
-      return sendJson(request, response, 202, await startEditorTurn(payload, { variation: true }));
+      const { thread, turn, branch } = await startEditorTurn(payload, { variation: true });
+      return sendJson(request, response, 202, { thread, turn, branch });
     }
     if (url.pathname === "/api/variations/accept") {
       if (activeProjectTurn()) return sendJson(request, response, 409, { error: "An Agent turn is running." });
@@ -921,7 +984,10 @@ const server = createServer(async (request, response) => {
     }
 
     if (url.pathname === "/api/codex/thread/start") {
-      return sendJson(request, response, 201, { thread: await codex.startThread(payload) });
+      return sendJson(request, response, 201, { thread: await codex.startThread({ ...payload, purpose: "chat", cwd: projectRoot() }) });
+    }
+    if (url.pathname === "/api/codex/thread/prepare") {
+      return sendJson(request, response, 200, await codex.ensureChatThread(payload.threadId, { cwd: projectRoot(), approvalPolicy: payload.approvalPolicy, model: payload.model }));
     }
     if (url.pathname === "/api/codex/thread/read") {
       return sendJson(request, response, 200, { thread: await codex.readThread(payload.threadId) });
@@ -938,37 +1004,23 @@ const server = createServer(async (request, response) => {
     if (url.pathname === "/api/codex/turn/start") {
       if (agentStartBlocked()) return sendJson(request, response, 409, { error: "Another Agent task is running. Editing remains available and Agent will reconnect to this project when it finishes." });
       const prompt = requireTurnPrompt(payload);
-      const workflow = workflowFromPayload(payload);
+      workflowFromPayload(payload);
       const root = projectRoot();
       startingRoots.add(root);
-      let agentFileSnapshot = null;
-      let projectSkillSnapshot = null;
-      let recoverySnapshot = null;
-      let pending = null;
+      let thread = null;
       try {
-        await clearRecoveryTask(root);
-        const deck = payload.deck ? await writeProject(payload.deck, null, root) : await readProject(root);
-        const preTurnCss = await readDeckCss(root);
-        agentFileSnapshot = await createAgentFileSnapshot(root);
-        projectSkillSnapshot = await createProjectSkillSnapshot(root);
-        recoverySnapshot = await createRecoverySnapshot({ baseRevision: getRevision(root), deck, css: preTurnCss, agentFileSnapshot }, root);
-        pending = pendingTurn({ prompt, branch: null, variation: false, workflow, root, preTurnDeck: deck, baseDeck: deck, baseRevision: recoverySnapshot.baseRevision, preTurnCss, projectSkillSnapshot, recoverySnapshot, agentFileSnapshot, deckTitle: deck.title });
-        pending.threadId = payload.threadId;
-        pendingTurns.set(payload.threadId, pending);
+        const session = codex.uiTools.authenticate(payload.uiSession);
+        const ensured = await codex.ensureChatThread(payload.threadId, { cwd: root, approvalPolicy: payload.approvalPolicy, model: payload.model });
+        thread = ensured.thread;
+        codex.uiTools.bindThread(session, thread.id);
+        await writeProject(payload.deck, null, root);
+        const contextEnvelope = editorEnvelope(payload.contextEnvelope);
+        chatTurns.set(thread.id, { root, contextEnvelope, model: payload.model, effort: payload.effort, approvalPolicy: payload.approvalPolicy });
         startingRoots.delete(root);
-        const result = await codex.startTurn({ ...payload, prompt: `${prompt}${serializeEditorContext(payload)}` });
-        startProjectPreview(pending, payload.threadId, result.turn.id);
-        await updateRecoverySnapshot(recoverySnapshot, { workflow, status: "running", threadId: payload.threadId, turnId: result.turn.id }, root);
-        return sendJson(request, response, 202, result);
+        const result = await codex.startTurn({ ...payload, threadId: thread.id, purpose: "chat", cwd: root, instructions: `${chatInstructions}${serializeEditorContext(payload)}`, prompt });
+        return sendJson(request, response, 202, { ...result, thread });
       } catch (error) {
-        if (pending) finishPendingTurn(payload.threadId, pending);
-        if (agentFileSnapshot) {
-          await restoreAgentFileSnapshot(agentFileSnapshot, root);
-          await discardAgentFileSnapshot(agentFileSnapshot, root);
-        }
-        if (projectSkillSnapshot) await restoreProjectSkillSnapshot(root, projectSkillSnapshot);
-        await discardProjectSkillSnapshot(projectSkillSnapshot);
-        if (recoverySnapshot) await discardRecoverySnapshot(recoverySnapshot, root);
+        if (thread) chatTurns.delete(thread.id);
         throw error;
       } finally {
         startingRoots.delete(root);
@@ -980,6 +1032,7 @@ const server = createServer(async (request, response) => {
       return sendJson(request, response, 202, await codex.steerTurn({ ...payload, prompt: `${prompt}${serializeEditorContext(payload)}` }));
     }
     if (url.pathname === "/api/codex/turn/interrupt") {
+      await Promise.all([...pendingTurns.entries()].filter(([, pending]) => pending.parentThreadId === payload.threadId).map(([threadId]) => codex.interruptTurn(threadId)));
       return sendJson(request, response, 202, await codex.interruptTurn(payload.threadId));
     }
     if (url.pathname === "/api/codex/request/resolve") {
@@ -1023,10 +1076,19 @@ const server = createServer(async (request, response) => {
         arguments: payload.arguments && typeof payload.arguments === "object" ? payload.arguments : {},
       }));
     }
+    if (url.pathname === "/api/ui/session") {
+      if (request.method === "POST") return sendJson(request, response, 201, codex.uiTools.registerSession(payload));
+      if (request.method === "PATCH") return sendJson(request, response, 200, codex.uiTools.touchSession(payload));
+      if (request.method === "DELETE") return sendJson(request, response, 200, codex.uiTools.releaseSession(payload));
+    }
+    if (request.method === "POST" && url.pathname === "/api/ui/response") {
+      return sendJson(request, response, 200, codex.uiTools.respond(payload));
+    }
     return sendJson(request, response, 404, { error: "Not found." });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const status = ["WEAVE_REVISION_CONFLICT", "WEAVE_SKILL_CONFLICT", "WEAVE_TURN_RUNNING"].includes(error?.code) ? 409
+    const status = ["WEAVE_REVISION_CONFLICT", "WEAVE_SKILL_CONFLICT", "WEAVE_TURN_RUNNING", "WEAVE_UI_REPLAY", "WEAVE_UI_NOT_PENDING", "WEAVE_UI_SESSION_MISMATCH", "WEAVE_UI_OWNERSHIP_REQUIRED"].includes(error?.code) ? 409
+      : ["WEAVE_UI_UNAUTHORIZED", "WEAVE_UI_SESSION_EXPIRED"].includes(error?.code) ? 401
       : error?.code === "WEAVE_SKILL_NOT_FOUND" ? 404
       : error?.code === "WEAVE_SKILL_INVALID" ? 400
       : error?.code === "WEAVE_REQUEST_TOO_LARGE" ? 413

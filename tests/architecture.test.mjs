@@ -60,6 +60,7 @@ test("policy gates protect commits while turn writes stay available", async () =
   assert.ok(atomicSave.indexOf("assertCommittable") < atomicSave.indexOf("commitIfChanged"));
   assert.match(turnStart, /const root = projectRoot\(\)/);
   assert.match(turnStart, /writeProject\(payload\.deck, null, root\)/);
+  assert.doesNotMatch(turnStart, /clearRecoveryTask/, "a chat-only request must preserve the interrupted editor's recovery snapshot");
   assert.doesNotMatch(steer, /writeProject/);
   assert.doesNotMatch(writeBody, /auditContentPolicy/);
 });

@@ -578,6 +578,8 @@ button.project-card { cursor: pointer; }
 .server-question textarea { min-height: 65px; resize: vertical; font-family: var(--font-geist-mono), monospace; }
 
 .settings-sidebar { padding: 0 9px 12px; }
+.activity-panel-chat-return { flex: 0 0 auto; min-height: var(--ui-control); margin-left: auto; padding: 4px 8px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel-2); color: var(--text); font-size: var(--ui-meta); font-weight: 600; letter-spacing: 0; white-space: nowrap; cursor: pointer; }
+.activity-panel-chat-return:hover, .activity-panel-chat-return:focus-visible { border-color: var(--accent); color: var(--accent); }
 .settings-sidebar section { padding: 10px 0; border-bottom: 1px solid var(--line); }
 .settings-sidebar label > span { display: block; margin-bottom: 4px; color: var(--muted); font-size: 8px; }
 .settings-sidebar select, .settings-sidebar input[type="password"] { width: 100%; height: 28px; padding: 0 7px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--panel-2); color: var(--text); font-size: 8px; }
@@ -644,6 +646,21 @@ button.project-card { cursor: pointer; }
 .skill-dialog-actions button { min-height: var(--ui-primary-control); padding: 0 12px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--panel-3); color: var(--text); cursor: pointer; }
 .skill-dialog-actions .primary-button { border-color: color-mix(in srgb, var(--accent) 42%, var(--line)); background: var(--accent); color: var(--on-accent); }
 .skill-dialog-actions button:disabled { cursor: not-allowed; opacity: .48; }
+
+/* Browser-native prompts are rendered in the same document so they remain
+   observable to the UI bridge and can be highlighted before the next action.
+   Keep the closed dialog out of layout during the render immediately before
+   showModal() moves it into the top layer. */
+.editor-dialog { width: min(460px, calc(100vw - 32px)); max-width: calc(100vw - 32px); max-height: min(420px, calc(100vh - 32px)); margin: auto; padding: 0; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--panel); color: var(--text); box-shadow: var(--shadow); }
+.editor-dialog:not([open]) { display: none; }
+.editor-dialog[open] { display: flex; flex-direction: column; }
+.editor-dialog::backdrop { background: rgb(0 0 0 / .48); }
+.editor-dialog form { width: 100%; margin: 0; display: flex; flex-direction: column; }
+.editor-dialog header { min-height: 48px; padding: 0 16px; display: flex; align-items: center; border-bottom: 1px solid var(--line); }
+.editor-dialog header strong { font-size: var(--ui-label); line-height: 1.35; }
+.editor-dialog .skill-dialog-body { padding: 16px; }
+.editor-dialog .skill-dialog-field input { min-height: var(--ui-primary-control); }
+.editor-dialog .ui-operation-pointer { position: absolute; z-index: 10001; }
 
 .center-stage { min-width: 0; min-height: 0; display: grid; grid-template-rows: 38px minmax(0, 1fr); background: #0c0e11; }
 .workspace[data-slide-nav="filmstrip"] .center-stage { grid-template-rows: 38px minmax(0, 1fr) 76px; }
@@ -1009,6 +1026,69 @@ button.project-card { cursor: pointer; }
 .quality-popover .quality-row:hover { background: var(--panel-3); }
 .quality-popover .quality-row strong { font-size: var(--ui-label); }
 .quality-popover .quality-row small { margin-top: 3px; }
+
+/* Agent UI bridge feedback. The target frame and pointer are deliberately
+   independent from the editor selection outline so an operation is teachable
+   even when the selected slide element does not change. */
+.ui-operation-target {
+  outline: 3px solid color-mix(in srgb, var(--accent) 86%, #fff) !important;
+  outline-offset: 3px !important;
+  box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent) 22%, transparent), 0 0 24px color-mix(in srgb, var(--accent) 45%, transparent) !important;
+  transition: outline-color .12s ease, box-shadow .12s ease;
+}
+.ui-operation-pointer {
+  position: fixed;
+  z-index: 10000;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 24%, var(--panel));
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 18%, transparent), 0 4px 18px rgb(0 0 0 / .38);
+  pointer-events: none;
+  opacity: 0;
+  transform: scale(.65);
+  transition: opacity .12s ease, transform .12s ease;
+}
+.ui-operation-pointer[data-visible="true"] { opacity: 1; transform: scale(1); }
+.ui-operation-pointer::after { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
+.ui-operation-pointer-label {
+  position: absolute;
+  top: 26px;
+  left: 50%;
+  max-width: min(260px, 40vw);
+  padding: 4px 7px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line));
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+  transform: translateX(-50%);
+}
+.ui-operation-status { max-width: min(420px, 36vw); overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+.ui-operation-status-pointing, .ui-operation-status-performing { color: var(--accent); }
+.ui-operation-status-completed { color: #62c99b; }
+.ui-operation-status-rejected, .ui-operation-status-error { color: var(--danger); }
+
+/* Concentrating on the canvas changes the canvas emphasis only. The context
+   sidebar remains mounted and discoverable so the chat never disappears from
+   the operating surface. */
+.workspace[data-focus="canvas"] {
+  grid-template-columns: 184px minmax(420px, 1fr) minmax(300px, var(--weave-sidebar-width, 340px)) !important;
+  grid-template-areas: "slides canvas context";
+}
+.workspace[data-focus="canvas"] > .activity-rail,
+.workspace[data-focus="canvas"] > .slide-rail,
+.workspace[data-focus="canvas"] > .left-panel,
+.workspace[data-focus="canvas"] > .inspector { display: flex; }
+.workspace[data-focus="canvas"] > .left-panel,
+.workspace[data-focus="canvas"] > .inspector { grid-area: context; }
 .mobile-tabs, .mobile-slide-panel { display: none; }
 
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .001ms !important; transition-duration: .001ms !important; } }
@@ -1342,4 +1422,172 @@ button.project-card { cursor: pointer; }
   .review-dock .changed-review { order: 1; flex-basis: 100%; }
   .review-toggle { padding-inline: 6px; }
   .review-dock { margin-bottom: 52px; }
+}
+
+/* The context sidebar remains a real workspace region on narrow screens. The
+   mobile tabs change the content shown in the region, but never remove the
+   region itself. Keep this block last so the older compact rules above cannot
+   collapse it when the canvas or slide tab is selected. */
+@media (max-width: 900px) {
+  .workspace,
+  .workspace[data-slide-nav="rail"],
+  .workspace[data-slide-nav="filmstrip"],
+  .workspace[data-inspector="closed"],
+  .workspace[data-agent="closed"],
+  .workspace[data-focus="canvas"] {
+    display: grid !important;
+    grid-template-columns: minmax(0, 1fr) !important;
+    grid-template-rows: minmax(150px, 30%) minmax(360px, 70%) !important;
+    grid-template-areas: "canvas" "context" !important;
+    align-content: stretch;
+    height: 100%;
+    min-height: 0;
+    overflow: auto !important;
+    padding-bottom: 8px;
+  }
+  .workspace > .center-stage {
+    grid-area: canvas;
+    display: grid !important;
+    width: 100% !important;
+    min-width: 0;
+    min-height: 220px;
+    height: auto !important;
+    overflow: hidden;
+  }
+  .workspace > .left-panel {
+    grid-area: context;
+    display: grid !important;
+    position: relative !important;
+    inset: auto !important;
+    width: 100% !important;
+    min-width: 0;
+    min-height: 190px;
+    max-height: 70dvh;
+    height: auto !important;
+    overflow: hidden;
+    border-right: 0;
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+  .workspace > .inspector {
+    grid-area: context;
+    display: block !important;
+    position: relative !important;
+    inset: auto !important;
+    width: 100% !important;
+    min-width: 0;
+    min-height: 190px;
+    max-height: 70dvh;
+    height: auto !important;
+    overflow: auto;
+    border-left: 0;
+    border-top: 1px solid var(--line);
+    border-radius: 0;
+    box-shadow: none;
+  }
+  .workspace > .open-agent-panel,
+  .workspace > .open-inspector {
+    grid-area: context;
+    display: flex !important;
+    position: relative !important;
+    inset: auto !important;
+    width: 100% !important;
+    min-height: 190px;
+    height: auto !important;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--line);
+    border-radius: 0;
+  }
+  .workspace[data-mobile-view="slides"] > .center-stage { display: none !important; }
+  .workspace > .mobile-slide-panel {
+    grid-area: canvas;
+    display: none !important;
+    min-width: 0;
+    min-height: 220px;
+    overflow: auto;
+  }
+  .workspace[data-mobile-view="slides"] > .mobile-slide-panel {
+    display: flex !important;
+    width: 100% !important;
+    height: auto !important;
+    padding: 12px;
+    flex-wrap: wrap;
+    align-content: flex-start;
+    gap: 10px;
+  }
+  .workspace[data-mobile-view="slides"] > .mobile-slide-panel .slide-entry { width: min(220px, calc(50% - 5px)); }
+  .workspace[data-mobile-view="slides"] > .mobile-slide-panel .new-slide-wrap { width: 100%; }
+  .workspace[data-mobile-view="slides"] > .mobile-slide-panel .new-slide { width: 100%; min-height: 42px; }
+}
+
+/* Some desktop selectors carry several data attributes and win the cascade
+   even though the mobile block appears later. Repeat the full workspace shape
+   here so a narrow viewport can never retain the desktop slide/canvas/context
+   columns or create a horizontal page scrollbar. */
+@media (max-width: 900px) {
+  html body .weave-app > .workspace[data-slide-nav][data-inspector][data-agent] {
+    display: grid !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+    grid-template-columns: minmax(0, 100%) !important;
+    grid-template-rows: minmax(150px, 30%) minmax(360px, 70%) !important;
+    grid-template-areas: "canvas" "context" !important;
+    overflow-x: hidden !important;
+    overflow-y: auto !important;
+  }
+  html body .weave-app > .workspace[data-slide-nav][data-inspector][data-agent] > .center-stage,
+  html body .weave-app > .workspace[data-slide-nav][data-inspector][data-agent] > .left-panel,
+  html body .weave-app > .workspace[data-slide-nav][data-inspector][data-agent] > .inspector,
+  html body .weave-app > .workspace[data-slide-nav][data-inspector][data-agent] > .mobile-slide-panel,
+  html body .weave-app > .workspace[data-slide-nav][data-inspector][data-agent] > .open-agent-panel,
+  html body .weave-app > .workspace[data-slide-nav][data-inspector][data-agent] > .open-inspector {
+    min-width: 0 !important;
+    max-width: 100% !important;
+  }
+  html body .weave-app > .workspace[data-slide-nav][data-inspector][data-agent="open"] > .open-inspector,
+  html body .weave-app > .workspace[data-slide-nav][data-inspector="open"][data-agent] > .open-agent-panel {
+    display: none !important;
+  }
+
+  /* Keep enough vertical room for the chat header, message history, and
+     composer on phone-sized screens. The context region remains visible;
+     only its message history scrolls when a conversation is long. */
+  html body .weave-app > .workspace[data-slide-nav][data-inspector][data-agent] > .left-panel,
+  html body .weave-app > .workspace[data-slide-nav][data-inspector][data-agent] > .inspector {
+    max-height: 70dvh !important;
+    min-height: 360px !important;
+    height: auto !important;
+  }
+  html body .weave-app > .workspace[data-slide-nav][data-inspector][data-agent] > .left-panel .agent-panel {
+    min-height: 0 !important;
+    height: 100% !important;
+    overflow: hidden;
+  }
+  html body .weave-app > .workspace[data-slide-nav][data-inspector][data-agent] > .left-panel .agent-panel .messages {
+    min-height: 96px;
+    overflow: auto;
+  }
+
+  /* The canvas toolbar belongs to the canvas row. A fixed bottom position
+     lets it cover the chat composer when the sidebar is visible, so anchor it
+     inside the slide shell instead. The compact mobile menu uses the same
+     containing block and therefore cannot escape into the chat row either. */
+  html body .weave-app .canvas-area .canvas-toolbar {
+    position: absolute !important;
+    top: auto !important;
+    right: auto !important;
+    bottom: 8px !important;
+    left: 50% !important;
+    width: calc(100% - 16px) !important;
+    max-width: calc(100% - 16px) !important;
+    transform: translateX(-50%) !important;
+    z-index: 20 !important;
+  }
+  html body .weave-app .canvas-area .mobile-canvas-tools > div {
+    position: absolute !important;
+    right: 0 !important;
+    bottom: calc(100% + 6px) !important;
+  }
 }

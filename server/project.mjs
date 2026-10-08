@@ -16,7 +16,7 @@ import { assetFilenamePattern, replaceAssetReferences } from "../shared/asset-pa
 import { composeSlideHtml, extractLayoutSnapshotHtml, extractSlideSourceHtml, hasLegacyFurnitureOutsideContent } from "../shared/slide-slots.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const workspacesRoot = process.env.WEAVE_WORKSPACES_ROOT ? resolve(process.env.WEAVE_WORKSPACES_ROOT) : join(repoRoot, "workspaces");
+export const workspacesRoot = process.env.WEAVE_WORKSPACES_ROOT ? resolve(process.env.WEAVE_WORKSPACES_ROOT) : join(repoRoot, "workspaces");
 const archiveRoot = join(workspacesRoot, ".archive");
 const currentPath = process.env.WEAVE_WORKSPACES_ROOT ? join(dirname(workspacesRoot), ".weave", "current.json") : join(repoRoot, ".weave", "current.json");
 const assetApiBase = "/api";
@@ -869,7 +869,7 @@ export async function writeProjectUnlocked(input, expectedRevision = null, root 
       rm(previousManifestPath, { force: true }),
     ]);
   }
-  return { title: project.title, slides };
+  return { title: project.title, defaultTemplateId: project.defaultTemplateId, slides };
 }
 
 export async function writeProject(input, expectedRevision = null, root = currentProjectRoot) {
