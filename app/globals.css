@@ -213,8 +213,9 @@ body {
 .slide-rail .slide-live-marker { position: absolute; right: 1px; bottom: 28px; padding: 2px 3px; color: #071216; background: #58d7f5; font-size: 6px; }
 .slide-rail .new-slide { width: 44px; height: 24px; margin-top: 2px; }
 .slide-rail .mini-slide { width: 44px; height: 26px; }
-.slide-rail .slide-thumbnail { width: 44px; height: 25px; }
-.weave-app .slide-rail .slide-thumbnail > .weave-slide { transform: scale(.034375); }
+.slide-rail .slide-thumbnail { width: 44px; height: 25px; container-type: inline-size; }
+/* Match the preview to its frame, including the narrower desktop sidebar. */
+.weave-app .slide-rail .slide-thumbnail > .weave-slide { position: absolute; top: 0; left: 0; transform: scale(calc(100cqw / 1280px)); }
 .slide-rail .slide-menu-trigger { width: 24px; height: 24px; }
 .slide-rail .slide-actions-menu { left: 52px; right: auto; bottom: 0; }
 .slide-rail .mini-slide::after { width: 18px; height: 18px; right: -7px; bottom: -6px; border-width: 3px; }
@@ -441,7 +442,7 @@ button.project-card { cursor: pointer; }
 .slide-rail { grid-area: slides; width: auto; min-width: 0; padding: 8px; overflow: auto; border-right: 1px solid var(--line); background: var(--panel); }
 .slide-rail .slide-entry { width: 100%; margin-bottom: 8px; }
 .slide-rail .slide-item { width: 100%; min-height: 88px; display: grid; grid-template-columns: 22px 1fr; gap: 6px; }
-.slide-rail .slide-thumbnail { grid-column: 1 / -1; width: 100%; height: auto; aspect-ratio: 16 / 9; }
+.slide-rail .slide-thumbnail { grid-column: 1 / -1; box-sizing: content-box; width: calc(100% - 2px); height: auto; aspect-ratio: 16 / 9; }
 .slide-rail .slide-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .center-stage { grid-area: canvas; }
 .left-panel, .inspector, .open-inspector, .open-agent-panel { grid-area: context; position: relative; inset: auto; min-width: 0; }
@@ -1196,7 +1197,7 @@ button.project-card { cursor: pointer; }
 .slide-rail { grid-area: slides; width: auto; min-width: 0; padding: 8px; overflow: auto; border-right: 1px solid var(--line); background: var(--panel); }
 .slide-rail .slide-entry { width: 100%; margin-bottom: 8px; }
 .slide-rail .slide-item { width: 100%; min-height: 88px; display: grid; grid-template-columns: 22px 1fr; gap: 6px; }
-.slide-rail .slide-thumbnail { grid-column: 1 / -1; width: 100%; height: auto; aspect-ratio: 16 / 9; }
+.slide-rail .slide-thumbnail { grid-column: 1 / -1; box-sizing: content-box; width: calc(100% - 2px); height: auto; aspect-ratio: 16 / 9; }
 .center-stage { grid-area: canvas; }
 .left-panel, .inspector, .open-inspector, .open-agent-panel { grid-area: context; position: relative; inset: auto; min-width: 0; }
 .left-panel { border-right: 0; border-left: 1px solid var(--line); }
