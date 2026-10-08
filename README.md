@@ -23,6 +23,28 @@ WEAVE_WEB_HOST=172.30.128.50 WEAVE_WEB_PORT=3444 npm run dev
 
 `npm run dev`は画面、ローカルAPI、Codex app-serverをまとめて起動します。OpenAIの資格情報をアプリ内へコピーせず、Codex CLIの既存ログインを利用します。
 
+### Dockerで常駐起動（Linux）
+
+既存の依存関係、保存データ、ログイン済みCodex CLIを利用します。`npm install` 済みのこのリポジトリで、`.env` に次の値を明示してください（すべて必須）。
+
+```dotenv
+WEAVE_UID=1000
+WEAVE_GID=1000
+WEAVE_REPO_ROOT=/absolute/path/to/html-editor
+WEAVE_HOST_HOME=/home/your-user
+WEAVE_NODE_ROOT=/absolute/path/to/node-installation
+```
+
+`WEAVE_UID` / `WEAVE_GID` はホストユーザーのID、`WEAVE_NODE_ROOT` は `bin/node` と `bin/codex` を含むNode.jsインストール先です。リポジトリと `WEAVE_HOST_HOME/.codex` をコンテナに共有するため、保存データとCodexの認証・状態はホストに残ります。
+
+```bash
+docker compose up -d --build
+docker compose logs --tail=100 web
+docker compose stop
+```
+
+画面は `http://127.0.0.1:3444`、ローカルAPIは `127.0.0.1:4317` を使います。Linuxのhostネットワークで起動します。再起動ポリシーは `unless-stopped` です。Docker起動時やプロセス異常終了時に自動起動し、明示的に停止した場合は停止状態を維持します。
+
 ## 現在触れる機能
 
 - アウトラインからスライドを切り替える
