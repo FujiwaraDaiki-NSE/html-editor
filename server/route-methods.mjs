@@ -1,4 +1,5 @@
 const ROUTE_METHODS = [
+  [/^\/api\/references\/folder\/upload$/, ["POST"]],
   [/^\/healthz$/, ["GET"]],
   [/^\/api\/(?:state|variations|variations\/compare|codex\/events|codex\/threads)$/, ["GET"]],
   [/^\/api\/skills$/, ["GET", "POST"]],

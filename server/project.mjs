@@ -1818,3 +1818,54 @@ export async function switchProject(slug) {
   await persistCurrentProject();
   return target;
 }
+
+export async function importUploadedReferenceFolder(files, root = currentProjectRoot, onStored = null) {
+  return runProjectExclusive(async () => {
+    if (!Array.isArray(files) || files.length === 0 || files.length > 2_000) throw new Error("Select a folder with 1–2,000 files.");
+    let folderName;
+    let size = 0;
+    const paths = new Set();
+    const visibleFiles = [];
+    for (const entry of files) {
+      if (typeof entry.path !== "string" || entry.path.length > 4096 || /[\\\x00-\x1f:]/.test(entry.path)) throw new Error("Invalid folder file path.");
+      const parts = entry.path.split("/");
+      if (parts.length < 2 || parts.some((part) => !part || part === "." || part === "..")) throw new Error("Invalid folder file path.");
+      if (folderName === undefined) folderName = parts[0];
+      if (parts[0] !== folderName || paths.has(entry.path)) throw new Error("Upload one folder without duplicate file paths.");
+      paths.add(entry.path);
+      if (parts.some((part) => part.startsWith("."))) continue;
+      if (!(entry.file instanceof File)) throw new Error("Folder upload must contain files only.");
+      size += entry.file.size;
+      if (size > 500 * 1024 * 1024) throw new Error("Reference folder exceeds the limit (2,000 files / 500 MB).");
+      visibleFiles.push({ path: parts.slice(1).join("/"), file: entry.file });
+    }
+    if (!visibleFiles.length) throw new Error("The selected folder has no visible files.");
+    const directory = referencesRoot(root);
+    await mkdir(directory, { recursive: true });
+    const indexPath = join(directory, "index.json");
+    const index = JSON.parse(await readFile(indexPath, "utf8").catch(() => '{"entries":[]}'));
+    const baseName = normalizeReferenceName(folderName);
+    let name = baseName;
+    let number = 2;
+    while (existsSync(join(directory, name))) name = `${baseName}-${number++}`;
+    const destination = join(directory, name);
+    const staged = join(directory, `.${randomUUID()}.upload`);
+    let published = false;
+    const entry = { path: `references/${name}`, name, kind: "folder", size, files: visibleFiles.length, addedAt: new Date().toISOString() };
+    try {
+      for (const item of visibleFiles) {
+        const target = join(staged, item.path);
+        await mkdir(dirname(target), { recursive: true });
+        await writeFile(target, Buffer.from(await item.file.arrayBuffer()), { flag: "wx" });
+      }
+      await rename(staged, destination);
+      published = true;
+      await atomicWriteJson(indexPath, { entries: [...index.entries, entry] });
+    } catch (error) {
+      await rm(published ? destination : staged, { recursive: true, force: true });
+      throw error;
+    }
+    if (onStored) await onStored(entry, entry);
+    return entry;
+  }, root);
+}
