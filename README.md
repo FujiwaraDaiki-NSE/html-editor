@@ -23,7 +23,7 @@ npm run dev
 WEAVE_WEB_HOST=172.30.128.50 WEAVE_WEB_PORT=3444 npm run dev
 ```
 
-外部PCでは `http://172.30.128.50:3444` を開きます。ローカルAPIは別ポートへ公開せず、Vite経由で利用します。
+外部PCでは `http://172.30.128.50:3444`、起動したPCでは `http://localhost:3444` を開きます。LANインターフェースを指定した場合も、この2つのアドレスだけで待ち受けます。ローカルAPIは別ポートへ公開せず、Vite経由で利用します。
 
 `npm run dev`は画面、ローカルAPI、Codex app-serverをまとめて起動します。OpenAIの資格情報をアプリ内へコピーせず、Codex CLIの既存ログインを利用します。
 
@@ -50,6 +50,9 @@ mkdir -p /home/your-user/.local/state/weave
 ```
 
 ```bash
+# Linux/AppArmor host: install the dedicated profile before creating the container.
+sudo install -m 0644 docker/weave-codex.apparmor /etc/apparmor.d/weave-codex
+sudo apparmor_parser -r /etc/apparmor.d/weave-codex
 docker compose up -d --build
 docker compose logs --tail=100 web
 docker compose stop
