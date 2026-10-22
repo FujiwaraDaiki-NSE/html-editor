@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { readFolderUpload } from "./reference-upload.mjs";
 import {
   acceptVariation,
   agentInstructions,
@@ -18,6 +19,7 @@ import {
   assetMimeTypes,
   importReference,
   importReferenceFolder,
+  importUploadedReferenceFolder,
   listFolders,
   readReferences,
   removeReference,
@@ -699,6 +701,14 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method !== "GET" && request.method !== "POST" && request.method !== "PATCH" && request.method !== "DELETE") return sendJson(request, response, 404, { error: "Not found." });
+    if (url.pathname === "/api/references/folder/upload") {
+      const root = requestProjectRoot;
+      const files = await readFolderUpload(request);
+      if (root !== projectRoot()) return sendJson(request, response, 409, { error: "The project changed while the upload was being received.", code: "WEAVE_PROJECT_CHANGED" });
+      if (startingRoots.has(root)) return sendJson(request, response, 409, { error: "Agent setup is capturing the project. Retry the import.", code: "WEAVE_AGENT_STARTING" });
+      const reference = await runProjectLifecycle(() => importUploadedReferenceFolder(files, root, (stored, entry) => recordHumanFileMutation([...pendingTurns.values()].find((turn) => turn.root === root), { path: stored.path, entry })), { allowPending: true });
+      return sendJson(request, response, 201, reference);
+    }
     const payload = await readJson(request, url.pathname === "/api/assets" ? 14_000_000 : url.pathname === "/api/references" ? 36_000_000 : ["/api/save", "/api/draft", "/api/milestones"].includes(url.pathname) ? 5_000_000 : 1_500_000);
 
     if (request.method === "POST" && url.pathname === "/api/projects") {

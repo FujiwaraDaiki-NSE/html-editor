@@ -514,6 +514,7 @@ export default function Home() {
   const [referenceView, setReferenceView] = useState<"shelf" | "browse">("shelf");
   const [folderBrowser, setFolderBrowser] = useState<FolderBrowser | null>(null);
   const [folderImporting, setFolderImporting] = useState(false);
+  const [folderUploadStatus, setFolderUploadStatus] = useState<string | null>(null);
   const [changedReview, setChangedReview] = useState<ChangedTarget[]>([]);
   const [structuredChanges, setStructuredChanges] = useState<any[]>([]);
   const [mergeConflicts, setMergeConflicts] = useState<MergeConflict[]>([]);
@@ -547,6 +548,8 @@ export default function Home() {
   const importRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const referenceInputRef = useRef<HTMLInputElement>(null);
+  const referenceFolderInputRef = useRef<HTMLInputElement>(null);
+  const folderUploadInFlightRef = useRef(false);
   const skillInputRef = useRef<HTMLInputElement>(null);
   const skillDialogRef = useRef<HTMLFormElement>(null);
   const skillDialogTriggerRef = useRef<HTMLElement | null>(null);
@@ -2171,6 +2174,38 @@ export default function Home() {
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   }, []);
 
+  const uploadReferenceFolder = useCallback(async (selectedFiles: FileList) => {
+    if (folderUploadInFlightRef.current) return;
+    folderUploadInFlightRef.current = true;
+    setFolderImporting(true);
+    setFolderUploadStatus("フォルダーを読み込み中…");
+    try {
+      const files = Array.from(selectedFiles).filter((file) => !file.webkitRelativePath.split("/").some((part) => part.startsWith(".")));
+      if (!files.length) throw new Error("ファイルが入ったフォルダーを選択してください。");
+      if (files.length > 2_000 || files.reduce((total, file) => total + file.size, 0) > 500 * 1024 * 1024) throw new Error("フォルダーは2,000ファイル・合計500 MB以下にしてください。");
+      const body = new FormData();
+      for (const file of files) {
+        if (!file.webkitRelativePath) throw new Error("フォルダーの相対パスを取得できませんでした。");
+        body.append(file.webkitRelativePath, file, file.name);
+      }
+      const response = await fetch(`${apiBase}/references/folder/upload`, { method: "POST", body });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "フォルダーを読み込めませんでした。");
+      setReferenceShelf((current) => [...current, { ...result, missing: false }]);
+      setReferenceAttachments((current) => [...current, result]);
+      setFolderUploadStatus(`${result.name}を追加しました（${result.files}ファイル）。`);
+      setApiError(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setFolderUploadStatus(message);
+      setApiError(message);
+    } finally {
+      folderUploadInFlightRef.current = false;
+      setFolderImporting(false);
+      if (referenceFolderInputRef.current) referenceFolderInputRef.current.value = "";
+    }
+  }, []);
+
   const browseFolders = useCallback(async (path?: string) => {
     try {
       const response = await fetch(`${apiBase}/folders${path ? `?path=${encodeURIComponent(path)}` : ""}`);
@@ -2188,6 +2223,7 @@ export default function Home() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "フォルダーを読み込めませんでした。");
       setReferenceShelf((current) => [...current, { ...result, missing: false, sourceMissing: false }]);
+      setReferenceAttachments((current) => [...current, result]);
       setReferenceView("shelf"); setApiError(null);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
     finally { setFolderImporting(false); }
@@ -3674,12 +3710,14 @@ export default function Home() {
                           <span className="reference-shelf-name">{reference.name}</span>
                           <small>{reference.missing ? "見つかりません" : `${reference.files ?? 0}ファイル · ${formatBytes(reference.size)}`}</small>
                         </label>
-                        <button type="button" aria-label={`${reference.name}を更新`} disabled={reference.sourceMissing} onClick={() => void syncFolder(reference.path)}>↻</button>
+                        {reference.source && <button type="button" aria-label={`${reference.name}を更新`} disabled={reference.sourceMissing} onClick={() => void syncFolder(reference.path)}>↻</button>}
                         <button type="button" aria-label={`${reference.name}を参照資料から削除`} onClick={() => void removeShelfReference(reference.path)}>×</button>
                       </div>;
                     })}
                     </div>
-                    <button className="reference-add" type="button" onClick={() => void browseFolders()}>＋ フォルダーを追加</button>
+                    <button className="reference-add" type="button" disabled={folderImporting} aria-busy={folderImporting} onClick={() => referenceFolderInputRef.current?.click()}>＋ フォルダーを追加</button>
+                    <button className="reference-add" type="button" disabled={folderImporting} onClick={() => void browseFolders()}>サーバーのフォルダーを追加</button>
+                    {folderUploadStatus && <p className="reference-upload-status" role="status">{folderUploadStatus}</p>}
                   </section>
                   <section className="reference-shelf-section" aria-labelledby="reference-files-heading">
                     <h4 id="reference-files-heading">ファイル</h4>
@@ -3734,6 +3772,7 @@ export default function Home() {
               <textarea ref={promptRef} value={promptDraft} onChange={onPromptChange} onCompositionStart={() => { compositionRef.current = true; }} onCompositionEnd={onPromptCompositionEnd} onKeyDown={onPromptKeyDown} placeholder={agentReady ? "Agentにこのスライドの編集を依頼…" : "Codexへの接続を待っています…"} aria-label="Agentへのメッセージ" aria-busy={turnBusy} maxLength={20000} disabled={!agentReady} />
               <div className="chat-actions">
                 <input ref={referenceInputRef} className="sr-only" type="file" multiple onChange={(event) => { if (event.target.files) void uploadReferences(event.target.files); }} />
+                <input ref={referenceFolderInputRef} className="sr-only" type="file" aria-label="参照フォルダーを選択" multiple {...{ webkitdirectory: "" }} onChange={(event) => { if (event.target.files?.length) void uploadReferenceFolder(event.target.files); }} />
                 <button className={`attach-button${openPopover === "references" ? " active" : ""}`} type="button" onClick={(event) => togglePopover("references", event.currentTarget)} disabled={!agentReady} aria-expanded={openPopover === "references"} aria-haspopup="dialog" aria-label="参照資料" title="Agentへ渡すファイルやフォルダーを選びます">📎</button>
                 {codexState.catalog.models.length > 0 && selectedModelInfo && (
                   <div className="agent-model-control">
