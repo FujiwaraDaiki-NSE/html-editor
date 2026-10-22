@@ -1,0 +1,8 @@
+abi <abi/4.0>,
+include <tunables/global>
+
+# Codex enforces the workspace boundary in its own bubblewrap sandbox.
+# Explicit userns permission avoids Ubuntu's restriction on unconfined processes.
+profile weave-codex flags=(unconfined) {
+  userns,
+}

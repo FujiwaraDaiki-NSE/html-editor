@@ -8,6 +8,10 @@ services:
     init: true
     restart: unless-stopped
     network_mode: host
+    # Permit Codex's nested bubblewrap sandbox; keep workspace-write in the API.
+    security_opt:
+      - seccomp=unconfined
+      - apparmor=weave-codex
     user: "${WEAVE_UID:?Set WEAVE_UID}:${WEAVE_GID:?Set WEAVE_GID}"
     working_dir: "${WEAVE_REPO_ROOT:?Set WEAVE_REPO_ROOT}"
     environment:
