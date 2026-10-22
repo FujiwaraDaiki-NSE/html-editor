@@ -857,3 +857,26 @@ test("home folder registration includes hidden folders and internal links but re
     await rm(outside, { recursive: true, force: true });
   }
 });
+
+test("reference attachment resolution stays with the initiating project when paths overlap", async () => {
+  const home = await mkdtemp(join(tmpdir(), "weave-reference-projects-"));
+  const previousHome = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    const project = await import("../server/project.mjs");
+    const roots = [join(home, "project-a"), join(home, "project-b")];
+    const sources = [join(home, "source-a"), join(home, "source-b")];
+    for (let i = 0; i < roots.length; i++) {
+      await mkdir(join(roots[i], "references"), { recursive: true });
+      await mkdir(sources[i]);
+      await writeFile(join(roots[i], "references/index.json"), JSON.stringify({ entries: [{ path: "references/shared", name: `source-${i}`, kind: "folder", storage: "linked", source: sources[i], size: null, files: null }] }));
+    }
+    const request = [{ path: "references/shared" }];
+    const [a, b] = await Promise.all(roots.map((root) => project.resolveReferenceAttachments(request, root)));
+    assert.equal(a[0].source, sources[0]);
+    assert.equal(b[0].source, sources[1]);
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+    await rm(home, { recursive: true, force: true });
+  }
+});
