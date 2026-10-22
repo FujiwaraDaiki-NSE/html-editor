@@ -869,7 +869,7 @@ export async function writeProjectUnlocked(input, expectedRevision = null, root 
       rm(previousManifestPath, { force: true }),
     ]);
   }
-  return { title: project.title, slides };
+  return { title: project.title, defaultTemplateId: project.defaultTemplateId, slides };
 }
 
 export async function writeProject(input, expectedRevision = null, root = currentProjectRoot) {

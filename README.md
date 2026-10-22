@@ -35,7 +35,13 @@ WEAVE_HOST_HOME=/home/your-user
 WEAVE_NODE_ROOT=/absolute/path/to/node-installation
 ```
 
-`WEAVE_UID` / `WEAVE_GID` はホストユーザーのID、`WEAVE_NODE_ROOT` は `bin/node` と `bin/codex` を含むNode.jsインストール先です。リポジトリと `WEAVE_HOST_HOME/.codex` をコンテナに共有するため、保存データとCodexの認証・状態はホストに残ります。
+`WEAVE_UID` / `WEAVE_GID` はホストユーザーのID、`WEAVE_NODE_ROOT` は `bin/node` と `bin/codex` を含むNode.jsインストール先です。リポジトリ、`WEAVE_HOST_HOME/.codex`、`WEAVE_HOST_HOME/.local/state/weave` をコンテナに共有するため、保存データ、Codexの認証・状態、Agent実行前の復旧スナップショットはホストに残ります。
+
+初回起動前に、`WEAVE_HOST_HOME` のユーザーで復旧データ用ディレクトリを作成してください（以下のパスは `.env` の `WEAVE_HOST_HOME` に合わせます）。このディレクトリは `WEAVE_UID` / `WEAVE_GID` で書き込める必要があります。未作成の場合は、root所有のディレクトリが自動作成されないようComposeの起動をエラーにします。
+
+```bash
+mkdir -p /home/your-user/.local/state/weave
+```
 
 ```bash
 docker compose up -d --build

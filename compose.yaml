@@ -20,5 +20,10 @@ services:
     volumes:
       - "${WEAVE_REPO_ROOT}:${WEAVE_REPO_ROOT}"
       - "${WEAVE_HOST_HOME}/.codex:${WEAVE_HOST_HOME}/.codex"
+      - type: bind
+        source: "${WEAVE_HOST_HOME}/.local/state/weave"
+        target: "${WEAVE_HOST_HOME}/.local/state/weave"
+        bind:
+          create_host_path: false
       - "${WEAVE_NODE_ROOT:?Set WEAVE_NODE_ROOT}:/opt/codex-runtime:ro"
     command: ["npm", "run", "dev"]
