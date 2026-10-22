@@ -118,3 +118,13 @@ test("interruption finalizes both the Turn and its running Items", () => {
   assert.equal(state.items["message-1"].status, "interrupted");
   assert.equal(state.activeTurnId, null);
 });
+
+test("thread and turn notifications preserve the explicitly selected conversation", () => {
+  let state = codexReducer(initialCodexState, { type: "threadLoaded", thread: { id: "parent", turns: [] }, activate: true });
+  state = codexReducer(state, { type: "event", sequence: 1, method: "turn/started", params: { threadId: "parent", turn: { id: "parent-turn" } } });
+  state = codexReducer(state, { type: "event", sequence: 2, method: "thread/started", params: { thread: { id: "background", turns: [] } } });
+  state = codexReducer(state, { type: "event", sequence: 3, method: "turn/started", params: { threadId: "background", turn: { id: "background-turn" } } });
+  assert.equal(state.activeThreadId, "parent");
+  assert.equal(state.activeTurnId, "parent-turn");
+  assert.equal(state.turns["background-turn"].threadId, "background");
+});
