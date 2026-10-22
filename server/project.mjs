@@ -248,8 +248,9 @@ function normalizeReferenceName(value) {
   return `${normalizedBase || "file"}${normalizePart(extension)}`;
 }
 
-export async function importImageAsset({ data, mimeType }, root = currentProjectRoot, onStored = null) {
+export async function importImageAsset({ data, mimeType }, root = currentProjectRoot, onStored = null, beforeStore = null) {
   return runProjectExclusive(async () => {
+    if (beforeStore) beforeStore();
   const extension = assetTypes.get(String(mimeType ?? "").toLowerCase());
   if (!extension) throw new Error("Unsupported image type. Use PNG, JPEG, WebP, SVG, or GIF.");
   const bytes = Buffer.from(String(data ?? ""), "base64");
@@ -274,8 +275,9 @@ export async function importImageAsset({ data, mimeType }, root = currentProject
   }, root);
 }
 
-export async function importReference({ data, mimeType, name }, root = currentProjectRoot, onStored = null) {
+export async function importReference({ data, mimeType, name }, root = currentProjectRoot, onStored = null, beforeStore = null) {
   return runProjectExclusive(async () => {
+    if (beforeStore) beforeStore();
     const bytes = Buffer.from(String(data ?? ""), "base64");
     if (!bytes.length) throw new Error("Reference data is required.");
     if (bytes.length > maxReferenceBytes) throw new Error("Reference must be 25 MB or smaller.");
@@ -383,8 +385,9 @@ export async function listFolders(path = homedir()) {
   };
 }
 
-export async function importReferenceFolder({ source }, root = currentProjectRoot, onStored = null) {
+export async function importReferenceFolder({ source }, root = currentProjectRoot, onStored = null, beforeStore = null) {
   return runProjectExclusive(async () => {
+    if (beforeStore) beforeStore();
     const resolved = await referenceFolderSource(source);
     const summary = await walkReferenceFolder(resolved);
     if (summary.capped) throw new Error("Reference folder is too large or too slow to read and exceeds the limit (2,000 files / 500 MB).");
@@ -420,8 +423,9 @@ async function copyReferenceFolder(source, destination) {
   });
 }
 
-export async function syncReferenceFolder(path, root = currentProjectRoot, onStored = null) {
+export async function syncReferenceFolder(path, root = currentProjectRoot, onStored = null, beforeStore = null) {
   return runProjectExclusive(async () => {
+    if (beforeStore) beforeStore();
     if (!isReferencePath(path)) throw new Error("Invalid reference path.");
     const indexPath = join(referencesRoot(root), "index.json");
     const index = JSON.parse(await readFile(indexPath, "utf8"));
@@ -467,9 +471,10 @@ export async function readReferences(root = currentProjectRoot) {
     .map((entry) => ({ ...entry, kind: entry.kind === "folder" ? "folder" : "file", missing: !existsSync(join(root, entry.path)), ...(entry.kind === "folder" && entry.source ? { sourceMissing: !existsSync(entry.source) } : {}) }));
 }
 
-export async function removeReference(path, root = currentProjectRoot, onStored = null) {
+export async function removeReference(path, root = currentProjectRoot, onStored = null, beforeStore = null) {
   if (!isReferencePath(path)) throw new Error("Invalid reference path.");
   return runProjectExclusive(async () => {
+    if (beforeStore) beforeStore();
     const indexPath = join(referencesRoot(root), "index.json");
     let index;
     try {
@@ -1819,8 +1824,9 @@ export async function switchProject(slug) {
   return target;
 }
 
-export async function importUploadedReferenceFolder(files, root = currentProjectRoot, onStored = null) {
+export async function importUploadedReferenceFolder(files, root = currentProjectRoot, onStored = null, beforeStore = null) {
   return runProjectExclusive(async () => {
+    if (beforeStore) beforeStore();
     if (!Array.isArray(files) || files.length === 0 || files.length > 2_000) throw new Error("Select a folder with 1–2,000 files.");
     let folderName;
     let size = 0;
