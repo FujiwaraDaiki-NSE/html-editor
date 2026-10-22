@@ -185,12 +185,27 @@ differ. Kind-identity sizes such as eyebrow and note, and accent colors, stay ex
 Slide styling is expressed only with the precompiled Tailwind utility classes already used in the
 project. Use standard Tailwind scale values and existing classes; never use inline style attributes,
 arbitrary-value classes such as [...], or edit styles/deck.css — read that file when you need the
-registry of classes the project supports. Prefer flex/grid flow layout. Keep a
-data-weave-id on every element the human can select. Represent line breaks as <br>, not literal newlines.
+registry of classes the project supports. Prefer flex/grid flow layout. Keep a unique, stable
+data-weave-id on every independently editable element. Represent line breaks as <br>, not literal newlines.
 Reference imported images with relative assets/<hash>.<ext> paths. Lists use ul.list with li children;
-tables use table.table and keep data-weave-id on the table rather than individual cells. Graphs and
-decorative diagrams are static inline SVG: use fill="currentColor" with text-* classes instead of raw
-hex colors, size the SVG with w-full and aspect-* classes, and put data-weave-id on the SVG root.
+tables use table.table and keep data-weave-id on the table rather than individual cells.
+
+New slides must support human text editing in the canvas, not only source-code editing. Author
+titles, body copy, diagram labels, names, and roles as HTML text elements. Give each independently
+editable label its own data-weave-id, even when its group already has one. The current canvas
+does not support editing SVG text or tspan elements; adding IDs to those elements does not make
+them editable. Do not rasterize editable text or convert it to SVG paths.
+Use inline SVG for diagram frames, arrows, and decorative graphics, with fill="currentColor" and
+text-* classes instead of raw hex colors, w-full and aspect-* sizing, and data-weave-id on the SVG
+root. Keep HTML labels and their graphics in the same positioned group so they stay aligned when
+scaled. Preserve required facts, labels, and visual detail; do not omit them to simplify editing.
+When reusing or copying existing slides, preserve their content, order, design, and source
+structure. Report text that the current canvas cannot edit; do not silently rebuild it as HTML.
+Change that structure only when the human requests an editability conversion.
+Before declaring newly authored slides complete, check individual text selection and editing,
+save and reload behavior, and overflow after a representative text change. Use the GUI when
+available; if it is unavailable, report that canvas editing was not verified rather than claiming
+that source-code editability proves canvas editability.
 Make focused changes that answer the user. Read-only git (log, show, diff) is fine when you need the
 history; never commit, checkout, or otherwise change the repository — Weave formats and commits the turn.
 If no file change is needed, respond with a concise explanation.

@@ -1002,9 +1002,12 @@ export default function Home() {
   });
 
   const quality = useMemo(() => {
-    let html = "";
-    try { html = composedSlides(slides).join("\n"); } catch (error) { return { ok: false, diagnostics: [{ id: "template-reference", code: "template-reference", source: "slides", severity: "error" as const, message: error instanceof Error ? error.message : String(error), explanation: "テンプレート参照を解決できません。", fixSuggestion: "テンプレートとレイアウトの参照を確認してください。", slideId: null, elementId: null }], errors: 1, warnings: 0, suggestions: 0 }; }
-    const result = auditContentPolicy({ css: deckCss, html });
+    let renderedSlides: string[];
+    try { renderedSlides = composedSlides(slides); } catch (error) { return { ok: false, diagnostics: [{ id: "template-reference", code: "template-reference", source: "slides", severity: "error" as const, message: error instanceof Error ? error.message : String(error), explanation: "テンプレート参照を解決できません。", fixSuggestion: "テンプレートとレイアウトの参照を確認してください。", slideId: null, elementId: null }], errors: 1, warnings: 0, suggestions: 0 }; }
+    const policies = [
+      { slideId: null, result: auditContentPolicy({ css: deckCss }) },
+      ...slides.map((slide, index) => ({ slideId: slide.id, result: auditContentPolicy({ html: renderedSlides[index] }) })),
+    ];
     const authored: QualityDiagnostic[] = slides.flatMap((slide) => {
       const items: QualityDiagnostic[] = [];
       for (const match of slide.html.matchAll(/<img\b([^>]*)>/gi)) {
@@ -1016,7 +1019,17 @@ export default function Home() {
       if (/\btext-(?:xs|\[\d+(?:\.\d+)?px\])\b/.test(slide.html)) items.push({ id: `${slide.id}:small-text`, code: "text.small", severity: "warning", message: "小さい文字が含まれています", explanation: "投影時や小さな画面で読みにくくなる可能性があります。", fixSuggestion: "本文を14px相当以上へ調整します。", slideId: slide.id, elementId: null, source: "html" });
       return items;
     });
-    const policyDiagnostics: QualityDiagnostic[] = result.diagnostics.map((item: any, index: number) => ({ id: `policy:${item.code}:${index}`, code: item.code, severity: item.severity === "warning" ? "warning" : "error", message: item.message, explanation: item.message, fixSuggestion: "問題のHTMLまたはスタイルを安全な表現へ修正してください。", slideId: null, elementId: null, source: item.source }));
+    const policyDiagnostics: QualityDiagnostic[] = policies.flatMap(({ slideId, result }) => result.diagnostics.map((item: any, index: number) => ({
+      id: `policy:${slideId}:${item.code}:${index}`,
+      code: item.code,
+      severity: item.severity === "warning" ? "warning" : "error",
+      message: item.message,
+      explanation: item.code === "html.svg-text-not-editable" ? "図全体は選択できますが、SVGの文字は現在の文字編集に対応していません。既存資料の構造は保持しています。" : item.message,
+      fixSuggestion: item.code === "html.svg-text-not-editable" ? "図の内容と見た目を維持し、文字を個別のHTMLテキスト要素に分離して一意のdata-weave-idを付けてください。選択・編集・保存後の再表示を確認してください。" : "問題のHTMLまたはスタイルを安全な表現へ修正してください。",
+      slideId,
+      elementId: item.elementId ?? null,
+      source: item.source,
+    })));
     const diagnostics = [...policyDiagnostics, ...authored].filter((item) => item.severity === "error" || !ignoredDiagnostics.has(item.id));
     const errors = diagnostics.filter((item) => item.severity === "error").length;
     const warnings = diagnostics.filter((item) => item.severity === "warning").length;
@@ -2637,7 +2650,7 @@ export default function Home() {
 
   const askAgentToFixDiagnostic = (diagnostic: QualityDiagnostic) => {
     focusDiagnostic(diagnostic);
-    setChangeScope(diagnostic.elementId ? "element" : diagnostic.slideId ? "current-slide" : "deck");
+    setChangeScope(diagnostic.code === "html.svg-text-not-editable" ? "current-slide" : diagnostic.elementId ? "element" : diagnostic.slideId ? "current-slide" : "deck");
     setExecutionMode("apply");
     setPromptDraft(`${diagnostic.message}。${diagnostic.fixSuggestion}`);
     setInspectorOpen(false);
