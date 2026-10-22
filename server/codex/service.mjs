@@ -224,6 +224,14 @@ export class CodexService extends EventEmitter {
 
   handleNotification(message) {
     const { method, params = {} } = message;
+    // app-server also emits notifications for internal subagent threads. Only
+    // project-owned conversation threads may reach the editor or activeTurns.
+    if (method === "thread/started") {
+      if (!this.isWeaveThread(params.thread)) return;
+      this.weaveThreadIds.add(params.thread.id);
+    }
+    const notificationThreadId = params.threadId ?? params.thread?.id;
+    if (notificationThreadId && !this.weaveThreadIds.has(notificationThreadId) && !this.activeTurns.has(notificationThreadId)) return;
     if (method === "turn/started") {
       const threadId = params.threadId ?? params.thread?.id;
       const turnId = params.turn?.id ?? params.turnId;
@@ -266,6 +274,9 @@ export class CodexService extends EventEmitter {
 
   isWeaveThread(thread) {
     return (
+      !thread?.parentThreadId &&
+      thread?.threadSource !== "subagent" &&
+      !(typeof thread?.source === "object" && thread.source !== null && "subAgent" in thread.source) &&
       thread?.cwd === this.projectRoot &&
       (
         thread?.threadSource === WEAVE_THREAD_SOURCE ||
@@ -299,13 +310,10 @@ export class CodexService extends EventEmitter {
       sourceKinds: ["appServer", "vscode"],
     });
     const checked = await Promise.all((result.data ?? []).map(async (thread) => {
-      if (
-        thread.cwd === this.projectRoot &&
-        (thread.name?.startsWith(WEAVE_NAME_PREFIX) || this.weaveThreadIds.has(thread.id))
-      ) return thread;
+      if (this.isWeaveThread(thread)) return thread;
       try {
         const read = await this.client.request("thread/read", { threadId: thread.id, includeTurns: false });
-        return read.thread?.threadSource === WEAVE_THREAD_SOURCE && read.thread?.cwd === this.projectRoot
+        return this.isWeaveThread(read.thread)
           ? { ...thread, threadSource: WEAVE_THREAD_SOURCE }
           : null;
       } catch {
