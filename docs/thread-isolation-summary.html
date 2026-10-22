@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<title>制作タスクとサブエージェント通知の分離</title>
+<body>
+<h1>制作タスクとサブエージェント通知の分離</h1>
+<p>Agentが内部で作成した子スレッドの開始通知によって画面の操作対象が切り替わり、次の送信が所有確認で拒否されていた。実画面では「Thread is not owned by this Weave project (source=subagent, cwd=現在のプロジェクト)」と表示された。</p>
+<h2>変更</h2>
+<ul>
+<li>CodexServiceは所有を確認した制作タスクの通知だけを公開し、実行状態へ反映する。</li>
+<li>parentThreadId、subagentのthreadSource、subAgentのsourceを持つ内部スレッドは、Weaveの名前を継承しても一覧や操作対象から除外する。</li>
+<li>画面はスレッド・ターン開始通知で操作対象を切り替えず、明示的な作成・選択・読込の結果を使う。</li>
+</ul>
+<h2>確認</h2>
+<p>回帰テストは親の実行中に子スレッドや別プロジェクトの通知を流し、通知配信・実行状態・選択状態と所有判定を確認する。既存の履歴再開・割込み・プロジェクト切替のテストも対象とする。</p>
+</body>
+</html>

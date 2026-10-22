@@ -27,9 +27,40 @@ WEAVE_WEB_HOST=172.30.128.50 WEAVE_WEB_PORT=3444 npm run dev
 
 `npm run dev`は画面、ローカルAPI、Codex app-serverをまとめて起動します。OpenAIの資格情報をアプリ内へコピーせず、Codex CLIの既存ログインを利用します。
 
+### Dockerで常駐起動（Linux）
+
+既存の依存関係、保存データ、ログイン済みCodex CLIを利用します。`npm install` 済みのこのリポジトリで、`.env` に次の値を明示してください（すべて必須）。
+
+```dotenv
+WEAVE_UID=1000
+WEAVE_GID=1000
+WEAVE_REPO_ROOT=/absolute/path/to/html-editor
+WEAVE_HOST_HOME=/home/your-user
+WEAVE_NODE_ROOT=/absolute/path/to/node-installation
+```
+
+`WEAVE_UID` / `WEAVE_GID` はホストユーザーのID、`WEAVE_NODE_ROOT` は `bin/node` と `bin/codex` を含むNode.jsインストール先です。リポジトリ、`WEAVE_HOST_HOME/.codex`、`WEAVE_HOST_HOME/.local/state/weave` をコンテナに共有するため、保存データ、Codexの認証・状態、Agent実行前の復旧スナップショットはホストに残ります。
+
+`WEAVE_HOST_HOME` 全体は読み取り専用で共有します。上記のリポジトリ、`.codex`、復旧データは個別の書き込み可能なマウントです。ホームの共有自体ではコピーや全ファイルの走査を行いません。
+
+初回起動前に、`WEAVE_HOST_HOME` のユーザーで復旧データ用ディレクトリを作成してください（以下のパスは `.env` の `WEAVE_HOST_HOME` に合わせます）。このディレクトリは `WEAVE_UID` / `WEAVE_GID` で書き込める必要があります。未作成の場合は、root所有のディレクトリが自動作成されないようComposeの起動をエラーにします。
+
+```bash
+mkdir -p /home/your-user/.local/state/weave
+```
+
+```bash
+docker compose up -d --build
+docker compose logs --tail=100 web
+docker compose stop
+```
+
+画面は `http://127.0.0.1:3444`、ローカルAPIは `127.0.0.1:4317` を使います。Linuxのhostネットワークで起動します。再起動ポリシーは `unless-stopped` です。Docker起動時やプロセス異常終了時に自動起動し、明示的に停止した場合は停止状態を維持します。
+
 ## 現在触れる機能
 
 - アウトラインからスライドを切り替える
+- スライド表示領域とプレゼン画面で、下スクロールで次、上スクロールで前のページへ移動する（連続したスクロールは1ページ分。入力欄や拡大中のスクロール領域は通常どおり操作）
 - 複数スライドを個別のHTMLファイルとして編集・追加する
 - プレビュー内の要素を選び、インスペクタのテキスト編集と同期する
 - オブジェクトツリーから要素を選択・削除する
@@ -78,3 +109,7 @@ npm test
 要件と設計判断は [concept.md](./concept.md) にまとまっています。
 
 チャットによる画面操作の責務と確認方法は [開発者向けサマリー](./docs/chat-operated-ui-summary.html) を参照してください。
+
+参照資料の「＋ ホームのフォルダーを登録」から、Dockerホストのホーム配下を選択できます。パスだけを登録するため、容量・ファイル数の登録上限はありません。Agentは登録済みの実パスから必要な資料を読み取り、元ファイルの更新もそのまま参照します。登録を解除しても元フォルダーは削除しません。隠しフォルダーとホーム内を参照するリンクも選択できます。
+
+別のPCのフォルダーは「PCのフォルダーをアップロード」から選択します。この操作ではサブフォルダーを保持してコピーするため、最大2,000ファイル・合計500 MBの転送上限があり、隠しファイルは対象外です。過去にコピーしたサーバーフォルダーの更新機能も維持しています。

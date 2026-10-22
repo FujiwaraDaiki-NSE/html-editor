@@ -256,6 +256,8 @@ body {
 .reference-shelf-item > button { padding: 0 3px; background: transparent; color: var(--muted); font-size: 15px; }
 .reference-add { width: 100%; padding: 8px 10px; border: 0; background: transparent; color: var(--accent); font-size: var(--chat-meta); text-align: left; cursor: pointer; }
 .reference-add:hover, .reference-shelf-item:hover { background: var(--panel-3); }
+.reference-add:disabled { opacity: .45; cursor: not-allowed; }
+.reference-upload-status { margin: 0; padding: 6px 10px; font-size: var(--chat-meta); color: var(--muted); overflow-wrap: anywhere; }
 .reference-shelf-section + .reference-shelf-section { border-top: 1px solid var(--line); }
 .reference-shelf-section h4 { margin: 0; padding: 7px 10px 4px; color: var(--muted); font-size: var(--chat-micro); letter-spacing: .08em; text-transform: uppercase; }
 .reference-folder-list { max-height: 220px; overflow-y: auto; display: grid; }

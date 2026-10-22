@@ -522,3 +522,11 @@ test("production code does not call excluded or experimental app-server APIs", a
     assert.equal(source.includes(`"${method}"`), false, `excluded method is called: ${method}`);
   }
 });
+
+test("attachment context resolves references against the captured task project", async () => {
+  const source = await readFile(new URL("../server/local-api.mjs", import.meta.url), "utf8");
+  assert.match(source, /async function serializeEditorContext\(payload, root\)/);
+  assert.match(source, /resolveReferenceAttachments\(envelope.attachments, root\)/);
+  assert.equal((source.match(/await serializeEditorContext\(payload, root\)/g) ?? []).length, 2);
+  assert.match(source, /await serializeEditorContext\(payload, pending.root\)/);
+});

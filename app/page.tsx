@@ -36,7 +36,7 @@ type SlideDoc = { id: string; title: string; notes: string; templateId: string; 
 type TemplateLayout = { id: string; name: string; html: string };
 type TemplateDoc = { id: string; name: string; defaultLayoutId: string; masterHtml: string; layouts: TemplateLayout[] };
 type PortableBundle = { format: "weave-deck"; version: 2; deck: { title: string; defaultTemplateId: string; slides: SlideDoc[] }; templates: TemplateDoc[]; css: string };
-type ReferenceAttachment = { path: string; name: string; mimeType?: string; size: number; kind?: "file" | "folder"; files?: number };
+type ReferenceAttachment = { path: string; name: string; mimeType?: string; size: number | null; kind?: "file" | "folder"; files?: number | null; storage?: "linked"; source?: string };
 type ReferenceShelfEntry = ReferenceAttachment & { hash?: string; addedAt?: string; source?: string; sourceMissing?: boolean; missing: boolean; kind: "file" | "folder" };
 type FolderBrowser = { path: string; parent: string | null; breadcrumbs: Array<{ name: string; path: string }>; folders: Array<{ name: string; path: string }>; folderCount: number; fileCount: number };
 
@@ -527,6 +527,7 @@ export default function Home() {
   const [referenceView, setReferenceView] = useState<"shelf" | "browse">("shelf");
   const [folderBrowser, setFolderBrowser] = useState<FolderBrowser | null>(null);
   const [folderImporting, setFolderImporting] = useState(false);
+  const [folderUploadStatus, setFolderUploadStatus] = useState<string | null>(null);
   const [changedReview, setChangedReview] = useState<ChangedTarget[]>([]);
   const [structuredChanges, setStructuredChanges] = useState<any[]>([]);
   const [mergeConflicts, setMergeConflicts] = useState<MergeConflict[]>([]);
@@ -565,10 +566,14 @@ export default function Home() {
   const viewportRef = useRef<HTMLDivElement>(null);
   const annotationScrollRef = useRef<HTMLDivElement>(null);
   const presenterRef = useRef<HTMLDivElement>(null);
+  const slideShellRef = useRef<HTMLDivElement>(null);
+  const slideWheelRef = useRef({ delta: 0, lastEvent: 0, switched: false });
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const referenceInputRef = useRef<HTMLInputElement>(null);
+  const referenceFolderInputRef = useRef<HTMLInputElement>(null);
+  const folderUploadInFlightRef = useRef(false);
   const skillInputRef = useRef<HTMLInputElement>(null);
   const skillDialogRef = useRef<HTMLFormElement>(null);
   const skillDialogTriggerRef = useRef<HTMLElement | null>(null);
@@ -1244,13 +1249,16 @@ export default function Home() {
     } : undefined,
     annotations: annotationContext,
     overflowing,
-    attachments: attachments.map(({ path, name, size, kind, files }) => ({ path, name, bytes: size, kind, files })),
+    attachments: attachments.map(({ path, name, size, kind, files, storage }) => ({ path, name, bytes: size, kind, files, storage })),
   });
 
   const quality = useMemo(() => {
-    let html = "";
-    try { html = composedSlides(slides).join("\n"); } catch (error) { return { ok: false, diagnostics: [{ id: "template-reference", code: "template-reference", source: "slides", severity: "error" as const, message: error instanceof Error ? error.message : String(error), explanation: "テンプレート参照を解決できません。", fixSuggestion: "テンプレートとレイアウトの参照を確認してください。", slideId: null, elementId: null }], errors: 1, warnings: 0, suggestions: 0 }; }
-    const result = auditContentPolicy({ css: deckCss, html });
+    let renderedSlides: string[];
+    try { renderedSlides = composedSlides(slides); } catch (error) { return { ok: false, diagnostics: [{ id: "template-reference", code: "template-reference", source: "slides", severity: "error" as const, message: error instanceof Error ? error.message : String(error), explanation: "テンプレート参照を解決できません。", fixSuggestion: "テンプレートとレイアウトの参照を確認してください。", slideId: null, elementId: null }], errors: 1, warnings: 0, suggestions: 0 }; }
+    const policies = [
+      { slideId: null, result: auditContentPolicy({ css: deckCss }) },
+      ...slides.map((slide, index) => ({ slideId: slide.id, result: auditContentPolicy({ html: renderedSlides[index] }) })),
+    ];
     const authored: QualityDiagnostic[] = slides.flatMap((slide) => {
       const items: QualityDiagnostic[] = [];
       for (const match of slide.html.matchAll(/<img\b([^>]*)>/gi)) {
@@ -1262,7 +1270,17 @@ export default function Home() {
       if (/\btext-(?:xs|\[\d+(?:\.\d+)?px\])\b/.test(slide.html)) items.push({ id: `${slide.id}:small-text`, code: "text.small", severity: "warning", message: "小さい文字が含まれています", explanation: "投影時や小さな画面で読みにくくなる可能性があります。", fixSuggestion: "本文を14px相当以上へ調整します。", slideId: slide.id, elementId: null, source: "html" });
       return items;
     });
-    const policyDiagnostics: QualityDiagnostic[] = result.diagnostics.map((item: any, index: number) => ({ id: `policy:${item.code}:${index}`, code: item.code, severity: item.severity === "warning" ? "warning" : "error", message: item.message, explanation: item.message, fixSuggestion: "問題のHTMLまたはスタイルを安全な表現へ修正してください。", slideId: null, elementId: null, source: item.source }));
+    const policyDiagnostics: QualityDiagnostic[] = policies.flatMap(({ slideId, result }) => result.diagnostics.map((item: any, index: number) => ({
+      id: `policy:${slideId}:${item.code}:${index}`,
+      code: item.code,
+      severity: item.severity === "warning" ? "warning" : "error",
+      message: item.message,
+      explanation: item.code === "html.svg-text-not-editable" ? "図全体は選択できますが、SVGの文字は現在の文字編集に対応していません。既存資料の構造は保持しています。" : item.message,
+      fixSuggestion: item.code === "html.svg-text-not-editable" ? "図の内容と見た目を維持し、文字を個別のHTMLテキスト要素に分離して一意のdata-weave-idを付けてください。選択・編集・保存後の再表示を確認してください。" : "問題のHTMLまたはスタイルを安全な表現へ修正してください。",
+      slideId,
+      elementId: item.elementId ?? null,
+      source: item.source,
+    })));
     const diagnostics = [...policyDiagnostics, ...authored].filter((item) => item.severity === "error" || !ignoredDiagnostics.has(item.id));
     const errors = diagnostics.filter((item) => item.severity === "error").length;
     const warnings = diagnostics.filter((item) => item.severity === "warning").length;
@@ -2424,6 +2442,38 @@ export default function Home() {
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   }, []);
 
+  const uploadReferenceFolder = useCallback(async (selectedFiles: FileList) => {
+    if (folderUploadInFlightRef.current) return;
+    folderUploadInFlightRef.current = true;
+    setFolderImporting(true);
+    setFolderUploadStatus("フォルダーを読み込み中…");
+    try {
+      const files = Array.from(selectedFiles).filter((file) => !file.webkitRelativePath.split("/").some((part) => part.startsWith(".")));
+      if (!files.length) throw new Error("ファイルが入ったフォルダーを選択してください。");
+      if (files.length > 2_000 || files.reduce((total, file) => total + file.size, 0) > 500 * 1024 * 1024) throw new Error("フォルダーは2,000ファイル・合計500 MB以下にしてください。");
+      const body = new FormData();
+      for (const file of files) {
+        if (!file.webkitRelativePath) throw new Error("フォルダーの相対パスを取得できませんでした。");
+        body.append(file.webkitRelativePath, file, file.name);
+      }
+      const response = await fetch(`${apiBase}/references/folder/upload`, { method: "POST", body });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "フォルダーを読み込めませんでした。");
+      setReferenceShelf((current) => [...current, { ...result, missing: false }]);
+      setReferenceAttachments((current) => [...current, result]);
+      setFolderUploadStatus(`${result.name}を追加しました（${result.files}ファイル）。`);
+      setApiError(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setFolderUploadStatus(message);
+      setApiError(message);
+    } finally {
+      folderUploadInFlightRef.current = false;
+      setFolderImporting(false);
+      if (referenceFolderInputRef.current) referenceFolderInputRef.current.value = "";
+    }
+  }, []);
+
   const browseFolders = useCallback(async (path?: string) => {
     try {
       const response = await fetch(`${apiBase}/folders${path ? `?path=${encodeURIComponent(path)}` : ""}`);
@@ -2441,6 +2491,7 @@ export default function Home() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "フォルダーを読み込めませんでした。");
       setReferenceShelf((current) => [...current, { ...result, missing: false, sourceMissing: false }]);
+      setReferenceAttachments((current) => [...current, result]);
       setReferenceView("shelf"); setApiError(null);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
     finally { setFolderImporting(false); }
@@ -2677,6 +2728,38 @@ export default function Home() {
     markDirty();
     reinject();
   };
+
+  useEffect(() => {
+    const surface = showPresenter ? presenterRef.current?.querySelector<HTMLElement>(".presenter-stage") : slideShellRef.current;
+    if (!surface || galleryOpen) return;
+    const onWheel = (event: WheelEvent) => {
+      if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+      if (!showPresenter && (editingId || draggedId || annotationGestureRef.current || pointerPicking)) return;
+      const target = event.target;
+      if (!(target instanceof Element) || target.closest('input, textarea, select, [contenteditable="true"], button')) return;
+      // Let scrollable slide content and zoomed canvases retain their own scrolling.
+      for (let node: Element | null = target; node; node = node.parentElement) {
+        const overflow = getComputedStyle(node).overflowY;
+        if (/(auto|scroll)/.test(overflow) && node.scrollHeight > node.clientHeight + 1) return;
+        if (node.classList.contains("canvas-area") || node.classList.contains("presenter")) break;
+      }
+      event.preventDefault();
+      const now = performance.now();
+      const gesture = slideWheelRef.current;
+      if (now - gesture.lastEvent > 180) { gesture.delta = 0; gesture.switched = false; }
+      gesture.lastEvent = now;
+      if (gesture.switched) return;
+      if (Math.sign(gesture.delta) !== Math.sign(event.deltaY)) gesture.delta = 0;
+      gesture.delta += event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? surface.clientHeight : 1);
+      if (Math.abs(gesture.delta) < 40) return;
+      gesture.switched = true;
+      const direction = Math.sign(gesture.delta);
+      if (showPresenter) setPresentSlide((value) => Math.max(1, Math.min(slides.length, value + direction)));
+      else switchSlide(activeRef.current + direction);
+    };
+    surface.addEventListener("wheel", onWheel, { passive: false });
+    return () => surface.removeEventListener("wheel", onWheel);
+  });
 
   const moveSlide = (direction: -1 | 1) => {
     const target = activeRef.current - 1 + direction;
@@ -2920,7 +3003,7 @@ export default function Home() {
 
   const askAgentToFixDiagnostic = (diagnostic: QualityDiagnostic) => {
     focusDiagnostic(diagnostic);
-    setChangeScope(diagnostic.elementId ? "element" : diagnostic.slideId ? "current-slide" : "deck");
+    setChangeScope(diagnostic.code === "html.svg-text-not-editable" ? "current-slide" : diagnostic.elementId ? "element" : diagnostic.slideId ? "current-slide" : "deck");
     setExecutionMode("apply");
     setPromptDraft(`${diagnostic.message}。${diagnostic.fixSuggestion}`);
     setInspectorOpen(false);
@@ -4000,11 +4083,12 @@ export default function Home() {
               {openPopover === "references" && <>
                 <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
                 <aside className="reference-popover" aria-label="参照資料">
-                  <header><strong>{referenceView === "browse" ? "フォルダーを追加" : "参照資料"}</strong><button type="button" aria-label="参照資料を閉じる" onClick={() => dismissPopover()}>×</button></header>
+                  <header><strong>{referenceView === "browse" ? "フォルダーを登録" : "参照資料"}</strong><button type="button" aria-label="参照資料を閉じる" onClick={() => dismissPopover()}>×</button></header>
                   {referenceView === "browse" && folderBrowser ? <>
                     <div className="reference-breadcrumbs">{folderBrowser.breadcrumbs.map((crumb, index) => <span key={crumb.path}>{index > 0 && " / "}<button type="button" onClick={() => void browseFolders(crumb.path)}>{crumb.name}</button></span>)}</div>
                     <div className="reference-folder-list">{folderBrowser.parent && <button type="button" onClick={() => void browseFolders(folderBrowser.parent ?? undefined)}>↑ 親フォルダー</button>}{folderBrowser.folders.map((folder) => <button type="button" key={folder.path} onClick={() => void browseFolders(folder.path)}>📁 {folder.name}</button>)}</div>
-                    <footer className="reference-browser-footer"><span>フォルダー {folderBrowser.folderCount.toLocaleString()}件 · この場所のファイル {folderBrowser.fileCount.toLocaleString()}件</span><button type="button" onClick={() => void importFolder()} disabled={folderImporting}>{folderImporting ? "読み込み中…" : "フォルダーを追加"}</button></footer>
+                    <p className="reference-upload-status">選んだ場所を読み取り専用で参照します。コピーは作成しません。</p>
+                    <footer className="reference-browser-footer"><span>フォルダー {folderBrowser.folderCount.toLocaleString()}件 · この場所のファイル {folderBrowser.fileCount.toLocaleString()}件</span><button type="button" onClick={() => void importFolder()} disabled={folderImporting}>{folderImporting ? "登録中…" : "このフォルダーを登録"}</button></footer>
                   </> : <>
                   <section className="reference-shelf-section" aria-labelledby="reference-folders-heading">
                     <h4 id="reference-folders-heading">フォルダー</h4>
@@ -4015,14 +4099,16 @@ export default function Home() {
                         <label title={`${reference.path}\n参照元: ${reference.source ?? "不明"}`}>
                           <input type="checkbox" checked={attached} disabled={reference.missing} onChange={() => setReferenceAttachments((current) => attached ? current.filter((item) => item.path !== reference.path) : [...current, reference])} />
                           <span className="reference-shelf-name">{reference.name}</span>
-                          <small>{reference.missing ? "見つかりません" : `${reference.files ?? 0}ファイル · ${formatBytes(reference.size)}`}</small>
+                          <small>{reference.missing ? "見つかりません" : reference.storage === "linked" ? "パス参照・読み取り専用" : `${reference.files}ファイル · ${reference.size === null ? "容量未取得" : formatBytes(reference.size)}`}</small>
                         </label>
-                        <button type="button" aria-label={`${reference.name}を更新`} disabled={reference.sourceMissing} onClick={() => void syncFolder(reference.path)}>↻</button>
+                        {reference.source && reference.storage !== "linked" && <button type="button" aria-label={`${reference.name}を更新`} disabled={reference.sourceMissing} onClick={() => void syncFolder(reference.path)}>↻</button>}
                         <button type="button" aria-label={`${reference.name}を参照資料から削除`} onClick={() => void removeShelfReference(reference.path)}>×</button>
                       </div>;
                     })}
                     </div>
-                    <button className="reference-add" type="button" onClick={() => void browseFolders()}>＋ フォルダーを追加</button>
+                    <button className="reference-add" type="button" disabled={folderImporting} onClick={() => void browseFolders()}>＋ ホームのフォルダーを登録</button>
+                    <button className="reference-add" type="button" disabled={folderImporting} aria-busy={folderImporting} onClick={() => referenceFolderInputRef.current?.click()}>PCのフォルダーをアップロード</button>
+                    {folderUploadStatus && <p className="reference-upload-status" role="status">{folderUploadStatus}</p>}
                   </section>
                   <section className="reference-shelf-section" aria-labelledby="reference-files-heading">
                     <h4 id="reference-files-heading">ファイル</h4>
@@ -4033,7 +4119,7 @@ export default function Home() {
                         <label title={reference.path}>
                           <input type="checkbox" checked={attached} disabled={reference.missing} onChange={() => setReferenceAttachments((current) => attached ? current.filter((item) => item.path !== reference.path) : [...current, reference])} />
                           <span className="reference-shelf-name">{reference.name}</span>
-                          <small>{reference.missing ? "見つかりません" : formatBytes(reference.size)}</small>
+                          <small>{reference.missing ? "見つかりません" : reference.size === null ? "容量未取得" : formatBytes(reference.size)}</small>
                         </label>
                         <button type="button" aria-label={`${reference.name}を参照資料から削除`} onClick={() => void removeShelfReference(reference.path)}>×</button>
                       </div>;
@@ -4070,13 +4156,14 @@ export default function Home() {
                 {referenceAttachments.map((attachment) => <div className="context-chip reference-attachment" role="listitem" key={attachment.path}>
                   <span className="context-icon" aria-hidden="true">📎</span>
                   <span className="reference-attachment-name" title={attachment.name}>{attachment.name}</span>
-                  <span>{formatBytes(attachment.size)}</span>
+                  <span>{attachment.storage === "linked" ? "パス参照" : attachment.size === null ? "容量未取得" : formatBytes(attachment.size)}</span>
                   <button type="button" aria-label={`${attachment.name}を添付から外す`} onClick={() => setReferenceAttachments((current) => current.filter((item) => item.path !== attachment.path))}>×</button>
                 </div>)}
               </div>}
               <textarea ref={promptRef} value={promptDraft} onChange={onPromptChange} onCompositionStart={() => { compositionRef.current = true; }} onCompositionEnd={onPromptCompositionEnd} onKeyDown={onPromptKeyDown} placeholder={agentReady ? "プロジェクト作成、スライド編集、画面の操作を依頼…" : "Codexへの接続を待っています…"} aria-label="Agentへのメッセージ" aria-busy={turnBusy} maxLength={20000} disabled={!agentReady} />
               <div className="chat-actions">
                 <input ref={referenceInputRef} className="sr-only" type="file" multiple onChange={(event) => { if (event.target.files) void uploadReferences(event.target.files); }} />
+                <input ref={referenceFolderInputRef} className="sr-only" type="file" aria-label="参照フォルダーを選択" multiple {...{ webkitdirectory: "" }} onChange={(event) => { if (event.target.files?.length) void uploadReferenceFolder(event.target.files); }} />
                 <button className={`attach-button${openPopover === "references" ? " active" : ""}`} type="button" onClick={(event) => togglePopover("references", event.currentTarget)} disabled={!agentReady} aria-expanded={openPopover === "references"} aria-haspopup="dialog" aria-label="参照資料" title="Agentへ渡すファイルやフォルダーを選びます">📎</button>
                 {codexState.catalog.models.length > 0 && selectedModelInfo && (
                   <div className="agent-model-control">
@@ -4158,7 +4245,7 @@ export default function Home() {
                 </div>
               </section>
             ) : mode === "preview" ? (
-              <div className={`slide-shell ${previewHighlightSlideId === activeSlideId ? "agent-preview-highlight" : ""}`}>
+              <div ref={slideShellRef} className={`slide-shell ${previewHighlightSlideId === activeSlideId ? "agent-preview-highlight" : ""}`}>
                 {/* The project stylesheet is the only thing styling the slide; the editor's
                     own chrome lives in globals.css and never overlaps these rules. */}
                 <style>{deckCss}</style>

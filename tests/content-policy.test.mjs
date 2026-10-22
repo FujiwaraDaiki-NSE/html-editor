@@ -130,6 +130,31 @@ test("id-bearing ancestors cover nested selectable elements, while list and tabl
   assert.equal(result.summary.warnings, 0);
 });
 
+test("SVG diagram text warns once per diagram even when individual text has IDs", () => {
+  const html = '<main><svg data-weave-id="organization"><text data-weave-id="name">Tanaka</text><text><tspan>Role</tspan></text></svg><svg data-weave-id="system"><text>System</text></svg></main>';
+  const result = auditContentPolicy({ html });
+  const warnings = result.diagnostics.filter((item) => item.code === "html.svg-text-not-editable");
+  assert.equal(result.ok, true, "existing SVG slides must remain saveable");
+  assert.equal(warnings.length, 2);
+  assert.deepEqual(warnings.map((item) => item.elementId), ["organization", "system"]);
+  for (const item of warnings) {
+    assert.equal(item.severity, "warning");
+    assert.match(html.slice(item.index, item.index + item.length), /^<svg /);
+  }
+});
+
+test("SVG graphics, metadata and comments do not warn; HTML labels remain editable", () => {
+  const html = '<main><div data-weave-id="group"><svg data-weave-id="arrows"><title>Diagram</title><desc>Explanation</desc><defs><text id="unused">Unused</text></defs><path d="M0 0L10 10"/></svg><span data-weave-id="name">Tanaka</span></div><!-- <svg><text>Example</text></svg> --></main>';
+  assert.deepEqual(auditContentPolicy({ html }).diagnostics, []);
+});
+
+test("SVG text without a root ID reports both selection and editing limitations", () => {
+  const result = auditContentPolicy({ html: '<svg><text>Name</text></svg>' });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.diagnostics.map((item) => item.code), ["html.missing-weave-id", "html.svg-text-not-editable"]);
+  assert.equal(result.diagnostics[1].elementId, null);
+});
+
 test("seed slide fragments have complete selectable-element coverage", () => {
   const html = slideFragmentFromBlocks({
     background: "orbit",

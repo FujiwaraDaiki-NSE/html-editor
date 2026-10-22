@@ -87,11 +87,17 @@ export function editorEnvelope(input) {
     const attachments = input.attachments.map((attachment) => {
       if (!attachment || typeof attachment !== "object") return null;
       if (!isReferencePath(attachment.path) || typeof attachment.name !== "string" || !attachment.name.trim()) return null;
-      if (typeof attachment.bytes !== "number" || !Number.isFinite(attachment.bytes) || attachment.bytes < 0) return null;
       const kind = attachment.kind === "folder" ? "folder" : attachment.kind === "file" || attachment.kind == null ? "file" : null;
-      if (!kind || (kind === "folder" && (!Number.isInteger(attachment.files) || attachment.files < 0))) return null;
+      const linked = kind === "folder" && attachment.storage === "linked";
+      if (linked) {
+        if (attachment.bytes !== null || attachment.files !== null) return null;
+      } else {
+        if (typeof attachment.bytes !== "number" || !Number.isFinite(attachment.bytes) || attachment.bytes < 0) return null;
+        if (!kind || (kind === "folder" && (!Number.isInteger(attachment.files) || attachment.files < 0))) return null;
+      }
       const result = { path: attachment.path, name: attachment.name, bytes: attachment.bytes, kind };
       if (kind === "folder") result.files = attachment.files;
+      if (linked) result.storage = "linked";
       return result;
     }).filter(Boolean).slice(0, 20);
     if (attachments.length > 0) envelope.attachments = attachments;
@@ -110,5 +116,6 @@ selected.id and annotation weaveId are values of data-weave-id attributes.
 If a snapshot and an id disagree, prefer the id.
 overflowing lists data-weave-ids whose rendered box leaves the slide frame or exceeds its own content box; it is a rendering result the agent cannot measure on its own.
 attachments are files the human brought in for this turn, addressed by paths relative to the project root.
-Folder attachments are project-relative directories; their contents are not enumerated in the envelope.
+Folder attachments with storage="linked" refer directly to the absolute source path supplied by the server. Read source, not the logical path in references/. Treat these folders as read-only reference materials; never modify or delete them. Read only the files needed for the request, without recursively indexing the whole folder.
+Other folder attachments are project-relative directories. Folder contents are not enumerated in the envelope.
 Their contents are not included; open the files yourself when needed, and use available tools to convert formats you cannot read directly.`;

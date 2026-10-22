@@ -60,6 +60,11 @@ function isChatToolThread(thread) {
   return typeof thread?.name === "string" && thread.name.includes(CHAT_TOOL_MARKER);
 }
 
+function isSubagentThread(thread) {
+  return Boolean(thread?.parentThreadId || thread?.threadSource === "subagent" ||
+    (typeof thread?.source === "object" && thread.source !== null && "subAgent" in thread.source));
+}
+
 function isEditorThread(thread) {
   return typeof thread?.name === "string" && thread.name.includes(EDITOR_THREAD_MARKER);
 }
@@ -339,6 +344,14 @@ export class CodexService extends EventEmitter {
   handleNotification(message) {
     const { method, params = {} } = message;
     const internalEditor = this.isInternalEditorNotification(method, params);
+    // Native subagents are separate from Weave's delegated editor threads.
+    if (isSubagentThread(params.thread)) return;
+    if (method === "thread/started") {
+      if (!internalEditor && !this.isWeaveThread(params.thread)) return;
+      this.weaveThreadIds.add(params.thread.id);
+    }
+    const notificationThreadId = params.threadId ?? params.thread?.id;
+    if (notificationThreadId && !internalEditor && !this.weaveThreadIds.has(notificationThreadId) && !this.activeTurns.has(notificationThreadId)) return;
     if (method === "turn/started") {
       const threadId = params.threadId ?? params.thread?.id;
       const turnId = params.turn?.id ?? params.turnId;
@@ -393,6 +406,7 @@ export class CodexService extends EventEmitter {
     const expectedRoot = expectedCwd ?? knownCwd ?? null;
     const threadCwd = typeof thread?.cwd === "string" ? resolve(thread.cwd) : null;
     return (
+      !isSubagentThread(thread) &&
       threadCwd !== null &&
       (expectedRoot === null ? isWithinRoot(this.workspaceRoot, threadCwd) : threadCwd === expectedRoot) &&
       (
@@ -432,14 +446,13 @@ export class CodexService extends EventEmitter {
     });
     const checked = await Promise.all((result.data ?? []).map(async (thread) => {
       if (
-        typeof thread.cwd === "string" &&
-        isWithinRoot(this.workspaceRoot, resolve(thread.cwd)) &&
-        !isEditorThread(thread) &&
+        !isSubagentThread(thread) && !isEditorThread(thread) &&
+        typeof thread.cwd === "string" && isWithinRoot(this.workspaceRoot, resolve(thread.cwd)) &&
         (thread.threadSource === WEAVE_THREAD_SOURCE || isChatToolThread(thread) || this.weaveThreadIds.has(thread.id))
       ) return thread;
       try {
         const read = await this.client.request("thread/read", { threadId: thread.id, includeTurns: false });
-        return !isEditorThread(read.thread) && read.thread?.threadSource === WEAVE_THREAD_SOURCE && typeof read.thread?.cwd === "string" && isWithinRoot(this.workspaceRoot, resolve(read.thread.cwd))
+        return !isEditorThread(read.thread) && this.isWeaveThread(read.thread) && read.thread?.threadSource === WEAVE_THREAD_SOURCE
           ? { ...thread, threadSource: WEAVE_THREAD_SOURCE }
           : null;
       } catch {

@@ -158,8 +158,6 @@ function applyEvent(state: CodexUIState, method: string, params: Record<string, 
     hydrateThread(state, params.thread);
     if (editorEvent) {
       state.threads[params.thread.id] = threadFrom({ id: params.thread.id, purpose: "editor" }, state.threads[params.thread.id]);
-    } else {
-      state.activeThreadId = params.thread.id;
     }
     return;
   }
@@ -194,8 +192,7 @@ function applyEvent(state: CodexUIState, method: string, params: Record<string, 
     ensureTurn(state, threadId, turn.id);
     if (editorEvent) {
       state.threads[threadId] = threadFrom({ id: threadId, purpose: "editor" }, state.threads[threadId]);
-    } else {
-      state.activeThreadId = threadId;
+    } else if (state.activeThreadId === threadId) {
       state.activeTurnId = turn.id;
     }
     return;

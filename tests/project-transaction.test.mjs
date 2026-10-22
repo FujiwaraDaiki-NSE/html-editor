@@ -530,6 +530,32 @@ test("restoring a rejected turn also restores the generated stylesheet", async (
   }
 });
 
+test("saved decks round-trip through Agent recovery without template or scope changes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weave-written-recovery-"));
+  const previousRoot = process.env.WEAVE_PROJECT_ROOT;
+  process.env.WEAVE_PROJECT_ROOT = root;
+  let snapshot = null;
+  let project;
+  try {
+    project = await import(`../server/project.mjs?written-recovery=${Date.now()}`);
+    const { createEditorChangeSet } = await import("../shared/editor-workflow.mjs");
+    await project.ensureProject();
+    const initial = await project.readProject(root);
+    const saved = await project.writeProject(initial, project.getRevision(root), root);
+    assert.deepEqual(saved, await project.readProject(root));
+    snapshot = await project.createRecoverySnapshot({ baseRevision: project.getRevision(root), deck: saved, css: await project.readDeckCss(root) }, root);
+    const [recovered] = await project.readRecoverySnapshots(root);
+    assert.deepEqual(createEditorChangeSet(recovered.baseDeck, await project.readProject(root), "Agent turn").changes, []);
+    await project.writeProjectUnlocked(recovered.baseDeck, null, root);
+    assert.deepEqual(await project.readProject(root), saved);
+  } finally {
+    if (snapshot) await project.discardRecoverySnapshot(snapshot, root);
+    if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
+    else process.env.WEAVE_PROJECT_ROOT = previousRoot;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("recovery snapshots persist human edits and queued milestones across reload", async () => {
   const root = await mkdtemp(join(tmpdir(), "weave-recovery-draft-"));
   const previousRoot = process.env.WEAVE_PROJECT_ROOT;
@@ -666,5 +692,198 @@ test("a discarded variation can restore the dirty draft it inherited", async () 
     if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
     else process.env.WEAVE_PROJECT_ROOT = previousRoot;
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("uploaded reference folders preserve nested files and attach one folder entry", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weave-upload-folder-"));
+  try {
+    const project = await import("../server/project.mjs");
+    const files = [
+      { path: "資料/docs/設計.txt", file: new File(["設計内容"], "設計.txt") },
+      { path: "資料/empty.txt", file: new File([], "empty.txt") },
+      { path: "資料/.env", file: new File(["secret"], ".env") },
+    ];
+    let recorded;
+    const entry = await project.importUploadedReferenceFolder(files, root, (stored) => { recorded = stored; });
+    assert.equal(entry.kind, "folder");
+    assert.equal(entry.files, 2);
+    assert.equal(recorded.path, entry.path);
+    assert.equal("source" in entry, false);
+    assert.equal(await readFile(join(root, entry.path, "docs/設計.txt"), "utf8"), "設計内容");
+    assert.equal(await readFile(join(root, entry.path, "empty.txt"), "utf8"), "");
+    assert.equal((await readdir(join(root, entry.path))).includes(".env"), false);
+    assert.equal((await project.readReferences(root))[0].path, entry.path);
+    const second = await project.importUploadedReferenceFolder(files, root);
+    assert.notEqual(second.path, entry.path);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("uploaded folders reject unsafe paths, duplicates, limits, and partial writes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weave-upload-invalid-"));
+  const project = await import("../server/project.mjs");
+  const file = new File(["test"], "test.txt");
+  try {
+    for (const path of ["../escape.txt", "/absolute/file.txt", "folder/../escape.txt", "folder//file", "folder/./file", "folder\\file", "C:/file", "folder/\u0000file", "file.txt"]) {
+      await assert.rejects(project.importUploadedReferenceFolder([{ path, file }], root), /Invalid folder file path/);
+    }
+    await assert.rejects(project.importUploadedReferenceFolder([{ path: "a/x", file }, { path: "b/y", file }], root), /one folder/);
+    await assert.rejects(project.importUploadedReferenceFolder([{ path: "a/x", file }, { path: "a/x", file }], root), /duplicate/);
+    await assert.rejects(project.importUploadedReferenceFolder([], root), /1–2,000/);
+    await assert.rejects(project.importUploadedReferenceFolder(Array(2001).fill({ path: "a/x", file }), root), /1–2,000/);
+    const huge = new File([], "huge");
+    Object.defineProperty(huge, "size", { value: 501 * 1024 * 1024 });
+    await assert.rejects(project.importUploadedReferenceFolder([{ path: "a/huge", file: huge }], root), /exceeds/);
+    await assert.rejects(project.importUploadedReferenceFolder([{ path: "a/.env", file }], root), /no visible/);
+    // A file/directory conflict must leave neither a shelf entry nor partial data.
+    await assert.rejects(project.importUploadedReferenceFolder([{ path: "a/x", file }, { path: "a/x/y", file }], root));
+    assert.deepEqual(await readdir(join(root, "references")), []);
+    assert.deepEqual(await project.readReferences(root), []);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("folder upload records preservation before queued Agent finalization and rejects later imports", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weave-upload-finalizing-"));
+  const project = await import("../server/project.mjs");
+  const snapshot = await project.createAgentFileSnapshot(root);
+  let acceptingDrafts = true;
+  let releaseRead;
+  let reading;
+  const readStarted = new Promise((resolve) => { reading = resolve; });
+  const heldRead = new Promise((resolve) => { releaseRead = resolve; });
+  const file = new File(["preserved"], "brief.txt");
+  const arrayBuffer = file.arrayBuffer.bind(file);
+  file.arrayBuffer = async () => { reading(); await heldRead; return arrayBuffer(); };
+  let path;
+  try {
+    const upload = project.importUploadedReferenceFolder([{ path: "docs/brief.txt", file }], root, async (entry) => {
+      assert.equal(acceptingDrafts, true);
+      path = entry.path;
+      await project.captureAgentFilePreservation(snapshot, path, root);
+    }, () => { if (!acceptingDrafts) throw new Error("finalizing"); });
+    await readStarted;
+    const completion = project.runProjectExclusive(async () => {
+      acceptingDrafts = false;
+      await project.restoreAgentFileSnapshot(snapshot, root, { preserve: [path] });
+    }, root);
+    releaseRead();
+    await Promise.all([upload, completion]);
+    assert.equal(await readFile(join(root, path, "brief.txt"), "utf8"), "preserved");
+    await assert.rejects(project.importUploadedReferenceFolder([{ path: "later/brief.txt", file }], root, null, () => { if (!acceptingDrafts) throw new Error("finalizing"); }), /finalizing/);
+  } finally {
+    await project.discardAgentFileSnapshot(snapshot, root);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("all human file mutations check finalization under the project lock before writing", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weave-file-finalizing-"));
+  const project = await import("../server/project.mjs");
+  const rejectFinalizing = () => { throw new Error("finalizing"); };
+  try {
+    for (const [mutate, payload] of [
+      [project.importImageAsset, { data: "eA==", mimeType: "image/png" }],
+      [project.importReference, { data: "eA==", name: "x.txt" }],
+      [project.importReferenceFolder, { source: root }],
+      [project.syncReferenceFolder, "references/docs"],
+      [project.removeReference, "references/docs"],
+      [project.importUploadedReferenceFolder, [{ path: "docs/x", file: new File(["x"], "x") }]],
+    ]) await assert.rejects(mutate(payload, root, null, rejectFinalizing), /finalizing/);
+    assert.deepEqual(await readdir(root), []);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("registered home folders store only paths, have no size limit, and never delete the source", async () => {
+  const home = await mkdtemp(join(tmpdir(), "weave-linked-home-"));
+  const root = join(home, "project");
+  const source = join(home, "資料");
+  const previousHome = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    const project = await import("../server/project.mjs");
+    await mkdir(source, { recursive: true });
+    await writeFile(join(source, "brief.txt"), "first");
+    await Promise.all(Array.from({ length: 2001 }, (_, index) => writeFile(join(source, `item-${index}.txt`), "x")));
+    const { open } = await import("node:fs/promises");
+    const large = await open(join(source, "large.bin"), "w");
+    await large.truncate(501 * 1024 * 1024);
+    await large.close();
+    let stored;
+    const entry = await project.registerReferenceFolder({ source }, root, (value) => { stored = value; });
+    assert.equal(entry.storage, "linked");
+    assert.equal(entry.source, source);
+    assert.equal(entry.files, null);
+    assert.equal(entry.size, null);
+    assert.deepEqual(stored, entry);
+    await assert.rejects(project.syncReferenceFolder(entry.path, root), /do not require synchronization/);
+    assert.deepEqual(await readdir(join(root, "references")), ["index.json"]);
+    assert.equal((await project.readReferences(root))[0].size, null);
+    assert.equal((await project.readReferences(root))[0].missing, false);
+    await assert.rejects(project.registerReferenceFolder({ source }, root), /already registered/);
+    const attachment = { path: entry.path, source: "/untrusted/path", bytes: 999, name: "forged" };
+    const [resolved] = await project.resolveReferenceAttachments([attachment], root);
+    assert.equal(resolved.source, source);
+    assert.equal(resolved.name, "資料");
+    assert.equal(resolved.bytes, null);
+    await writeFile(join(source, "brief.txt"), "updated");
+    assert.equal(await readFile(join(resolved.source, "brief.txt"), "utf8"), "updated");
+    await project.removeReference(entry.path, root);
+    assert.deepEqual(await project.readReferences(root), []);
+    assert.equal(await readFile(join(source, "brief.txt"), "utf8"), "updated");
+    await assert.rejects(project.resolveReferenceAttachments([attachment], root), /missing/);
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("home folder registration includes hidden folders and internal links but rejects escaping links", async () => {
+  const home = await mkdtemp(join(tmpdir(), "weave-linked-boundary-"));
+  const outside = await mkdtemp(join(tmpdir(), "weave-linked-outside-"));
+  const root = join(home, "project");
+  const previousHome = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    const project = await import("../server/project.mjs");
+    await mkdir(join(home, ".hidden"));
+    await symlink(join(home, ".hidden"), join(home, "internal"));
+    await symlink(outside, join(home, "external"));
+    const listing = await project.listFolders(home);
+    assert.deepEqual(listing.folders.map(({ name }) => name).sort(), [".hidden", "internal"]);
+    await assert.rejects(project.registerReferenceFolder({ source: outside }, root), /inside the home/);
+    await assert.rejects(project.registerReferenceFolder({ source: join(home, "external") }, root), /inside the home/);
+    await assert.rejects(project.registerReferenceFolder({ source: "relative" }, root), /absolute/);
+    const entry = await project.registerReferenceFolder({ source: join(home, "internal") }, root);
+    assert.equal(entry.source, join(home, ".hidden"));
+    await rm(join(home, ".hidden"), { recursive: true });
+    assert.equal((await project.readReferences(root))[0].missing, true);
+    await assert.rejects(project.resolveReferenceAttachments([{ path: entry.path }], root), /missing/);
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+    await rm(home, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("reference attachment resolution stays with the initiating project when paths overlap", async () => {
+  const home = await mkdtemp(join(tmpdir(), "weave-reference-projects-"));
+  const previousHome = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    const project = await import("../server/project.mjs");
+    const roots = [join(home, "project-a"), join(home, "project-b")];
+    const sources = [join(home, "source-a"), join(home, "source-b")];
+    for (let i = 0; i < roots.length; i++) {
+      await mkdir(join(roots[i], "references"), { recursive: true });
+      await mkdir(sources[i]);
+      await writeFile(join(roots[i], "references/index.json"), JSON.stringify({ entries: [{ path: "references/shared", name: `source-${i}`, kind: "folder", storage: "linked", source: sources[i], size: null, files: null }] }));
+    }
+    const request = [{ path: "references/shared" }];
+    const [a, b] = await Promise.all(roots.map((root) => project.resolveReferenceAttachments(request, root)));
+    assert.equal(a[0].source, sources[0]);
+    assert.equal(b[0].source, sources[1]);
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+    await rm(home, { recursive: true, force: true });
   }
 });
