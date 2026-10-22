@@ -544,6 +544,8 @@ export default function Home() {
   const viewportRef = useRef<HTMLDivElement>(null);
   const annotationScrollRef = useRef<HTMLDivElement>(null);
   const presenterRef = useRef<HTMLDivElement>(null);
+  const slideShellRef = useRef<HTMLDivElement>(null);
+  const slideWheelRef = useRef({ delta: 0, lastEvent: 0, switched: false });
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
@@ -2474,6 +2476,38 @@ export default function Home() {
     reinject();
   };
 
+  useEffect(() => {
+    const surface = showPresenter ? presenterRef.current?.querySelector<HTMLElement>(".presenter-stage") : slideShellRef.current;
+    if (!surface || galleryOpen) return;
+    const onWheel = (event: WheelEvent) => {
+      if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+      if (!showPresenter && (editingId || draggedId || annotationGestureRef.current || pointerPicking)) return;
+      const target = event.target;
+      if (!(target instanceof Element) || target.closest('input, textarea, select, [contenteditable="true"], button')) return;
+      // Let scrollable slide content and zoomed canvases retain their own scrolling.
+      for (let node: Element | null = target; node; node = node.parentElement) {
+        const overflow = getComputedStyle(node).overflowY;
+        if (/(auto|scroll)/.test(overflow) && node.scrollHeight > node.clientHeight + 1) return;
+        if (node.classList.contains("canvas-area") || node.classList.contains("presenter")) break;
+      }
+      event.preventDefault();
+      const now = performance.now();
+      const gesture = slideWheelRef.current;
+      if (now - gesture.lastEvent > 180) { gesture.delta = 0; gesture.switched = false; }
+      gesture.lastEvent = now;
+      if (gesture.switched) return;
+      if (Math.sign(gesture.delta) !== Math.sign(event.deltaY)) gesture.delta = 0;
+      gesture.delta += event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? surface.clientHeight : 1);
+      if (Math.abs(gesture.delta) < 40) return;
+      gesture.switched = true;
+      const direction = Math.sign(gesture.delta);
+      if (showPresenter) setPresentSlide((value) => Math.max(1, Math.min(slides.length, value + direction)));
+      else switchSlide(activeRef.current + direction);
+    };
+    surface.addEventListener("wheel", onWheel, { passive: false });
+    return () => surface.removeEventListener("wheel", onWheel);
+  });
+
   const moveSlide = (direction: -1 | 1) => {
     const target = activeRef.current - 1 + direction;
     if (target < 0 || target >= slidesRef.current.length) return;
@@ -3868,7 +3902,7 @@ export default function Home() {
                 </div>
               </section>
             ) : mode === "preview" ? (
-              <div className={`slide-shell ${previewHighlightSlideId === activeSlideId ? "agent-preview-highlight" : ""}`}>
+              <div ref={slideShellRef} className={`slide-shell ${previewHighlightSlideId === activeSlideId ? "agent-preview-highlight" : ""}`}>
                 {/* The project stylesheet is the only thing styling the slide; the editor's
                     own chrome lives in globals.css and never overlaps these rules. */}
                 <style>{deckCss}</style>
