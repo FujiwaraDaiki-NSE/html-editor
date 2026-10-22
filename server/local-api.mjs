@@ -18,7 +18,8 @@ import {
   importImageAsset,
   assetMimeTypes,
   importReference,
-  importReferenceFolder,
+  registerReferenceFolder,
+  resolveReferenceAttachments,
   importUploadedReferenceFolder,
   listFolders,
   readReferences,
@@ -445,9 +446,10 @@ function validateAgentResult(workflow, base, agent) {
   return { ...checked, changeSet };
 }
 
-function serializeEditorContext(payload) {
+async function serializeEditorContext(payload) {
   if (!payload.contextEnvelope || typeof payload.contextEnvelope !== "object") return "";
   const envelope = editorEnvelope(payload.contextEnvelope);
+  if (envelope.attachments) envelope.attachments = await resolveReferenceAttachments(envelope.attachments);
   if (Object.keys(envelope).length === 0) return "";
   const annotations = Array.isArray(envelope.annotations) ? envelope.annotations : [];
   const annotationRules = annotations.length > 0 ? `\n\nAnnotation interpretation rules:\n${annotationPromptRules}` : "";
@@ -490,7 +492,7 @@ async function startEditorTurn(payload, { variation = false } = {}) {
 
 The latest editor state has been written to slides/*.html.
 Inspect the current project and edit the slides/*.html files directly. Do not edit styles/deck.css.
-Do not commit; Weave will commit after this turn.${serializeEditorContext(payload)}`;
+Do not commit; Weave will commit after this turn.${await serializeEditorContext(payload)}`;
     const result = await codex.startTurn({
       threadId: thread.id,
       prompt: context,
@@ -821,7 +823,7 @@ const server = createServer(async (request, response) => {
       const root = requestProjectRoot;
       if (root !== projectRoot()) return sendJson(request, response, 409, { error: "The project changed while the import was being received.", code: "WEAVE_PROJECT_CHANGED" });
       if (startingRoots.has(root)) return sendJson(request, response, 409, { error: "Agent setup is capturing the project. Retry the import.", code: "WEAVE_AGENT_STARTING" });
-      const reference = await runProjectLifecycle(() => importReferenceFolder(payload, root, (stored, entry) => recordHumanFileMutation([...pendingTurns.values()].find((turn) => turn.root === root), { path: stored.path, entry }), () => assertHumanFileMutationReady(root)), { allowPending: true });
+      const reference = await runProjectLifecycle(() => registerReferenceFolder(payload, root, (stored, entry) => recordHumanFileMutation([...pendingTurns.values()].find((turn) => turn.root === root), { path: stored.path, entry }), () => assertHumanFileMutationReady(root)), { allowPending: true });
       return sendJson(request, response, 201, reference);
     }
     if (url.pathname === "/api/references/folder/sync") {
@@ -974,7 +976,7 @@ const server = createServer(async (request, response) => {
         pending.threadId = payload.threadId;
         pendingTurns.set(payload.threadId, pending);
         startingRoots.delete(root);
-        const result = await codex.startTurn({ ...payload, prompt: `${prompt}${serializeEditorContext(payload)}` });
+        const result = await codex.startTurn({ ...payload, prompt: `${prompt}${await serializeEditorContext(payload)}` });
         startProjectPreview(pending, payload.threadId, result.turn.id);
         await updateRecoverySnapshot(recoverySnapshot, { workflow, status: "running", threadId: payload.threadId, turnId: result.turn.id }, root);
         return sendJson(request, response, 202, result);
@@ -995,7 +997,7 @@ const server = createServer(async (request, response) => {
     if (url.pathname === "/api/codex/turn/steer") {
       const prompt = requireTurnPrompt(payload);
       // Steer only tells the agent what to point at; writing the DOM here could overwrite its in-progress file edits.
-      return sendJson(request, response, 202, await codex.steerTurn({ ...payload, prompt: `${prompt}${serializeEditorContext(payload)}` }));
+      return sendJson(request, response, 202, await codex.steerTurn({ ...payload, prompt: `${prompt}${await serializeEditorContext(payload)}` }));
     }
     if (url.pathname === "/api/codex/turn/interrupt") {
       return sendJson(request, response, 202, await codex.interruptTurn(payload.threadId));

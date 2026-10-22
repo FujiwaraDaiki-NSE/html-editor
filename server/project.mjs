@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { access, cp, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { access, cp, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { performance } from "node:perf_hooks";
@@ -217,7 +217,10 @@ description required, and put the instructions in its body. These embedded-agent
 belong to the current project; do not save them in the common user skill directory.
 
 Files under references/ are materials brought in by a human through chat. Open and read the paths
-provided in the envelope's attachments yourself. pptx, docx, and xlsx files are zip archives, so
+provided in the envelope's attachments yourself. Folder entries with storage="linked" use their
+absolute source path instead of their logical references/ path. These folders are read-only
+reference materials: read only what is needed and never modify or delete them.
+pptx, docx, and xlsx files are zip archives, so
 extract them to read their XML. The references/index.json file is the catalogue of materials in the
 project shelf; read it when you need to know what is available beyond this turn's attachments. If a
 format cannot be read with the available tools, tell the human.`;
@@ -341,15 +344,8 @@ export async function walkReferenceFolder(source, timeBudgetMs = 5_000) {
 }
 
 async function referenceFolderSource(source) {
-  const requested = resolve(String(source ?? ""));
-  let originalInfo;
-  try {
-    originalInfo = await lstat(requested);
-  } catch (error) {
-    if (error.code === "ENOENT") throw new Error("Invalid folder: it does not exist.");
-    throw error;
-  }
-  if (originalInfo.isSymbolicLink()) throw new Error("Invalid reference folder: it must be a real directory.");
+  if (typeof source !== "string" || !isAbsolute(source)) throw new Error("An absolute reference folder path is required.");
+  const requested = resolve(source);
   const home = await homePath();
   let resolved;
   try {
@@ -359,7 +355,7 @@ async function referenceFolderSource(source) {
     throw error;
   }
   if (!pathInside(home, resolved)) throw new Error("Invalid folder: it must be inside the home directory.");
-  if (!originalInfo.isDirectory()) throw new Error("Invalid reference folder: it must be a directory.");
+  if (!(await stat(resolved)).isDirectory()) throw new Error("Invalid reference folder: it must be a directory.");
   return resolved;
 }
 
@@ -371,9 +367,12 @@ export async function listFolders(path = homedir()) {
   const breadcrumbs = [{ name: "Home", path: home }];
   parts.forEach((part, index) => breadcrumbs.push({ name: part, path: join(home, ...parts.slice(0, index + 1)) }));
   const directEntries = await readdir(source, { withFileTypes: true });
-  const visibleEntries = directEntries.filter((entry) => !entry.name.startsWith(".") && !entry.isSymbolicLink());
-  const folders = visibleEntries
-    .filter((entry) => entry.isDirectory())
+  const linkedFolders = new Set();
+  await Promise.all(directEntries.filter((entry) => entry.isSymbolicLink()).map(async (entry) => {
+    try { await referenceFolderSource(join(source, entry.name)); linkedFolders.add(entry.name); } catch { /* Broken links and links outside home are not browsable. */ }
+  }));
+  const folders = directEntries
+    .filter((entry) => entry.isDirectory() || linkedFolders.has(entry.name))
     .map((entry) => ({ name: entry.name, path: join(source, entry.name) }));
   return {
     path: source,
@@ -381,8 +380,41 @@ export async function listFolders(path = homedir()) {
     breadcrumbs,
     folders,
     folderCount: folders.length,
-    fileCount: visibleEntries.filter((entry) => entry.isFile()).length,
+    fileCount: directEntries.filter((entry) => entry.isFile()).length,
   };
+}
+
+export async function registerReferenceFolder({ source }, root = currentProjectRoot, onStored = null, beforeStore = null) {
+  return runProjectExclusive(async () => {
+    if (beforeStore) beforeStore();
+    const resolved = await referenceFolderSource(source);
+    const directory = referencesRoot(root);
+    await mkdir(directory, { recursive: true });
+    const indexPath = join(directory, "index.json");
+    let index;
+    try { index = JSON.parse(await readFile(indexPath, "utf8")); }
+    catch (error) { if (error.code !== "ENOENT") throw error; index = { entries: [] }; }
+    if (index.entries.some((entry) => entry.storage === "linked" && entry.source === resolved)) throw new Error("Reference folder is already registered.");
+    const entry = { path: `references/folder-${randomUUID()}`, name: basename(resolved), kind: "folder", storage: "linked", source: resolved, size: null, files: null, addedAt: new Date().toISOString() };
+    await atomicWriteJson(indexPath, { entries: [...index.entries, entry] });
+    if (onStored) await onStored(entry, entry);
+    return entry;
+  }, root);
+}
+
+export async function resolveReferenceAttachments(attachments, root = currentProjectRoot) {
+  const references = await readReferences(root);
+  return Promise.all(attachments.map(async (attachment) => {
+    const entry = references.find((item) => item.path === attachment.path);
+    if (!entry || entry.missing) throw new Error("A selected reference is missing. Select the reference again.");
+    const result = { path: entry.path, name: entry.name, kind: entry.kind, bytes: entry.size };
+    if (entry.kind === "folder") result.files = entry.files;
+    if (entry.storage === "linked") {
+      result.storage = "linked";
+      result.source = await referenceFolderSource(entry.source);
+    }
+    return result;
+  }));
 }
 
 export async function importReferenceFolder({ source }, root = currentProjectRoot, onStored = null, beforeStore = null) {
@@ -431,6 +463,7 @@ export async function syncReferenceFolder(path, root = currentProjectRoot, onSto
     const index = JSON.parse(await readFile(indexPath, "utf8"));
     const entry = index.entries?.find((item) => item?.path === path && item.kind === "folder");
     if (!entry) throw new Error("Reference folder not found.");
+    if (entry.storage === "linked") throw new Error("Registered folder paths are read directly and do not require synchronization.");
     if (!existsSync(entry.source)) return { references: await readReferences(root), sourceMissing: true };
     const source = await referenceFolderSource(entry.source);
     const summary = await walkReferenceFolder(source);
@@ -468,7 +501,7 @@ export async function readReferences(root = currentProjectRoot) {
   if (!Array.isArray(index?.entries)) return [];
   return index.entries
     .filter((entry) => entry && typeof entry.path === "string")
-    .map((entry) => ({ ...entry, kind: entry.kind === "folder" ? "folder" : "file", missing: !existsSync(join(root, entry.path)), ...(entry.kind === "folder" && entry.source ? { sourceMissing: !existsSync(entry.source) } : {}) }));
+    .map((entry) => ({ ...entry, kind: entry.kind === "folder" ? "folder" : "file", missing: !existsSync(entry.storage === "linked" ? entry.source : join(root, entry.path)), ...(entry.kind === "folder" && entry.source ? { sourceMissing: !existsSync(entry.source) } : {}) }));
 }
 
 export async function removeReference(path, root = currentProjectRoot, onStored = null, beforeStore = null) {
@@ -485,7 +518,8 @@ export async function removeReference(path, root = currentProjectRoot, onStored 
     if (!Array.isArray(index?.entries)) return [];
     const entries = index.entries.filter((entry) => entry?.path !== path);
     if (entries.length !== index.entries.length) await writeFile(indexPath, `${JSON.stringify({ entries }, null, 2)}\n`);
-    await rm(join(root, path), { recursive: true, force: true });
+    const removed = index.entries.find((entry) => entry?.path === path);
+    if (removed && removed.storage !== "linked") await rm(join(root, path), { recursive: true, force: true });
     const result = await readReferences(root);
     if (onStored) await onStored(result);
     return result;
