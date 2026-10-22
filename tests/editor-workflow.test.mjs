@@ -134,7 +134,7 @@ test("HTML source validation returns syntax, IDs, and boundary matrix", () => {
 });
 
 test("source editing accepts inline formatting and resolves a caret inside element text", () => {
-  const source = '<main data-weave-slide-source data-weave-template="cover" data-weave-layout="hero"><section data-weave-slot="content"><h1 data-weave-slot="title" data-weave-id="title">Title <em>now</em><br></h1></section></main>';
+  const source = '<main data-weave-slide-source data-weave-template="cover" data-weave-layout="hero"><section data-weave-slot="content"><h1 data-weave-slot="title" data-weave-id="title">Title <em>now</em><br></h1><div data-weave-id="metrics"><strong>42%</strong><span>less rework</span></div></section></main>';
   assert.deepEqual(validateEditableSlideSource(source), []);
   assert.equal(sourceElementIdAtOffset(source, source.indexOf("now") + 1), "title");
 });

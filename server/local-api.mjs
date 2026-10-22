@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { readFolderUpload } from "./reference-upload.mjs";
 import {
   acceptVariation,
   agentInstructions,
@@ -17,7 +18,9 @@ import {
   importImageAsset,
   assetMimeTypes,
   importReference,
-  importReferenceFolder,
+  registerReferenceFolder,
+  resolveReferenceAttachments,
+  importUploadedReferenceFolder,
   listFolders,
   readReferences,
   removeReference,
@@ -329,6 +332,11 @@ async function restoreAgentManagedFiles(task, { preserveSkills = false } = {}) {
   await writeFile(indexPath, `${JSON.stringify({ entries: [...entries.values()] }, null, 2)}\n`);
 }
 
+function assertHumanFileMutationReady(root) {
+  const pending = [...pendingTurns.values()].find((turn) => turn.root === root);
+  if (pending && !pending.acceptingDrafts) throw Object.assign(new Error("Agent changes are being finalized. Retry adding references after completion."), { code: "WEAVE_TURN_RUNNING" });
+}
+
 async function recordHumanFileMutation(pending, { path, entry = null, remove = false }) {
   if (!pending || typeof path !== "string" || !pending.acceptingDrafts || pendingTurns.get(pending.threadId) !== pending) return;
   pending.humanFilePaths = (pending.humanFilePaths ?? []).filter((item) => item !== path);
@@ -438,9 +446,10 @@ function validateAgentResult(workflow, base, agent) {
   return { ...checked, changeSet };
 }
 
-function serializeEditorContext(payload) {
+async function serializeEditorContext(payload, root) {
   if (!payload.contextEnvelope || typeof payload.contextEnvelope !== "object") return "";
   const envelope = editorEnvelope(payload.contextEnvelope);
+  if (envelope.attachments) envelope.attachments = await resolveReferenceAttachments(envelope.attachments, root);
   if (Object.keys(envelope).length === 0) return "";
   const annotations = Array.isArray(envelope.annotations) ? envelope.annotations : [];
   const annotationRules = annotations.length > 0 ? `\n\nAnnotation interpretation rules:\n${annotationPromptRules}` : "";
@@ -483,7 +492,7 @@ async function startEditorTurn(payload, { variation = false } = {}) {
 
 The latest editor state has been written to slides/*.html.
 Inspect the current project and edit the slides/*.html files directly. Do not edit styles/deck.css.
-Do not commit; Weave will commit after this turn.${serializeEditorContext(payload)}`;
+Do not commit; Weave will commit after this turn.${await serializeEditorContext(payload, root)}`;
     const result = await codex.startTurn({
       threadId: thread.id,
       prompt: context,
@@ -516,6 +525,7 @@ Do not commit; Weave will commit after this turn.${serializeEditorContext(payloa
 
 async function restoreFailedTurn(pending) {
   await runProjectExclusive(async () => {
+    pending.acceptingDrafts = false;
     if (pending.variation) {
       const current = await readProject(pending.root).catch(() => null);
       if (pending.branch && current && JSON.stringify(current) === JSON.stringify(pending.baseDeck)) discardVariation(pending.branch, pending.root);
@@ -533,7 +543,6 @@ codex.on("notification", (message) => {
   const threadId = message.params?.threadId;
   const pending = pendingTurns.get(threadId);
   if (!pending) return;
-  pending.acceptingDrafts = false;
   pending.previewMonitor?.stop();
   void (async () => {
     const status = message.params?.turn?.status;
@@ -561,6 +570,7 @@ codex.on("notification", (message) => {
     }
     try {
       await runProjectExclusive(async () => {
+        pending.acceptingDrafts = false;
         const agentDeck = await readProject(pending.root);
         const scopeCheck = validateAgentResult(pending.workflow, pending.baseDeck, agentDeck);
         if (!scopeCheck.ok) throw Object.assign(new Error("Agent result exceeded the selected modification scope."), { code: "WEAVE_SCOPE_VIOLATION", diagnostics: scopeCheck.violations });
@@ -699,6 +709,16 @@ const server = createServer(async (request, response) => {
     }
 
     if (request.method !== "GET" && request.method !== "POST" && request.method !== "PATCH" && request.method !== "DELETE") return sendJson(request, response, 404, { error: "Not found." });
+    if (url.pathname === "/api/references/folder/upload") {
+      const root = requestProjectRoot;
+      const files = await readFolderUpload(request);
+      if (root !== projectRoot()) return sendJson(request, response, 409, { error: "The project changed while the upload was being received.", code: "WEAVE_PROJECT_CHANGED" });
+      if (startingRoots.has(root)) return sendJson(request, response, 409, { error: "Agent setup is capturing the project. Retry the import.", code: "WEAVE_AGENT_STARTING" });
+      const reference = await runProjectLifecycle(() => importUploadedReferenceFolder(files, root,
+        (stored, entry) => recordHumanFileMutation([...pendingTurns.values()].find((turn) => turn.root === root), { path: stored.path, entry }),
+        () => assertHumanFileMutationReady(root)), { allowPending: true });
+      return sendJson(request, response, 201, reference);
+    }
     const payload = await readJson(request, url.pathname === "/api/assets" ? 14_000_000 : url.pathname === "/api/references" ? 36_000_000 : ["/api/save", "/api/draft", "/api/milestones"].includes(url.pathname) ? 5_000_000 : 1_500_000);
 
     if (request.method === "POST" && url.pathname === "/api/projects") {
@@ -789,35 +809,35 @@ const server = createServer(async (request, response) => {
       const root = requestProjectRoot;
       if (root !== projectRoot()) return sendJson(request, response, 409, { error: "The project changed while the upload was being received.", code: "WEAVE_PROJECT_CHANGED" });
       if (startingRoots.has(root)) return sendJson(request, response, 409, { error: "Agent setup is capturing the project. Retry the upload.", code: "WEAVE_AGENT_STARTING" });
-      const asset = await runProjectLifecycle(() => importImageAsset(payload, root, (stored) => recordHumanFileMutation([...pendingTurns.values()].find((turn) => turn.root === root), { path: stored.path })), { allowPending: true });
+      const asset = await runProjectLifecycle(() => importImageAsset(payload, root, (stored) => recordHumanFileMutation([...pendingTurns.values()].find((turn) => turn.root === root), { path: stored.path }), () => assertHumanFileMutationReady(root)), { allowPending: true });
       return sendJson(request, response, 201, asset);
     }
     if (url.pathname === "/api/references") {
       const root = requestProjectRoot;
       if (root !== projectRoot()) return sendJson(request, response, 409, { error: "The project changed while the import was being received.", code: "WEAVE_PROJECT_CHANGED" });
       if (startingRoots.has(root)) return sendJson(request, response, 409, { error: "Agent setup is capturing the project. Retry the import.", code: "WEAVE_AGENT_STARTING" });
-      const reference = await runProjectLifecycle(() => importReference(payload, root, (stored, entry) => recordHumanFileMutation([...pendingTurns.values()].find((turn) => turn.root === root), { path: stored.path, entry })), { allowPending: true });
+      const reference = await runProjectLifecycle(() => importReference(payload, root, (stored, entry) => recordHumanFileMutation([...pendingTurns.values()].find((turn) => turn.root === root), { path: stored.path, entry }), () => assertHumanFileMutationReady(root)), { allowPending: true });
       return sendJson(request, response, 201, reference);
     }
     if (url.pathname === "/api/references/folder") {
       const root = requestProjectRoot;
       if (root !== projectRoot()) return sendJson(request, response, 409, { error: "The project changed while the import was being received.", code: "WEAVE_PROJECT_CHANGED" });
       if (startingRoots.has(root)) return sendJson(request, response, 409, { error: "Agent setup is capturing the project. Retry the import.", code: "WEAVE_AGENT_STARTING" });
-      const reference = await runProjectLifecycle(() => importReferenceFolder(payload, root, (stored, entry) => recordHumanFileMutation([...pendingTurns.values()].find((turn) => turn.root === root), { path: stored.path, entry })), { allowPending: true });
+      const reference = await runProjectLifecycle(() => registerReferenceFolder(payload, root, (stored, entry) => recordHumanFileMutation([...pendingTurns.values()].find((turn) => turn.root === root), { path: stored.path, entry }), () => assertHumanFileMutationReady(root)), { allowPending: true });
       return sendJson(request, response, 201, reference);
     }
     if (url.pathname === "/api/references/folder/sync") {
       const root = requestProjectRoot;
       if (root !== projectRoot()) return sendJson(request, response, 409, { error: "The project changed while the update was being received.", code: "WEAVE_PROJECT_CHANGED" });
       if (startingRoots.has(root)) return sendJson(request, response, 409, { error: "Agent setup is capturing the project. Retry the update.", code: "WEAVE_AGENT_STARTING" });
-      const result = await runProjectLifecycle(() => syncReferenceFolder(payload.path, root, (_stored, entry) => recordHumanFileMutation([...pendingTurns.values()].find((turn) => turn.root === root), { path: payload.path, entry })), { allowPending: true });
+      const result = await runProjectLifecycle(() => syncReferenceFolder(payload.path, root, (_stored, entry) => recordHumanFileMutation([...pendingTurns.values()].find((turn) => turn.root === root), { path: payload.path, entry }), () => assertHumanFileMutationReady(root)), { allowPending: true });
       return sendJson(request, response, 200, result);
     }
     if (url.pathname === "/api/references/remove") {
       const root = requestProjectRoot;
       if (root !== projectRoot()) return sendJson(request, response, 409, { error: "The project changed while the removal was being received.", code: "WEAVE_PROJECT_CHANGED" });
       if (startingRoots.has(root)) return sendJson(request, response, 409, { error: "Agent setup is capturing the project. Retry the removal.", code: "WEAVE_AGENT_STARTING" });
-      const references = await runProjectLifecycle(() => removeReference(payload.path, root, () => recordHumanFileMutation([...pendingTurns.values()].find((turn) => turn.root === root), { path: payload.path, remove: true })), { allowPending: true });
+      const references = await runProjectLifecycle(() => removeReference(payload.path, root, () => recordHumanFileMutation([...pendingTurns.values()].find((turn) => turn.root === root), { path: payload.path, remove: true }), () => assertHumanFileMutationReady(root)), { allowPending: true });
       return sendJson(request, response, 200, { references });
     }
 
@@ -956,7 +976,7 @@ const server = createServer(async (request, response) => {
         pending.threadId = payload.threadId;
         pendingTurns.set(payload.threadId, pending);
         startingRoots.delete(root);
-        const result = await codex.startTurn({ ...payload, prompt: `${prompt}${serializeEditorContext(payload)}` });
+        const result = await codex.startTurn({ ...payload, prompt: `${prompt}${await serializeEditorContext(payload, root)}` });
         startProjectPreview(pending, payload.threadId, result.turn.id);
         await updateRecoverySnapshot(recoverySnapshot, { workflow, status: "running", threadId: payload.threadId, turnId: result.turn.id }, root);
         return sendJson(request, response, 202, result);
@@ -976,8 +996,10 @@ const server = createServer(async (request, response) => {
     }
     if (url.pathname === "/api/codex/turn/steer") {
       const prompt = requireTurnPrompt(payload);
+      const pending = pendingTurns.get(payload.threadId);
+      if (!pending) return sendJson(request, response, 409, { error: "No running Agent task was found for this thread." });
       // Steer only tells the agent what to point at; writing the DOM here could overwrite its in-progress file edits.
-      return sendJson(request, response, 202, await codex.steerTurn({ ...payload, prompt: `${prompt}${serializeEditorContext(payload)}` }));
+      return sendJson(request, response, 202, await codex.steerTurn({ ...payload, prompt: `${prompt}${await serializeEditorContext(payload, pending.root)}` }));
     }
     if (url.pathname === "/api/codex/turn/interrupt") {
       return sendJson(request, response, 202, await codex.interruptTurn(payload.threadId));

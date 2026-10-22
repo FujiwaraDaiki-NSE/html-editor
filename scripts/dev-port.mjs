@@ -1,6 +1,7 @@
 import { createServer, isIPv4 } from "node:net";
 import { networkInterfaces } from "node:os";
 
+export const DEFAULT_WEB_PORT = 3444;
 export const LOOPBACK_WEB_HOST = "127.0.0.1";
 
 export function parseConfiguredHost(value) {
@@ -82,5 +83,5 @@ export async function resolveWebPort(configuredPort, hosts) {
     await assertPortAvailable(port, hosts);
     return port;
   }
-  return findAvailablePort(3000, hosts);
+  return findAvailablePort(DEFAULT_WEB_PORT, hosts);
 }

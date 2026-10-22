@@ -94,6 +94,51 @@ test("new Threads receive both app-server source and a durable name marker", asy
   service.router.dispose();
 });
 
+test("sending after restart resumes the saved thread before starting a turn", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const client = new FakeClient();
+  const originalRequest = client.request.bind(client);
+  let loaded = false;
+  client.request = async (method, params) => {
+    if (method === "thread/resume") {
+      client.calls.push({ method, params });
+      loaded = true;
+      return { thread: { id: params.threadId } };
+    }
+    if (method === "turn/start") {
+      client.calls.push({ method, params });
+      if (!loaded) throw new Error(`thread not found: ${params.threadId}`);
+      return { turn: { id: "resumed-turn" } };
+    }
+    return originalRequest(method, params);
+  };
+  const service = new CodexService({ projectRoot: "/workspace", instructions: "current rules", client });
+  t.after(() => service.router.dispose());
+  const result = await service.startTurn({ threadId: "new", prompt: "continue", clientUserMessageId: "message-1" });
+  assert.equal(result.turn.id, "resumed-turn");
+  assert.deepEqual(client.calls.map(({ method }) => method), ["thread/read", "thread/resume", "turn/start"]);
+  assert.deepEqual(client.calls[1].params, { threadId: "new", cwd: "/workspace", baseInstructions: "current rules" });
+  assert.equal(client.calls[2].params.threadId, "new");
+});
+
+test("a failed resume does not start a turn or replace the saved thread", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const client = new FakeClient();
+  const originalRequest = client.request.bind(client);
+  client.request = async (method, params) => {
+    if (method === "thread/resume") {
+      client.calls.push({ method, params });
+      throw new Error("resume unavailable");
+    }
+    return originalRequest(method, params);
+  };
+  const service = new CodexService({ projectRoot: "/workspace", instructions: "test", client });
+  t.after(() => service.router.dispose());
+  await assert.rejects(service.startTurn({ threadId: "new", prompt: "continue", clientUserMessageId: "message-2" }), /resume unavailable/);
+  assert.deepEqual(client.calls.map(({ method }) => method), ["thread/read", "thread/resume"]);
+  assert.equal(service.activeTurns.size, 0);
+});
+
 test("event stream replays missed events and then forwards live events", () => {
   const stream = new CodexEventStream();
   stream.publish("codex/notification", { method: "turn/started" });
@@ -312,4 +357,53 @@ test("turn input keeps legacy text shape and adds only image attachments", () =>
 
 test("turn input does not turn folder attachments into local images", () => {
   assert.deepEqual(turnInput("read this folder", [{ path: "references/docs", name: "docs", kind: "folder", files: 4, bytes: 20 }], "/workspace"), [{ type: "text", text: "read this folder", text_elements: [] }]);
+});
+
+test("subagent notifications cannot replace the conversation or affect its active turn", async (t) => {
+  const client = new FakeClient();
+  const events = new CodexEventStream();
+  const service = new CodexService({ projectRoot: "/workspace", client, eventStream: events });
+  t.after(() => service.router.dispose());
+  const delivered = [];
+  service.on("notification", (message) => delivered.push(message));
+  service.handleNotification({ method: "thread/started", params: { thread: { id: "parent", cwd: "/workspace", threadSource: "weave" } } });
+  service.handleNotification({ method: "turn/started", params: { threadId: "parent", turn: { id: "parent-turn" } } });
+  for (const child of [
+    { id: "child", parentThreadId: "parent", threadSource: "weave" },
+    { id: "source-child", source: { subAgent: { thread_spawn: {} } } },
+    { id: "tagged-child", threadSource: "subagent" },
+    { id: "other-project", cwd: "/other", threadSource: "weave" },
+  ]) {
+    const thread = { cwd: "/workspace", name: "Weave · Inherited name", ...child };
+    assert.equal(service.isWeaveThread(thread), false);
+    service.handleNotification({ method: "thread/started", params: { thread } });
+    service.handleNotification({ method: "turn/started", params: { threadId: thread.id, turn: { id: "child-turn" } } });
+    service.handleNotification({ method: "item/agentMessage/delta", params: { threadId: thread.id, delta: "internal output" } });
+    service.handleNotification({ method: "turn/completed", params: { threadId: thread.id, turn: { id: "child-turn" } } });
+    assert.equal(service.weaveThreadIds.has(thread.id), false);
+  }
+  assert.equal(delivered.length, 2);
+  assert.equal(events.since().length, 2);
+  assert.deepEqual([...service.activeTurns], [["parent", "parent-turn"]]);
+  service.handleNotification({ method: "turn/completed", params: { threadId: "parent", turn: { id: "parent-turn" } } });
+  service.handleNotification({ method: "account/updated", params: {} });
+  assert.equal(service.activeTurns.size, 0);
+  assert.equal(delivered.at(-1).method, "account/updated");
+});
+
+test("thread list excludes subagents even with an inherited Weave name", async (t) => {
+  const client = new FakeClient();
+  client.request = async (method) => {
+    if (method === "thread/list") return { data: [
+      { id: "parent", cwd: "/workspace", name: "Weave · Parent" },
+      { id: "child", cwd: "/workspace", name: "Weave · Parent", parentThreadId: "parent" },
+    ] };
+    if (method === "thread/read") return { thread: { id: "child", cwd: "/workspace", name: "Weave · Parent", parentThreadId: "parent", threadSource: "weave" } };
+    throw new Error(`Unexpected method: ${method}`);
+  };
+  const service = new CodexService({ projectRoot: "/workspace", client });
+  t.after(() => service.router.dispose());
+  service.ready = true;
+  assert.deepEqual((await service.listThreads()).data.map(({ id }) => id), ["parent"]);
+  await assert.rejects(service.readThread("child"), /not owned/);
 });

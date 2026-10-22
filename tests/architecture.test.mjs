@@ -173,6 +173,8 @@ test("activity rail destinations render their details in the left sidebar", asyn
   assert.match(page, /className="activity-panel history-panel"/);
   assert.match(page, /className="activity-panel settings-panel"/);
   assert.match(css, /\.activity-panel \{/);
+  assert.match(page, /className="more-button"[^>]*onClick=\{\(\) => showActivity\("settings"\)\}/);
+  assert.match(page, /const showActivity = \(view: ActivityView\) => \{[\s\S]*?setLeftPanelOpen\(true\);[\s\S]*?setInspectorOpen\(false\);/);
   assert.doesNotMatch(page, /showHistory|history-popover|showCodexSettings|showHelp/);
 });
 
@@ -224,6 +226,27 @@ test("commands are grouped by editing, project, and delivery intent", async () =
   assert.match(css, /\.canvas-tool-group \+ \.canvas-tool-group/);
 });
 
+test("integrated workspace chrome overrides legacy panel and control dimensions", async () => {
+  const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(css, /\.source-workspace > \.code-editor \{ width: 100%; height: 100%; \}/);
+  assert.match(css, /\.source-preview > div > \.weave-slide \{ transform: none; zoom: calc\(\(100cqw - 16px\) \/ 1280px\); \}/);
+  assert.match(css, /\.topbar \{ grid-template-columns: minmax\(180px, 1fr\) minmax\(140px, 1fr\) max-content; \}/);
+  assert.match(css, /\.top-actions button \{ height: var\(--ui-primary-control\); font-size: var\(--ui-meta\); white-space: nowrap; \}/);
+  assert.match(css, /\.canvas-toolbar button \{ height: var\(--ui-control\); white-space: nowrap; \}/);
+  assert.match(css, /\.weave-app \.canvas-toolbar \{[\s\S]*?position: fixed;[\s\S]*?bottom: calc\(60px \+ env\(safe-area-inset-bottom\)\);[\s\S]*?width: auto !important;/);
+  assert.match(css, /\.canvas-area \{ padding-bottom: 44px; \}/);
+  assert.match(css, /\.slide-shell \{[\s\S]*?width: min\(calc\(100cqw - 24px\), calc\(\(100cqh - 48px\) \* 16 \/ 9\)\);[\s\S]*?aspect-ratio: 16 \/ 9;/);
+  assert.match(css, /\.statusbar button \{ height: 100%; min-height: 0; \}/);
+  assert.match(css, /\.workspace\[data-inspector="open"\] > \.open-agent-panel,[\s\S]*?\.workspace\[data-agent="open"\] > \.open-inspector \{ display: none; \}/);
+  assert.match(css, /\.weave-app \.canvas-toolbar \.zoom-tools,[\s\S]*?\.weave-app \.canvas-toolbar \.annotation-tools \{ display: none; \}/);
+  assert.match(css, /\.mobile-canvas-tools > div \{[\s\S]*?grid-template-columns: 1fr 1fr;/);
+  assert.match(css, /\.weave-app > \.workspace\[data-slide-nav\]\[data-inspector\] \{[\s\S]*?grid-template-columns: 140px minmax\(400px, 1fr\)/);
+  assert.match(page, /onClick=\{\(\) => showActivity\("agent"\)\}>Agent<\/button>/);
+  assert.match(page, /showActivity\("settings"\); setMobileView\("more"\);/);
+  assert.match(page, /<summary>表示・Agent<\/summary>[\s\S]*?Mark for Agent/);
+});
+
 test("project changes autosave drafts and switching never requires a save gate", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
   const switchProject = page.slice(page.indexOf("const switchProject = async"), page.indexOf("const galleryMutation"));
@@ -270,9 +293,9 @@ test("the slide canvas reports the actual rendered zoom and supports fit and 100
   assert.match(page, /data-focus=\{canvasFocused \? "canvas" : "workspace"\}/);
   assert.match(page, /aria-label=\{canvasFocused \? "集中表示を終了" : "キャンバスに集中"\}/);
   assert.match(css, /\.canvas-area \{[^}]*container-type: size/);
-  assert.match(css, /\.slide-shell \{[^}]*width: min\(calc\(100cqw - 24px\), calc\(177\.7778cqh - 131\.5556px\), 1280px\)/);
-  assert.match(css, /\.canvas-interaction-status \{[^}]*bottom: calc\(95% \+ 1px\)/);
-  assert.match(css, /\.canvas-toolbar \{[^}]*top: calc\(95% \+ 1px\)/);
+  assert.match(css, /\.slide-shell \{[^}]*width: min\(calc\(100cqw - 24px\), calc\(\(100cqh - 112px\) \* 16 \/ 9\)\)/);
+  assert.match(css, /\.canvas-interaction-status \{[^}]*bottom: calc\(100% \+ 8px\)/);
+  assert.match(css, /\.canvas-toolbar \{[^}]*top: calc\(100% \+ 8px\)/);
   assert.match(css, /\.workspace\[data-focus="canvas"\] \{ grid-template-columns: minmax\(540px, 1fr\); \}/);
   assert.match(css, /\.workspace\[data-focus="canvas"\] \.filmstrip \{ display: none; \}/);
   assert.match(css, /\.workspace\[data-slide-nav\]\[data-focus="canvas"\] \.center-stage \{ grid-template-rows: 38px minmax\(0, 1fr\); \}/);
@@ -501,4 +524,12 @@ test("production code does not call excluded or experimental app-server APIs", a
   ]) {
     assert.equal(source.includes(`"${method}"`), false, `excluded method is called: ${method}`);
   }
+});
+
+test("attachment context resolves references against the captured task project", async () => {
+  const source = await readFile(new URL("../server/local-api.mjs", import.meta.url), "utf8");
+  assert.match(source, /async function serializeEditorContext\(payload, root\)/);
+  assert.match(source, /resolveReferenceAttachments\(envelope.attachments, root\)/);
+  assert.equal((source.match(/await serializeEditorContext\(payload, root\)/g) ?? []).length, 2);
+  assert.match(source, /await serializeEditorContext\(payload, pending.root\)/);
 });

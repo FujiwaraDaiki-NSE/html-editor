@@ -34,7 +34,7 @@ type SlideDoc = { id: string; title: string; notes: string; templateId: string; 
 type TemplateLayout = { id: string; name: string; html: string };
 type TemplateDoc = { id: string; name: string; defaultLayoutId: string; masterHtml: string; layouts: TemplateLayout[] };
 type PortableBundle = { format: "weave-deck"; version: 2; deck: { title: string; defaultTemplateId: string; slides: SlideDoc[] }; templates: TemplateDoc[]; css: string };
-type ReferenceAttachment = { path: string; name: string; mimeType?: string; size: number; kind?: "file" | "folder"; files?: number };
+type ReferenceAttachment = { path: string; name: string; mimeType?: string; size: number | null; kind?: "file" | "folder"; files?: number | null; storage?: "linked"; source?: string };
 type ReferenceShelfEntry = ReferenceAttachment & { hash?: string; addedAt?: string; source?: string; sourceMissing?: boolean; missing: boolean; kind: "file" | "folder" };
 type FolderBrowser = { path: string; parent: string | null; breadcrumbs: Array<{ name: string; path: string }>; folders: Array<{ name: string; path: string }>; folderCount: number; fileCount: number };
 
@@ -514,11 +514,13 @@ export default function Home() {
   const [referenceView, setReferenceView] = useState<"shelf" | "browse">("shelf");
   const [folderBrowser, setFolderBrowser] = useState<FolderBrowser | null>(null);
   const [folderImporting, setFolderImporting] = useState(false);
+  const [folderUploadStatus, setFolderUploadStatus] = useState<string | null>(null);
   const [changedReview, setChangedReview] = useState<ChangedTarget[]>([]);
   const [structuredChanges, setStructuredChanges] = useState<any[]>([]);
   const [mergeConflicts, setMergeConflicts] = useState<MergeConflict[]>([]);
   const [revertedChangeIds, setRevertedChangeIds] = useState<Set<string>>(new Set());
   const [changedReviewIndex, setChangedReviewIndex] = useState(0);
+  const [reviewOpen, setReviewOpen] = useState(false);
   const [agentPreview, setAgentPreview] = useState<AgentPreviewState | null>(null);
   const [agentCompletion, setAgentCompletion] = useState<number | null>(null);
   const [previewHighlightSlideId, setPreviewHighlightSlideId] = useState<string | null>(null);
@@ -542,10 +544,14 @@ export default function Home() {
   const viewportRef = useRef<HTMLDivElement>(null);
   const annotationScrollRef = useRef<HTMLDivElement>(null);
   const presenterRef = useRef<HTMLDivElement>(null);
+  const slideShellRef = useRef<HTMLDivElement>(null);
+  const slideWheelRef = useRef({ delta: 0, lastEvent: 0, switched: false });
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const referenceInputRef = useRef<HTMLInputElement>(null);
+  const referenceFolderInputRef = useRef<HTMLInputElement>(null);
+  const folderUploadInFlightRef = useRef(false);
   const skillInputRef = useRef<HTMLInputElement>(null);
   const skillDialogRef = useRef<HTMLFormElement>(null);
   const skillDialogTriggerRef = useRef<HTMLElement | null>(null);
@@ -632,7 +638,7 @@ export default function Home() {
   const showActivity = (view: ActivityView) => {
     setActivityView(view);
     setLeftPanelOpen(true);
-    if (view === "agent") setInspectorOpen(false);
+    setInspectorOpen(false);
     setMobileView(view);
     if (view === "skills") void loadSkills();
   };
@@ -997,13 +1003,16 @@ export default function Home() {
     } : undefined,
     annotations: annotationContext,
     overflowing,
-    attachments: attachments.map(({ path, name, size, kind, files }) => ({ path, name, bytes: size, kind, files })),
+    attachments: attachments.map(({ path, name, size, kind, files, storage }) => ({ path, name, bytes: size, kind, files, storage })),
   });
 
   const quality = useMemo(() => {
-    let html = "";
-    try { html = composedSlides(slides).join("\n"); } catch (error) { return { ok: false, diagnostics: [{ id: "template-reference", code: "template-reference", source: "slides", severity: "error" as const, message: error instanceof Error ? error.message : String(error), explanation: "テンプレート参照を解決できません。", fixSuggestion: "テンプレートとレイアウトの参照を確認してください。", slideId: null, elementId: null }], errors: 1, warnings: 0, suggestions: 0 }; }
-    const result = auditContentPolicy({ css: deckCss, html });
+    let renderedSlides: string[];
+    try { renderedSlides = composedSlides(slides); } catch (error) { return { ok: false, diagnostics: [{ id: "template-reference", code: "template-reference", source: "slides", severity: "error" as const, message: error instanceof Error ? error.message : String(error), explanation: "テンプレート参照を解決できません。", fixSuggestion: "テンプレートとレイアウトの参照を確認してください。", slideId: null, elementId: null }], errors: 1, warnings: 0, suggestions: 0 }; }
+    const policies = [
+      { slideId: null, result: auditContentPolicy({ css: deckCss }) },
+      ...slides.map((slide, index) => ({ slideId: slide.id, result: auditContentPolicy({ html: renderedSlides[index] }) })),
+    ];
     const authored: QualityDiagnostic[] = slides.flatMap((slide) => {
       const items: QualityDiagnostic[] = [];
       for (const match of slide.html.matchAll(/<img\b([^>]*)>/gi)) {
@@ -1015,7 +1024,17 @@ export default function Home() {
       if (/\btext-(?:xs|\[\d+(?:\.\d+)?px\])\b/.test(slide.html)) items.push({ id: `${slide.id}:small-text`, code: "text.small", severity: "warning", message: "小さい文字が含まれています", explanation: "投影時や小さな画面で読みにくくなる可能性があります。", fixSuggestion: "本文を14px相当以上へ調整します。", slideId: slide.id, elementId: null, source: "html" });
       return items;
     });
-    const policyDiagnostics: QualityDiagnostic[] = result.diagnostics.map((item: any, index: number) => ({ id: `policy:${item.code}:${index}`, code: item.code, severity: item.severity === "warning" ? "warning" : "error", message: item.message, explanation: item.message, fixSuggestion: "問題のHTMLまたはスタイルを安全な表現へ修正してください。", slideId: null, elementId: null, source: item.source }));
+    const policyDiagnostics: QualityDiagnostic[] = policies.flatMap(({ slideId, result }) => result.diagnostics.map((item: any, index: number) => ({
+      id: `policy:${slideId}:${item.code}:${index}`,
+      code: item.code,
+      severity: item.severity === "warning" ? "warning" : "error",
+      message: item.message,
+      explanation: item.code === "html.svg-text-not-editable" ? "図全体は選択できますが、SVGの文字は現在の文字編集に対応していません。既存資料の構造は保持しています。" : item.message,
+      fixSuggestion: item.code === "html.svg-text-not-editable" ? "図の内容と見た目を維持し、文字を個別のHTMLテキスト要素に分離して一意のdata-weave-idを付けてください。選択・編集・保存後の再表示を確認してください。" : "問題のHTMLまたはスタイルを安全な表現へ修正してください。",
+      slideId,
+      elementId: item.elementId ?? null,
+      source: item.source,
+    })));
     const diagnostics = [...policyDiagnostics, ...authored].filter((item) => item.severity === "error" || !ignoredDiagnostics.has(item.id));
     const errors = diagnostics.filter((item) => item.severity === "error").length;
     const warnings = diagnostics.filter((item) => item.severity === "warning").length;
@@ -1247,18 +1266,21 @@ export default function Home() {
                   : null;
                 const baseline = eventBaseline ?? state.agentPreview?.baseline.slides ?? agentPreviewBaselineRef.current ?? slidesRef.current;
                 const serverConflicts = Array.isArray(envelope.payload?.conflicts) ? envelope.payload.conflicts : [];
+                let reviewConflicts = serverConflicts;
                 if (!unchanged && envelope.payload?.baseline) {
                   const localMerge = mergeEditorDecks({ base: envelope.payload.baseline, agent: state.deck, current: { title: deckTitleRef.current, defaultTemplateId: defaultTemplateIdRef.current, slides: slidesRef.current } });
                   setDeckTitle(localMerge.deck.title);
                   setDefaultTemplateId(localMerge.deck.defaultTemplateId);
                   setSlidesSynced(localMerge.deck.slides.map(slideFromHtml));
-                  setMergeConflicts([...serverConflicts, ...localMerge.conflicts]);
+                  reviewConflicts = [...serverConflicts, ...localMerge.conflicts];
+                  setMergeConflicts(reviewConflicts);
                 } else setMergeConflicts(serverConflicts);
                 const agentChanges = Array.isArray(envelope.payload?.changes?.changes) ? envelope.payload.changes.changes : [];
                 const agentSlideIds = new Set(agentChanges.map((change: any) => change.slideId).filter(Boolean));
                 const targets = changedTargets(baseline, state.deck?.slides ?? []).filter((target) => agentSlideIds.has(target.slideId));
                 setChangedReview(targets);
                 setStructuredChanges(agentChanges);
+                setReviewOpen(targets.length > 0 || agentChanges.length > 0 || reviewConflicts.length > 0);
                 setRevertedChangeIds(new Set());
                 setChangedReviewIndex(0);
                 setAgentCompletion(changedSlideCount(baseline, state.deck?.slides ?? []));
@@ -2167,6 +2189,38 @@ export default function Home() {
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   }, []);
 
+  const uploadReferenceFolder = useCallback(async (selectedFiles: FileList) => {
+    if (folderUploadInFlightRef.current) return;
+    folderUploadInFlightRef.current = true;
+    setFolderImporting(true);
+    setFolderUploadStatus("フォルダーを読み込み中…");
+    try {
+      const files = Array.from(selectedFiles).filter((file) => !file.webkitRelativePath.split("/").some((part) => part.startsWith(".")));
+      if (!files.length) throw new Error("ファイルが入ったフォルダーを選択してください。");
+      if (files.length > 2_000 || files.reduce((total, file) => total + file.size, 0) > 500 * 1024 * 1024) throw new Error("フォルダーは2,000ファイル・合計500 MB以下にしてください。");
+      const body = new FormData();
+      for (const file of files) {
+        if (!file.webkitRelativePath) throw new Error("フォルダーの相対パスを取得できませんでした。");
+        body.append(file.webkitRelativePath, file, file.name);
+      }
+      const response = await fetch(`${apiBase}/references/folder/upload`, { method: "POST", body });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "フォルダーを読み込めませんでした。");
+      setReferenceShelf((current) => [...current, { ...result, missing: false }]);
+      setReferenceAttachments((current) => [...current, result]);
+      setFolderUploadStatus(`${result.name}を追加しました（${result.files}ファイル）。`);
+      setApiError(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setFolderUploadStatus(message);
+      setApiError(message);
+    } finally {
+      folderUploadInFlightRef.current = false;
+      setFolderImporting(false);
+      if (referenceFolderInputRef.current) referenceFolderInputRef.current.value = "";
+    }
+  }, []);
+
   const browseFolders = useCallback(async (path?: string) => {
     try {
       const response = await fetch(`${apiBase}/folders${path ? `?path=${encodeURIComponent(path)}` : ""}`);
@@ -2184,6 +2238,7 @@ export default function Home() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "フォルダーを読み込めませんでした。");
       setReferenceShelf((current) => [...current, { ...result, missing: false, sourceMissing: false }]);
+      setReferenceAttachments((current) => [...current, result]);
       setReferenceView("shelf"); setApiError(null);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
     finally { setFolderImporting(false); }
@@ -2421,6 +2476,38 @@ export default function Home() {
     reinject();
   };
 
+  useEffect(() => {
+    const surface = showPresenter ? presenterRef.current?.querySelector<HTMLElement>(".presenter-stage") : slideShellRef.current;
+    if (!surface || galleryOpen) return;
+    const onWheel = (event: WheelEvent) => {
+      if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+      if (!showPresenter && (editingId || draggedId || annotationGestureRef.current || pointerPicking)) return;
+      const target = event.target;
+      if (!(target instanceof Element) || target.closest('input, textarea, select, [contenteditable="true"], button')) return;
+      // Let scrollable slide content and zoomed canvases retain their own scrolling.
+      for (let node: Element | null = target; node; node = node.parentElement) {
+        const overflow = getComputedStyle(node).overflowY;
+        if (/(auto|scroll)/.test(overflow) && node.scrollHeight > node.clientHeight + 1) return;
+        if (node.classList.contains("canvas-area") || node.classList.contains("presenter")) break;
+      }
+      event.preventDefault();
+      const now = performance.now();
+      const gesture = slideWheelRef.current;
+      if (now - gesture.lastEvent > 180) { gesture.delta = 0; gesture.switched = false; }
+      gesture.lastEvent = now;
+      if (gesture.switched) return;
+      if (Math.sign(gesture.delta) !== Math.sign(event.deltaY)) gesture.delta = 0;
+      gesture.delta += event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? surface.clientHeight : 1);
+      if (Math.abs(gesture.delta) < 40) return;
+      gesture.switched = true;
+      const direction = Math.sign(gesture.delta);
+      if (showPresenter) setPresentSlide((value) => Math.max(1, Math.min(slides.length, value + direction)));
+      else switchSlide(activeRef.current + direction);
+    };
+    surface.addEventListener("wheel", onWheel, { passive: false });
+    return () => surface.removeEventListener("wheel", onWheel);
+  });
+
   const moveSlide = (direction: -1 | 1) => {
     const target = activeRef.current - 1 + direction;
     if (target < 0 || target >= slidesRef.current.length) return;
@@ -2633,7 +2720,7 @@ export default function Home() {
 
   const askAgentToFixDiagnostic = (diagnostic: QualityDiagnostic) => {
     focusDiagnostic(diagnostic);
-    setChangeScope(diagnostic.elementId ? "element" : diagnostic.slideId ? "current-slide" : "deck");
+    setChangeScope(diagnostic.code === "html.svg-text-not-editable" ? "current-slide" : diagnostic.elementId ? "element" : diagnostic.slideId ? "current-slide" : "deck");
     setExecutionMode("apply");
     setPromptDraft(`${diagnostic.message}。${diagnostic.fixSuggestion}`);
     setInspectorOpen(false);
@@ -3049,6 +3136,7 @@ export default function Home() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "制作タスクを再開できませんでした。");
       dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
+      setApiError(null);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   };
 
@@ -3504,6 +3592,7 @@ export default function Home() {
           <small>{activeSlide} / {slides.length} 枚目</small>
         </div>
         <div className="top-actions">
+          <button className="more-button" onClick={() => showActivity("settings")} aria-label="その他の機能">その他</button>
           <button className="delivery-button" onClick={(event) => togglePopover("delivery", event.currentTarget)} aria-expanded={openPopover === "delivery"} aria-haspopup="menu" data-help="プレゼン表示、書き出し、印刷を選びます">プレゼン・書き出し <span aria-hidden="true">⌄</span></button>
           <input ref={importRef} className="sr-only" type="file" accept=".json,.weave.json,application/json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importBundle(file); }} />
           <button className="save-button" onClick={() => void saveProject()} data-help="現在のドラフトへ名前を付け、長期履歴として残します"><span>◇</span> マイルストーン</button>
@@ -3541,7 +3630,7 @@ export default function Home() {
         {leftPanelOpen ? <aside className="left-panel">
           <div className="panel-resizer" role="separator" aria-orientation="vertical" aria-label="サイドバーの幅を変更" aria-valuenow={sidebarWidth} aria-valuemin={280} aria-valuemax={560} tabIndex={0} onPointerDown={startSidebarResize} onKeyDown={(event) => { if (event.key === "ArrowLeft") { event.preventDefault(); adjustSidebarWidth(-16); } if (event.key === "ArrowRight") { event.preventDefault(); adjustSidebarWidth(16); } }} />
           {activityView === "agent" ? <section className="agent-panel" aria-label="Agent制作タスク" aria-busy={turnBusy}>
-            <div className="context-panel-switcher" role="tablist" aria-label="コンテキストパネル"><button role="tab" aria-selected="false" onClick={() => { setLeftPanelOpen(false); setInspectorOpen(true); setInspectorView("design"); }}>デザイン</button><button role="tab" aria-selected="true">Agent</button><button role="tab" aria-selected="false" onClick={() => { setChangedReviewIndex(0); setLeftPanelOpen(false); }}>変更レビュー{changedReview.length > 0 ? ` ${changedReview.length}` : ""}</button></div>
+            <div className="context-panel-switcher" role="tablist" aria-label="コンテキストパネル"><button role="tab" aria-selected="false" onClick={() => { setLeftPanelOpen(false); setInspectorOpen(true); setInspectorView("design"); }}>デザイン</button><button role="tab" aria-selected="true">Agent</button><button role="tab" aria-selected="false" onClick={() => { setChangedReviewIndex(0); setReviewOpen(true); setMobileView("canvas"); }}>変更レビュー{changedReview.length > 0 ? ` ${changedReview.length}` : ""}</button></div>
             <div className="agent-heading">
               <div className="agent-heading-main">
                 <h2 className="agent-heading-title">
@@ -3651,11 +3740,12 @@ export default function Home() {
               {openPopover === "references" && <>
                 <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
                 <aside className="reference-popover" aria-label="参照資料">
-                  <header><strong>{referenceView === "browse" ? "フォルダーを追加" : "参照資料"}</strong><button type="button" aria-label="参照資料を閉じる" onClick={() => dismissPopover()}>×</button></header>
+                  <header><strong>{referenceView === "browse" ? "フォルダーを登録" : "参照資料"}</strong><button type="button" aria-label="参照資料を閉じる" onClick={() => dismissPopover()}>×</button></header>
                   {referenceView === "browse" && folderBrowser ? <>
                     <div className="reference-breadcrumbs">{folderBrowser.breadcrumbs.map((crumb, index) => <span key={crumb.path}>{index > 0 && " / "}<button type="button" onClick={() => void browseFolders(crumb.path)}>{crumb.name}</button></span>)}</div>
                     <div className="reference-folder-list">{folderBrowser.parent && <button type="button" onClick={() => void browseFolders(folderBrowser.parent ?? undefined)}>↑ 親フォルダー</button>}{folderBrowser.folders.map((folder) => <button type="button" key={folder.path} onClick={() => void browseFolders(folder.path)}>📁 {folder.name}</button>)}</div>
-                    <footer className="reference-browser-footer"><span>フォルダー {folderBrowser.folderCount.toLocaleString()}件 · この場所のファイル {folderBrowser.fileCount.toLocaleString()}件</span><button type="button" onClick={() => void importFolder()} disabled={folderImporting}>{folderImporting ? "読み込み中…" : "フォルダーを追加"}</button></footer>
+                    <p className="reference-upload-status">選んだ場所を読み取り専用で参照します。コピーは作成しません。</p>
+                    <footer className="reference-browser-footer"><span>フォルダー {folderBrowser.folderCount.toLocaleString()}件 · この場所のファイル {folderBrowser.fileCount.toLocaleString()}件</span><button type="button" onClick={() => void importFolder()} disabled={folderImporting}>{folderImporting ? "登録中…" : "このフォルダーを登録"}</button></footer>
                   </> : <>
                   <section className="reference-shelf-section" aria-labelledby="reference-folders-heading">
                     <h4 id="reference-folders-heading">フォルダー</h4>
@@ -3666,14 +3756,16 @@ export default function Home() {
                         <label title={`${reference.path}\n参照元: ${reference.source ?? "不明"}`}>
                           <input type="checkbox" checked={attached} disabled={reference.missing} onChange={() => setReferenceAttachments((current) => attached ? current.filter((item) => item.path !== reference.path) : [...current, reference])} />
                           <span className="reference-shelf-name">{reference.name}</span>
-                          <small>{reference.missing ? "見つかりません" : `${reference.files ?? 0}ファイル · ${formatBytes(reference.size)}`}</small>
+                          <small>{reference.missing ? "見つかりません" : reference.storage === "linked" ? "パス参照・読み取り専用" : `${reference.files}ファイル · ${reference.size === null ? "容量未取得" : formatBytes(reference.size)}`}</small>
                         </label>
-                        <button type="button" aria-label={`${reference.name}を更新`} disabled={reference.sourceMissing} onClick={() => void syncFolder(reference.path)}>↻</button>
+                        {reference.source && reference.storage !== "linked" && <button type="button" aria-label={`${reference.name}を更新`} disabled={reference.sourceMissing} onClick={() => void syncFolder(reference.path)}>↻</button>}
                         <button type="button" aria-label={`${reference.name}を参照資料から削除`} onClick={() => void removeShelfReference(reference.path)}>×</button>
                       </div>;
                     })}
                     </div>
-                    <button className="reference-add" type="button" onClick={() => void browseFolders()}>＋ フォルダーを追加</button>
+                    <button className="reference-add" type="button" disabled={folderImporting} onClick={() => void browseFolders()}>＋ ホームのフォルダーを登録</button>
+                    <button className="reference-add" type="button" disabled={folderImporting} aria-busy={folderImporting} onClick={() => referenceFolderInputRef.current?.click()}>PCのフォルダーをアップロード</button>
+                    {folderUploadStatus && <p className="reference-upload-status" role="status">{folderUploadStatus}</p>}
                   </section>
                   <section className="reference-shelf-section" aria-labelledby="reference-files-heading">
                     <h4 id="reference-files-heading">ファイル</h4>
@@ -3684,7 +3776,7 @@ export default function Home() {
                         <label title={reference.path}>
                           <input type="checkbox" checked={attached} disabled={reference.missing} onChange={() => setReferenceAttachments((current) => attached ? current.filter((item) => item.path !== reference.path) : [...current, reference])} />
                           <span className="reference-shelf-name">{reference.name}</span>
-                          <small>{reference.missing ? "見つかりません" : formatBytes(reference.size)}</small>
+                          <small>{reference.missing ? "見つかりません" : reference.size === null ? "容量未取得" : formatBytes(reference.size)}</small>
                         </label>
                         <button type="button" aria-label={`${reference.name}を参照資料から削除`} onClick={() => void removeShelfReference(reference.path)}>×</button>
                       </div>;
@@ -3721,13 +3813,14 @@ export default function Home() {
                 {referenceAttachments.map((attachment) => <div className="context-chip reference-attachment" role="listitem" key={attachment.path}>
                   <span className="context-icon" aria-hidden="true">📎</span>
                   <span className="reference-attachment-name" title={attachment.name}>{attachment.name}</span>
-                  <span>{formatBytes(attachment.size)}</span>
+                  <span>{attachment.storage === "linked" ? "パス参照" : attachment.size === null ? "容量未取得" : formatBytes(attachment.size)}</span>
                   <button type="button" aria-label={`${attachment.name}を添付から外す`} onClick={() => setReferenceAttachments((current) => current.filter((item) => item.path !== attachment.path))}>×</button>
                 </div>)}
               </div>}
               <textarea ref={promptRef} value={promptDraft} onChange={onPromptChange} onCompositionStart={() => { compositionRef.current = true; }} onCompositionEnd={onPromptCompositionEnd} onKeyDown={onPromptKeyDown} placeholder={agentReady ? "Agentにこのスライドの編集を依頼…" : "Codexへの接続を待っています…"} aria-label="Agentへのメッセージ" aria-busy={turnBusy} maxLength={20000} disabled={!agentReady} />
               <div className="chat-actions">
                 <input ref={referenceInputRef} className="sr-only" type="file" multiple onChange={(event) => { if (event.target.files) void uploadReferences(event.target.files); }} />
+                <input ref={referenceFolderInputRef} className="sr-only" type="file" aria-label="参照フォルダーを選択" multiple {...{ webkitdirectory: "" }} onChange={(event) => { if (event.target.files?.length) void uploadReferenceFolder(event.target.files); }} />
                 <button className={`attach-button${openPopover === "references" ? " active" : ""}`} type="button" onClick={(event) => togglePopover("references", event.currentTarget)} disabled={!agentReady} aria-expanded={openPopover === "references"} aria-haspopup="dialog" aria-label="参照資料" title="Agentへ渡すファイルやフォルダーを選びます">📎</button>
                 {codexState.catalog.models.length > 0 && selectedModelInfo && (
                   <div className="agent-model-control">
@@ -3766,6 +3859,7 @@ export default function Home() {
               {variations.length > 0 && <button className="compare-variations" onClick={() => void openVariationCompare()} disabled={variationCompareLoading}>{variationCompareLoading ? "読み込み中…" : "探索案を比較"}</button>}
             </div>
             <div className="editor-tab-actions">
+              <button className="review-toggle" aria-expanded={reviewOpen} onClick={() => setReviewOpen((value) => !value)}>変更レビュー{mergeConflicts.length > 0 ? ` · 競合 ${mergeConflicts.length}` : ""}</button>
               {activeVariation.startsWith("weave/variation/") && (
                 <>
                   <button className="archive-direction" onClick={() => void setExplorationState(activeVariation, "paused")}>保留</button>
@@ -3781,6 +3875,7 @@ export default function Home() {
             </div>
           </div>
 
+          <div className="canvas-workspace">
           <div className="canvas-area">
             {showVariationPrompt && (
               <div className="variation-prompt">
@@ -3807,7 +3902,7 @@ export default function Home() {
                 </div>
               </section>
             ) : mode === "preview" ? (
-              <div className={`slide-shell ${previewHighlightSlideId === activeSlideId ? "agent-preview-highlight" : ""}`}>
+              <div ref={slideShellRef} className={`slide-shell ${previewHighlightSlideId === activeSlideId ? "agent-preview-highlight" : ""}`}>
                 {/* The project stylesheet is the only thing styling the slide; the editor's
                     own chrome lives in globals.css and never overlaps these rules. */}
                 <style>{deckCss}</style>
@@ -3873,28 +3968,6 @@ export default function Home() {
                     onGestureEnd={onAnnotationGestureEnd}
                   />
                 </div>
-                {changedReview.length > 0 && <div className="changed-review" role="status">
-                  <span><strong>Agentの変更</strong><small>{changedReviewIndex + 1} / {changedReview.length}</small></span>
-                  <button onClick={() => reviewChangedTarget(changedReviewIndex - 1)} aria-label="前の変更箇所">←</button>
-                  <button onClick={() => reviewChangedTarget(changedReviewIndex + 1)} aria-label="次の変更箇所">→</button>
-                  <button onClick={() => { setChangedReview([]); setSelectedId(null); }}>確認完了</button>
-                </div>}
-                {(structuredChanges.length > 0 || mergeConflicts.length > 0) && <details className="change-review-panel">
-                  <summary>変更レビュー <strong>{structuredChanges.length + mergeConflicts.length}件</strong></summary>
-                  {mergeConflicts.length > 0 && <section className="merge-conflicts" aria-label="競合の解決"><header><strong>同じ箇所の競合</strong><small>箇所ごとに残す内容を選んでください</small></header>{mergeConflicts.map((conflict) => <article key={conflict.path}>
-                    <strong>{conflict.slideId ? `スライド ${conflict.slideId}` : "デッキ全体"}{conflict.elementId ? ` · ${conflict.elementId}` : ""}</strong>
-                    <p>{conflict.explanation}</p>
-                    <div className="change-before-after"><span><small>現在の編集</small><code>{typeof conflict.current === "string" ? conflict.current.slice(0, 180) : JSON.stringify(conflict.current)?.slice(0, 180)}</code></span><span><small>Agentの変更</small><code>{typeof conflict.agent === "string" ? conflict.agent.slice(0, 180) : JSON.stringify(conflict.agent)?.slice(0, 180)}</code></span></div>
-                    <footer><button onClick={() => resolveMergeConflict(conflict, "current")}>現在の編集を保持</button><button onClick={() => resolveMergeConflict(conflict, "agent")}>Agentの変更を採用</button></footer>
-                  </article>)}</section>}
-                  <header><span>意味単位の変更セット</span><button onClick={() => applyReviewGroup({ kind: "all" })}>すべて戻す</button></header>
-                  <div className="change-review-list">{structuredChanges.map((change) => <article key={change.id} data-reverted={revertedChangeIds.has(change.id) ? "true" : undefined}>
-                    <button className="change-target" onClick={() => { const index = slidesRef.current.findIndex((slide) => slide.id === change.slideId); if (index >= 0) switchSlide(index + 1); if (change.elementId) setSelectedId(change.elementId); }}><strong>{change.slideId ? `スライド ${change.slideId}` : "デッキ全体"}</strong><span>{change.type === "text" ? "テキスト変更" : change.type === "style" ? "スタイル変更" : change.type === "layout" ? "レイアウト変更" : change.type}</span></button>
-                    <p>{change.reason}</p>
-                    <div className="change-before-after"><span><small>変更前</small><code>{typeof change.before === "string" ? change.before.slice(0, 180) : JSON.stringify(change.before)?.slice(0, 180)}</code></span><span><small>変更後</small><code>{typeof change.after === "string" ? change.after.slice(0, 180) : JSON.stringify(change.after)?.slice(0, 180)}</code></span></div>
-                    <footer><button onClick={() => applyReviewChange(change)}>{revertedChangeIds.has(change.id) ? "この変更を再適用" : "この変更だけ戻す"}</button>{change.slideId && <button onClick={() => applyReviewGroup({ kind: "slide", slideId: change.slideId })}>このスライドを戻す</button>}</footer>
-                  </article>)}</div>
-                </details>}
                 {selectedId && sel && !annotationMode && <div className="selection-toolbar" data-placement={selectionToolbarPosition.placement} style={{ left: selectionToolbarPosition.left, top: selectionToolbarPosition.top }} role="toolbar" aria-label="選択した要素の簡易操作">
                   {!sel.container && sel.kind !== "image" && <button onClick={beginEditSelected}>編集</button>}
                   {!sel.container && sel.kind !== "image" && <button aria-label="太字を切り替える" onClick={() => { const node = selectedNode(); if (!node) return; checkpoint(); node.classList.toggle("font-bold"); syncFromDom(); markDirty(); }}>太字</button>}
@@ -3937,6 +4010,17 @@ export default function Home() {
                       onClick={toggleAnnotationMode}
                     >▱ <span>Mark for Agent</span></button>
                   </div>
+                  <details className="mobile-canvas-tools">
+                    <summary>表示・Agent</summary>
+                    <div role="group" aria-label="表示とAgentへの範囲指定">
+                      <button aria-label="縮小" onClick={() => setManualZoom(Math.max(.25, slideScale - .1))}>− 縮小</button>
+                      <button aria-label="拡大" onClick={() => setManualZoom(Math.min(4, slideScale + .1))}>＋ 拡大</button>
+                      <button aria-label="実寸で表示" onClick={() => setManualZoom(defaultCanvasZoom)}>実寸</button>
+                      <button className={zoomMode === "fit" ? "active" : ""} aria-label={`画面に合わせる・現在${Math.round(slideScale * 100)}%`} onClick={() => setManualZoom(null)}>画面に合わせる</button>
+                      <button className={canvasFocused ? "active" : ""} aria-pressed={canvasFocused} onClick={() => setCanvasFocused((value) => !value)}>{canvasFocused ? "集中表示を終了" : "集中表示"}</button>
+                      <button className={annotationMode ? "active" : ""} aria-pressed={annotationMode} onClick={toggleAnnotationMode}>▱ Mark for Agent</button>
+                    </div>
+                  </details>
                 </div>
                 {openPopover === "addBlock" && (
                   <>
@@ -3970,11 +4054,41 @@ export default function Home() {
             )}
           </div>
 
+          {reviewOpen && <section className="review-dock" aria-label="変更レビュー" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setReviewOpen(false); } }}>
+            <header className="review-dock-heading"><strong>変更レビュー</strong>
+                {changedReview.length > 0 && <div className="changed-review" role="status">
+                  <span><strong>Agentの変更</strong><small>{changedReviewIndex + 1} / {changedReview.length}</small></span>
+                  <button onClick={() => reviewChangedTarget(changedReviewIndex - 1)} aria-label="前の変更箇所">←</button>
+                  <button onClick={() => reviewChangedTarget(changedReviewIndex + 1)} aria-label="次の変更箇所">→</button>
+                  <button onClick={() => { setChangedReview([]); setSelectedId(null); setReviewOpen(false); }}>確認完了</button>
+                </div>}
+<button onClick={() => setReviewOpen(false)} aria-label="変更レビューを閉じる">閉じる ×</button></header>
+            <div className="review-dock-content">
+                {(structuredChanges.length > 0 || mergeConflicts.length > 0) && <details className="change-review-panel">
+                  <summary>変更の詳細 <strong>{structuredChanges.length + mergeConflicts.length}件</strong></summary>
+                  {mergeConflicts.length > 0 && <section className="merge-conflicts" aria-label="競合の解決"><header><strong>同じ箇所の競合</strong><small>箇所ごとに残す内容を選んでください</small></header>{mergeConflicts.map((conflict) => <article key={conflict.path}>
+                    <strong>{conflict.slideId ? `スライド ${conflict.slideId}` : "デッキ全体"}{conflict.elementId ? ` · ${conflict.elementId}` : ""}</strong>
+                    <p>{conflict.explanation}</p>
+                    <div className="change-before-after"><span><small>現在の編集</small><code>{typeof conflict.current === "string" ? conflict.current.slice(0, 180) : JSON.stringify(conflict.current)?.slice(0, 180)}</code></span><span><small>Agentの変更</small><code>{typeof conflict.agent === "string" ? conflict.agent.slice(0, 180) : JSON.stringify(conflict.agent)?.slice(0, 180)}</code></span></div>
+                    <footer><button onClick={() => resolveMergeConflict(conflict, "current")}>現在の編集を保持</button><button onClick={() => resolveMergeConflict(conflict, "agent")}>Agentの変更を採用</button></footer>
+                  </article>)}</section>}
+                  <header><span>意味単位の変更セット</span><button onClick={() => applyReviewGroup({ kind: "all" })}>すべて戻す</button></header>
+                  <div className="change-review-list">{structuredChanges.map((change) => <article key={change.id} data-reverted={revertedChangeIds.has(change.id) ? "true" : undefined}>
+                    <button className="change-target" onClick={() => { const index = slidesRef.current.findIndex((slide) => slide.id === change.slideId); if (index >= 0) switchSlide(index + 1); if (change.elementId) setSelectedId(change.elementId); }}><strong>{change.slideId ? `スライド ${change.slideId}` : "デッキ全体"}</strong><span>{change.type === "text" ? "テキスト変更" : change.type === "style" ? "スタイル変更" : change.type === "layout" ? "レイアウト変更" : change.type}</span></button>
+                    <p>{change.reason}</p>
+                    <div className="change-before-after"><span><small>変更前</small><code>{typeof change.before === "string" ? change.before.slice(0, 180) : JSON.stringify(change.before)?.slice(0, 180)}</code></span><span><small>変更後</small><code>{typeof change.after === "string" ? change.after.slice(0, 180) : JSON.stringify(change.after)?.slice(0, 180)}</code></span></div>
+                    <footer><button onClick={() => applyReviewChange(change)}>{revertedChangeIds.has(change.id) ? "この変更を再適用" : "この変更だけ戻す"}</button>{change.slideId && <button onClick={() => applyReviewGroup({ kind: "slide", slideId: change.slideId })}>このスライドを戻す</button>}</footer>
+                  </article>)}</div>
+                </details>}
+            {changedReview.length === 0 && structuredChanges.length === 0 && mergeConflicts.length === 0 && <p className="review-empty">確認する変更はありません。</p>}
+            </div>
+          </section>}
+          </div>
           {slideNav === "filmstrip" && <nav className="slide-nav filmstrip" aria-label="スライド一覧">{slideNavigator}</nav>}
         </section>
 
         {inspectorOpen ? <aside className="inspector">
-          <div className="context-panel-switcher" role="tablist" aria-label="コンテキストパネル"><button role="tab" aria-selected="true">デザイン</button><button role="tab" aria-selected="false" onClick={() => { setInspectorOpen(false); setActivityView("agent"); setLeftPanelOpen(true); }}>Agent</button><button role="tab" aria-selected="false" onClick={() => { setInspectorOpen(false); setChangedReviewIndex(0); }}>変更レビュー{changedReview.length > 0 ? ` ${changedReview.length}` : ""}</button></div>
+          <div className="context-panel-switcher" role="tablist" aria-label="コンテキストパネル"><button role="tab" aria-selected="true">デザイン</button><button role="tab" aria-selected="false" onClick={() => { setInspectorOpen(false); setActivityView("agent"); setLeftPanelOpen(true); }}>Agent</button><button role="tab" aria-selected="false" onClick={() => { setChangedReviewIndex(0); setReviewOpen(true); setMobileView("canvas"); }}>変更レビュー{changedReview.length > 0 ? ` ${changedReview.length}` : ""}</button></div>
           <div className="inspector-heading"><span>詳細インスペクター</span><button aria-label="インスペクターを閉じる" onClick={() => setInspectorOpen(false)}>×</button></div>
           <div className="inspector-tabs" role="tablist" aria-label="インスペクターの表示">
             <button role="tab" aria-selected={inspectorView === "layers"} className={inspectorView === "layers" ? "active" : ""} onClick={() => setInspectorView("layers")}>レイヤー</button>
@@ -4125,8 +4239,8 @@ export default function Home() {
         <nav className="mobile-tabs" aria-label="作業画面">
           <button className={mobileView === "canvas" ? "active" : ""} aria-pressed={mobileView === "canvas"} onClick={() => setMobileView("canvas")}>キャンバス</button>
           <button className={mobileView === "slides" ? "active" : ""} aria-pressed={mobileView === "slides"} onClick={() => setMobileView("slides")}>スライド</button>
-          <button className={mobileView === "agent" ? "active" : ""} aria-pressed={mobileView === "agent"} onClick={() => { setActivityView("agent"); setLeftPanelOpen(true); setMobileView("agent"); }}>Agent</button>
-          <button className={mobileView === "more" ? "active" : ""} aria-pressed={mobileView === "more"} onClick={() => { setActivityView("settings"); setLeftPanelOpen(true); setMobileView("more"); }}>その他{qualityReport.errors + qualityReport.warnings > 0 ? ` · ${qualityReport.errors + qualityReport.warnings}` : ""}</button>
+          <button className={mobileView === "agent" ? "active" : ""} aria-pressed={mobileView === "agent"} onClick={() => showActivity("agent")}>Agent</button>
+          <button className={mobileView === "more" ? "active" : ""} aria-pressed={mobileView === "more"} onClick={() => { showActivity("settings"); setMobileView("more"); }}>その他{qualityReport.errors + qualityReport.warnings > 0 ? ` · ${qualityReport.errors + qualityReport.warnings}` : ""}</button>
         </nav>
         <nav className="mobile-slide-panel slide-nav" aria-label="スライド一覧">{slideNavigator}</nav>
       </div>
