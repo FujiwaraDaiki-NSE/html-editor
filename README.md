@@ -11,17 +11,45 @@ npm install
 npm run dev
 ```
 
-起動スクリプトが3000番から空きポートを選び、Viteをそのポートで起動します。3000番ポートが使用中の場合は、次の空きポート（3001など）が選ばれます。既定ではこのPCからだけ接続できます。
+起動スクリプトが3444番から空きポートを選び、Viteをそのポートで起動します。3444番ポートが使用中の場合は、次の空きポート（3445など）が選ばれます。既定ではこのPCからだけ接続できます。
 
 同じLANの別PCから接続する場合は、公開してよいLANインターフェースのIPv4アドレスとポートを明示して起動します。`0.0.0.0` のような全インターフェース指定は使用できません。
 
 ```bash
-WEAVE_WEB_HOST=172.30.128.50 WEAVE_WEB_PORT=3001 npm run dev
+WEAVE_WEB_HOST=172.30.128.50 WEAVE_WEB_PORT=3444 npm run dev
 ```
 
-外部PCでは `http://172.30.128.50:3001` を開きます。ローカルAPIは別ポートへ公開せず、Vite経由で利用します。
+外部PCでは `http://172.30.128.50:3444` を開きます。ローカルAPIは別ポートへ公開せず、Vite経由で利用します。
 
 `npm run dev`は画面、ローカルAPI、Codex app-serverをまとめて起動します。OpenAIの資格情報をアプリ内へコピーせず、Codex CLIの既存ログインを利用します。
+
+### Dockerで常駐起動（Linux）
+
+既存の依存関係、保存データ、ログイン済みCodex CLIを利用します。`npm install` 済みのこのリポジトリで、`.env` に次の値を明示してください（すべて必須）。
+
+```dotenv
+WEAVE_UID=1000
+WEAVE_GID=1000
+WEAVE_REPO_ROOT=/absolute/path/to/html-editor
+WEAVE_HOST_HOME=/home/your-user
+WEAVE_NODE_ROOT=/absolute/path/to/node-installation
+```
+
+`WEAVE_UID` / `WEAVE_GID` はホストユーザーのID、`WEAVE_NODE_ROOT` は `bin/node` と `bin/codex` を含むNode.jsインストール先です。リポジトリ、`WEAVE_HOST_HOME/.codex`、`WEAVE_HOST_HOME/.local/state/weave` をコンテナに共有するため、保存データ、Codexの認証・状態、Agent実行前の復旧スナップショットはホストに残ります。
+
+初回起動前に、`WEAVE_HOST_HOME` のユーザーで復旧データ用ディレクトリを作成してください（以下のパスは `.env` の `WEAVE_HOST_HOME` に合わせます）。このディレクトリは `WEAVE_UID` / `WEAVE_GID` で書き込める必要があります。未作成の場合は、root所有のディレクトリが自動作成されないようComposeの起動をエラーにします。
+
+```bash
+mkdir -p /home/your-user/.local/state/weave
+```
+
+```bash
+docker compose up -d --build
+docker compose logs --tail=100 web
+docker compose stop
+```
+
+画面は `http://127.0.0.1:3444`、ローカルAPIは `127.0.0.1:4317` を使います。Linuxのhostネットワークで起動します。再起動ポリシーは `unless-stopped` です。Docker起動時やプロセス異常終了時に自動起動し、明示的に停止した場合は停止状態を維持します。
 
 ## 現在触れる機能
 

@@ -236,7 +236,7 @@ test("integrated workspace chrome overrides legacy panel and control dimensions"
   assert.match(css, /\.canvas-toolbar button \{ height: var\(--ui-control\); white-space: nowrap; \}/);
   assert.match(css, /\.weave-app \.canvas-toolbar \{[\s\S]*?position: fixed;[\s\S]*?bottom: calc\(60px \+ env\(safe-area-inset-bottom\)\);[\s\S]*?width: auto !important;/);
   assert.match(css, /\.canvas-area \{ padding-bottom: 44px; \}/);
-  assert.match(css, /\.slide-shell \{[\s\S]*?width: min\(calc\(100% - 24px\), calc\(\(100dvh - 206px\) \* 16 \/ 9\)\);[\s\S]*?aspect-ratio: 16 \/ 9;/);
+  assert.match(css, /\.slide-shell \{[\s\S]*?width: min\(calc\(100cqw - 24px\), calc\(\(100cqh - 48px\) \* 16 \/ 9\)\);[\s\S]*?aspect-ratio: 16 \/ 9;/);
   assert.match(css, /\.statusbar button \{ height: 100%; min-height: 0; \}/);
   assert.match(css, /\.workspace\[data-inspector="open"\] > \.open-agent-panel,[\s\S]*?\.workspace\[data-agent="open"\] > \.open-inspector \{ display: none; \}/);
   assert.match(css, /\.weave-app \.canvas-toolbar \.zoom-tools,[\s\S]*?\.weave-app \.canvas-toolbar \.annotation-tools \{ display: none; \}/);
@@ -293,9 +293,9 @@ test("the slide canvas reports the actual rendered zoom and supports fit and 100
   assert.match(page, /data-focus=\{canvasFocused \? "canvas" : "workspace"\}/);
   assert.match(page, /aria-label=\{canvasFocused \? "集中表示を終了" : "キャンバスに集中"\}/);
   assert.match(css, /\.canvas-area \{[^}]*container-type: size/);
-  assert.match(css, /\.slide-shell \{[^}]*width: min\(calc\(100cqw - 24px\), calc\(177\.7778cqh - 131\.5556px\), 1280px\)/);
-  assert.match(css, /\.canvas-interaction-status \{[^}]*bottom: calc\(95% \+ 1px\)/);
-  assert.match(css, /\.canvas-toolbar \{[^}]*top: calc\(95% \+ 1px\)/);
+  assert.match(css, /\.slide-shell \{[^}]*width: min\(calc\(100cqw - 24px\), calc\(\(100cqh - 112px\) \* 16 \/ 9\)\)/);
+  assert.match(css, /\.canvas-interaction-status \{[^}]*bottom: calc\(100% \+ 8px\)/);
+  assert.match(css, /\.canvas-toolbar \{[^}]*top: calc\(100% \+ 8px\)/);
   assert.match(css, /\.workspace\[data-focus="canvas"\] \{ grid-template-columns: minmax\(540px, 1fr\); \}/);
   assert.match(css, /\.workspace\[data-focus="canvas"\] \.filmstrip \{ display: none; \}/);
   assert.match(css, /\.workspace\[data-slide-nav\]\[data-focus="canvas"\] \.center-stage \{ grid-template-rows: 38px minmax\(0, 1fr\); \}/);

@@ -523,6 +523,32 @@ test("restoring a rejected turn also restores the generated stylesheet", async (
   }
 });
 
+test("saved decks round-trip through Agent recovery without template or scope changes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weave-written-recovery-"));
+  const previousRoot = process.env.WEAVE_PROJECT_ROOT;
+  process.env.WEAVE_PROJECT_ROOT = root;
+  let snapshot = null;
+  let project;
+  try {
+    project = await import(`../server/project.mjs?written-recovery=${Date.now()}`);
+    const { createEditorChangeSet } = await import("../shared/editor-workflow.mjs");
+    await project.ensureProject();
+    const initial = await project.readProject(root);
+    const saved = await project.writeProject(initial, project.getRevision(root), root);
+    assert.deepEqual(saved, await project.readProject(root));
+    snapshot = await project.createRecoverySnapshot({ baseRevision: project.getRevision(root), deck: saved, css: await project.readDeckCss(root) }, root);
+    const [recovered] = await project.readRecoverySnapshots(root);
+    assert.deepEqual(createEditorChangeSet(recovered.baseDeck, await project.readProject(root), "Agent turn").changes, []);
+    await project.writeProjectUnlocked(recovered.baseDeck, null, root);
+    assert.deepEqual(await project.readProject(root), saved);
+  } finally {
+    if (snapshot) await project.discardRecoverySnapshot(snapshot, root);
+    if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
+    else process.env.WEAVE_PROJECT_ROOT = previousRoot;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("recovery snapshots persist human edits and queued milestones across reload", async () => {
   const root = await mkdtemp(join(tmpdir(), "weave-recovery-draft-"));
   const previousRoot = process.env.WEAVE_PROJECT_ROOT;

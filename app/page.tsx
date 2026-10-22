@@ -519,6 +519,7 @@ export default function Home() {
   const [mergeConflicts, setMergeConflicts] = useState<MergeConflict[]>([]);
   const [revertedChangeIds, setRevertedChangeIds] = useState<Set<string>>(new Set());
   const [changedReviewIndex, setChangedReviewIndex] = useState(0);
+  const [reviewOpen, setReviewOpen] = useState(false);
   const [agentPreview, setAgentPreview] = useState<AgentPreviewState | null>(null);
   const [agentCompletion, setAgentCompletion] = useState<number | null>(null);
   const [previewHighlightSlideId, setPreviewHighlightSlideId] = useState<string | null>(null);
@@ -1001,9 +1002,12 @@ export default function Home() {
   });
 
   const quality = useMemo(() => {
-    let html = "";
-    try { html = composedSlides(slides).join("\n"); } catch (error) { return { ok: false, diagnostics: [{ id: "template-reference", code: "template-reference", source: "slides", severity: "error" as const, message: error instanceof Error ? error.message : String(error), explanation: "テンプレート参照を解決できません。", fixSuggestion: "テンプレートとレイアウトの参照を確認してください。", slideId: null, elementId: null }], errors: 1, warnings: 0, suggestions: 0 }; }
-    const result = auditContentPolicy({ css: deckCss, html });
+    let renderedSlides: string[];
+    try { renderedSlides = composedSlides(slides); } catch (error) { return { ok: false, diagnostics: [{ id: "template-reference", code: "template-reference", source: "slides", severity: "error" as const, message: error instanceof Error ? error.message : String(error), explanation: "テンプレート参照を解決できません。", fixSuggestion: "テンプレートとレイアウトの参照を確認してください。", slideId: null, elementId: null }], errors: 1, warnings: 0, suggestions: 0 }; }
+    const policies = [
+      { slideId: null, result: auditContentPolicy({ css: deckCss }) },
+      ...slides.map((slide, index) => ({ slideId: slide.id, result: auditContentPolicy({ html: renderedSlides[index] }) })),
+    ];
     const authored: QualityDiagnostic[] = slides.flatMap((slide) => {
       const items: QualityDiagnostic[] = [];
       for (const match of slide.html.matchAll(/<img\b([^>]*)>/gi)) {
@@ -1015,7 +1019,17 @@ export default function Home() {
       if (/\btext-(?:xs|\[\d+(?:\.\d+)?px\])\b/.test(slide.html)) items.push({ id: `${slide.id}:small-text`, code: "text.small", severity: "warning", message: "小さい文字が含まれています", explanation: "投影時や小さな画面で読みにくくなる可能性があります。", fixSuggestion: "本文を14px相当以上へ調整します。", slideId: slide.id, elementId: null, source: "html" });
       return items;
     });
-    const policyDiagnostics: QualityDiagnostic[] = result.diagnostics.map((item: any, index: number) => ({ id: `policy:${item.code}:${index}`, code: item.code, severity: item.severity === "warning" ? "warning" : "error", message: item.message, explanation: item.message, fixSuggestion: "問題のHTMLまたはスタイルを安全な表現へ修正してください。", slideId: null, elementId: null, source: item.source }));
+    const policyDiagnostics: QualityDiagnostic[] = policies.flatMap(({ slideId, result }) => result.diagnostics.map((item: any, index: number) => ({
+      id: `policy:${slideId}:${item.code}:${index}`,
+      code: item.code,
+      severity: item.severity === "warning" ? "warning" : "error",
+      message: item.message,
+      explanation: item.code === "html.svg-text-not-editable" ? "図全体は選択できますが、SVGの文字は現在の文字編集に対応していません。既存資料の構造は保持しています。" : item.message,
+      fixSuggestion: item.code === "html.svg-text-not-editable" ? "図の内容と見た目を維持し、文字を個別のHTMLテキスト要素に分離して一意のdata-weave-idを付けてください。選択・編集・保存後の再表示を確認してください。" : "問題のHTMLまたはスタイルを安全な表現へ修正してください。",
+      slideId,
+      elementId: item.elementId ?? null,
+      source: item.source,
+    })));
     const diagnostics = [...policyDiagnostics, ...authored].filter((item) => item.severity === "error" || !ignoredDiagnostics.has(item.id));
     const errors = diagnostics.filter((item) => item.severity === "error").length;
     const warnings = diagnostics.filter((item) => item.severity === "warning").length;
@@ -1247,18 +1261,21 @@ export default function Home() {
                   : null;
                 const baseline = eventBaseline ?? state.agentPreview?.baseline.slides ?? agentPreviewBaselineRef.current ?? slidesRef.current;
                 const serverConflicts = Array.isArray(envelope.payload?.conflicts) ? envelope.payload.conflicts : [];
+                let reviewConflicts = serverConflicts;
                 if (!unchanged && envelope.payload?.baseline) {
                   const localMerge = mergeEditorDecks({ base: envelope.payload.baseline, agent: state.deck, current: { title: deckTitleRef.current, defaultTemplateId: defaultTemplateIdRef.current, slides: slidesRef.current } });
                   setDeckTitle(localMerge.deck.title);
                   setDefaultTemplateId(localMerge.deck.defaultTemplateId);
                   setSlidesSynced(localMerge.deck.slides.map(slideFromHtml));
-                  setMergeConflicts([...serverConflicts, ...localMerge.conflicts]);
+                  reviewConflicts = [...serverConflicts, ...localMerge.conflicts];
+                  setMergeConflicts(reviewConflicts);
                 } else setMergeConflicts(serverConflicts);
                 const agentChanges = Array.isArray(envelope.payload?.changes?.changes) ? envelope.payload.changes.changes : [];
                 const agentSlideIds = new Set(agentChanges.map((change: any) => change.slideId).filter(Boolean));
                 const targets = changedTargets(baseline, state.deck?.slides ?? []).filter((target) => agentSlideIds.has(target.slideId));
                 setChangedReview(targets);
                 setStructuredChanges(agentChanges);
+                setReviewOpen(targets.length > 0 || agentChanges.length > 0 || reviewConflicts.length > 0);
                 setRevertedChangeIds(new Set());
                 setChangedReviewIndex(0);
                 setAgentCompletion(changedSlideCount(baseline, state.deck?.slides ?? []));
@@ -2633,7 +2650,7 @@ export default function Home() {
 
   const askAgentToFixDiagnostic = (diagnostic: QualityDiagnostic) => {
     focusDiagnostic(diagnostic);
-    setChangeScope(diagnostic.elementId ? "element" : diagnostic.slideId ? "current-slide" : "deck");
+    setChangeScope(diagnostic.code === "html.svg-text-not-editable" ? "current-slide" : diagnostic.elementId ? "element" : diagnostic.slideId ? "current-slide" : "deck");
     setExecutionMode("apply");
     setPromptDraft(`${diagnostic.message}。${diagnostic.fixSuggestion}`);
     setInspectorOpen(false);
@@ -3049,6 +3066,7 @@ export default function Home() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "制作タスクを再開できませんでした。");
       dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
+      setApiError(null);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   };
 
@@ -3542,7 +3560,7 @@ export default function Home() {
         {leftPanelOpen ? <aside className="left-panel">
           <div className="panel-resizer" role="separator" aria-orientation="vertical" aria-label="サイドバーの幅を変更" aria-valuenow={sidebarWidth} aria-valuemin={280} aria-valuemax={560} tabIndex={0} onPointerDown={startSidebarResize} onKeyDown={(event) => { if (event.key === "ArrowLeft") { event.preventDefault(); adjustSidebarWidth(-16); } if (event.key === "ArrowRight") { event.preventDefault(); adjustSidebarWidth(16); } }} />
           {activityView === "agent" ? <section className="agent-panel" aria-label="Agent制作タスク" aria-busy={turnBusy}>
-            <div className="context-panel-switcher" role="tablist" aria-label="コンテキストパネル"><button role="tab" aria-selected="false" onClick={() => { setLeftPanelOpen(false); setInspectorOpen(true); setInspectorView("design"); }}>デザイン</button><button role="tab" aria-selected="true">Agent</button><button role="tab" aria-selected="false" onClick={() => { setChangedReviewIndex(0); setLeftPanelOpen(false); }}>変更レビュー{changedReview.length > 0 ? ` ${changedReview.length}` : ""}</button></div>
+            <div className="context-panel-switcher" role="tablist" aria-label="コンテキストパネル"><button role="tab" aria-selected="false" onClick={() => { setLeftPanelOpen(false); setInspectorOpen(true); setInspectorView("design"); }}>デザイン</button><button role="tab" aria-selected="true">Agent</button><button role="tab" aria-selected="false" onClick={() => { setChangedReviewIndex(0); setReviewOpen(true); setMobileView("canvas"); }}>変更レビュー{changedReview.length > 0 ? ` ${changedReview.length}` : ""}</button></div>
             <div className="agent-heading">
               <div className="agent-heading-main">
                 <h2 className="agent-heading-title">
@@ -3767,6 +3785,7 @@ export default function Home() {
               {variations.length > 0 && <button className="compare-variations" onClick={() => void openVariationCompare()} disabled={variationCompareLoading}>{variationCompareLoading ? "読み込み中…" : "探索案を比較"}</button>}
             </div>
             <div className="editor-tab-actions">
+              <button className="review-toggle" aria-expanded={reviewOpen} onClick={() => setReviewOpen((value) => !value)}>変更レビュー{mergeConflicts.length > 0 ? ` · 競合 ${mergeConflicts.length}` : ""}</button>
               {activeVariation.startsWith("weave/variation/") && (
                 <>
                   <button className="archive-direction" onClick={() => void setExplorationState(activeVariation, "paused")}>保留</button>
@@ -3782,6 +3801,7 @@ export default function Home() {
             </div>
           </div>
 
+          <div className="canvas-workspace">
           <div className="canvas-area">
             {showVariationPrompt && (
               <div className="variation-prompt">
@@ -3874,28 +3894,6 @@ export default function Home() {
                     onGestureEnd={onAnnotationGestureEnd}
                   />
                 </div>
-                {changedReview.length > 0 && <div className="changed-review" role="status">
-                  <span><strong>Agentの変更</strong><small>{changedReviewIndex + 1} / {changedReview.length}</small></span>
-                  <button onClick={() => reviewChangedTarget(changedReviewIndex - 1)} aria-label="前の変更箇所">←</button>
-                  <button onClick={() => reviewChangedTarget(changedReviewIndex + 1)} aria-label="次の変更箇所">→</button>
-                  <button onClick={() => { setChangedReview([]); setSelectedId(null); }}>確認完了</button>
-                </div>}
-                {(structuredChanges.length > 0 || mergeConflicts.length > 0) && <details className="change-review-panel">
-                  <summary>変更レビュー <strong>{structuredChanges.length + mergeConflicts.length}件</strong></summary>
-                  {mergeConflicts.length > 0 && <section className="merge-conflicts" aria-label="競合の解決"><header><strong>同じ箇所の競合</strong><small>箇所ごとに残す内容を選んでください</small></header>{mergeConflicts.map((conflict) => <article key={conflict.path}>
-                    <strong>{conflict.slideId ? `スライド ${conflict.slideId}` : "デッキ全体"}{conflict.elementId ? ` · ${conflict.elementId}` : ""}</strong>
-                    <p>{conflict.explanation}</p>
-                    <div className="change-before-after"><span><small>現在の編集</small><code>{typeof conflict.current === "string" ? conflict.current.slice(0, 180) : JSON.stringify(conflict.current)?.slice(0, 180)}</code></span><span><small>Agentの変更</small><code>{typeof conflict.agent === "string" ? conflict.agent.slice(0, 180) : JSON.stringify(conflict.agent)?.slice(0, 180)}</code></span></div>
-                    <footer><button onClick={() => resolveMergeConflict(conflict, "current")}>現在の編集を保持</button><button onClick={() => resolveMergeConflict(conflict, "agent")}>Agentの変更を採用</button></footer>
-                  </article>)}</section>}
-                  <header><span>意味単位の変更セット</span><button onClick={() => applyReviewGroup({ kind: "all" })}>すべて戻す</button></header>
-                  <div className="change-review-list">{structuredChanges.map((change) => <article key={change.id} data-reverted={revertedChangeIds.has(change.id) ? "true" : undefined}>
-                    <button className="change-target" onClick={() => { const index = slidesRef.current.findIndex((slide) => slide.id === change.slideId); if (index >= 0) switchSlide(index + 1); if (change.elementId) setSelectedId(change.elementId); }}><strong>{change.slideId ? `スライド ${change.slideId}` : "デッキ全体"}</strong><span>{change.type === "text" ? "テキスト変更" : change.type === "style" ? "スタイル変更" : change.type === "layout" ? "レイアウト変更" : change.type}</span></button>
-                    <p>{change.reason}</p>
-                    <div className="change-before-after"><span><small>変更前</small><code>{typeof change.before === "string" ? change.before.slice(0, 180) : JSON.stringify(change.before)?.slice(0, 180)}</code></span><span><small>変更後</small><code>{typeof change.after === "string" ? change.after.slice(0, 180) : JSON.stringify(change.after)?.slice(0, 180)}</code></span></div>
-                    <footer><button onClick={() => applyReviewChange(change)}>{revertedChangeIds.has(change.id) ? "この変更を再適用" : "この変更だけ戻す"}</button>{change.slideId && <button onClick={() => applyReviewGroup({ kind: "slide", slideId: change.slideId })}>このスライドを戻す</button>}</footer>
-                  </article>)}</div>
-                </details>}
                 {selectedId && sel && !annotationMode && <div className="selection-toolbar" data-placement={selectionToolbarPosition.placement} style={{ left: selectionToolbarPosition.left, top: selectionToolbarPosition.top }} role="toolbar" aria-label="選択した要素の簡易操作">
                   {!sel.container && sel.kind !== "image" && <button onClick={beginEditSelected}>編集</button>}
                   {!sel.container && sel.kind !== "image" && <button aria-label="太字を切り替える" onClick={() => { const node = selectedNode(); if (!node) return; checkpoint(); node.classList.toggle("font-bold"); syncFromDom(); markDirty(); }}>太字</button>}
@@ -3982,11 +3980,41 @@ export default function Home() {
             )}
           </div>
 
+          {reviewOpen && <section className="review-dock" aria-label="変更レビュー" onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); setReviewOpen(false); } }}>
+            <header className="review-dock-heading"><strong>変更レビュー</strong>
+                {changedReview.length > 0 && <div className="changed-review" role="status">
+                  <span><strong>Agentの変更</strong><small>{changedReviewIndex + 1} / {changedReview.length}</small></span>
+                  <button onClick={() => reviewChangedTarget(changedReviewIndex - 1)} aria-label="前の変更箇所">←</button>
+                  <button onClick={() => reviewChangedTarget(changedReviewIndex + 1)} aria-label="次の変更箇所">→</button>
+                  <button onClick={() => { setChangedReview([]); setSelectedId(null); setReviewOpen(false); }}>確認完了</button>
+                </div>}
+<button onClick={() => setReviewOpen(false)} aria-label="変更レビューを閉じる">閉じる ×</button></header>
+            <div className="review-dock-content">
+                {(structuredChanges.length > 0 || mergeConflicts.length > 0) && <details className="change-review-panel">
+                  <summary>変更の詳細 <strong>{structuredChanges.length + mergeConflicts.length}件</strong></summary>
+                  {mergeConflicts.length > 0 && <section className="merge-conflicts" aria-label="競合の解決"><header><strong>同じ箇所の競合</strong><small>箇所ごとに残す内容を選んでください</small></header>{mergeConflicts.map((conflict) => <article key={conflict.path}>
+                    <strong>{conflict.slideId ? `スライド ${conflict.slideId}` : "デッキ全体"}{conflict.elementId ? ` · ${conflict.elementId}` : ""}</strong>
+                    <p>{conflict.explanation}</p>
+                    <div className="change-before-after"><span><small>現在の編集</small><code>{typeof conflict.current === "string" ? conflict.current.slice(0, 180) : JSON.stringify(conflict.current)?.slice(0, 180)}</code></span><span><small>Agentの変更</small><code>{typeof conflict.agent === "string" ? conflict.agent.slice(0, 180) : JSON.stringify(conflict.agent)?.slice(0, 180)}</code></span></div>
+                    <footer><button onClick={() => resolveMergeConflict(conflict, "current")}>現在の編集を保持</button><button onClick={() => resolveMergeConflict(conflict, "agent")}>Agentの変更を採用</button></footer>
+                  </article>)}</section>}
+                  <header><span>意味単位の変更セット</span><button onClick={() => applyReviewGroup({ kind: "all" })}>すべて戻す</button></header>
+                  <div className="change-review-list">{structuredChanges.map((change) => <article key={change.id} data-reverted={revertedChangeIds.has(change.id) ? "true" : undefined}>
+                    <button className="change-target" onClick={() => { const index = slidesRef.current.findIndex((slide) => slide.id === change.slideId); if (index >= 0) switchSlide(index + 1); if (change.elementId) setSelectedId(change.elementId); }}><strong>{change.slideId ? `スライド ${change.slideId}` : "デッキ全体"}</strong><span>{change.type === "text" ? "テキスト変更" : change.type === "style" ? "スタイル変更" : change.type === "layout" ? "レイアウト変更" : change.type}</span></button>
+                    <p>{change.reason}</p>
+                    <div className="change-before-after"><span><small>変更前</small><code>{typeof change.before === "string" ? change.before.slice(0, 180) : JSON.stringify(change.before)?.slice(0, 180)}</code></span><span><small>変更後</small><code>{typeof change.after === "string" ? change.after.slice(0, 180) : JSON.stringify(change.after)?.slice(0, 180)}</code></span></div>
+                    <footer><button onClick={() => applyReviewChange(change)}>{revertedChangeIds.has(change.id) ? "この変更を再適用" : "この変更だけ戻す"}</button>{change.slideId && <button onClick={() => applyReviewGroup({ kind: "slide", slideId: change.slideId })}>このスライドを戻す</button>}</footer>
+                  </article>)}</div>
+                </details>}
+            {changedReview.length === 0 && structuredChanges.length === 0 && mergeConflicts.length === 0 && <p className="review-empty">確認する変更はありません。</p>}
+            </div>
+          </section>}
+          </div>
           {slideNav === "filmstrip" && <nav className="slide-nav filmstrip" aria-label="スライド一覧">{slideNavigator}</nav>}
         </section>
 
         {inspectorOpen ? <aside className="inspector">
-          <div className="context-panel-switcher" role="tablist" aria-label="コンテキストパネル"><button role="tab" aria-selected="true">デザイン</button><button role="tab" aria-selected="false" onClick={() => { setInspectorOpen(false); setActivityView("agent"); setLeftPanelOpen(true); }}>Agent</button><button role="tab" aria-selected="false" onClick={() => { setInspectorOpen(false); setChangedReviewIndex(0); }}>変更レビュー{changedReview.length > 0 ? ` ${changedReview.length}` : ""}</button></div>
+          <div className="context-panel-switcher" role="tablist" aria-label="コンテキストパネル"><button role="tab" aria-selected="true">デザイン</button><button role="tab" aria-selected="false" onClick={() => { setInspectorOpen(false); setActivityView("agent"); setLeftPanelOpen(true); }}>Agent</button><button role="tab" aria-selected="false" onClick={() => { setChangedReviewIndex(0); setReviewOpen(true); setMobileView("canvas"); }}>変更レビュー{changedReview.length > 0 ? ` ${changedReview.length}` : ""}</button></div>
           <div className="inspector-heading"><span>詳細インスペクター</span><button aria-label="インスペクターを閉じる" onClick={() => setInspectorOpen(false)}>×</button></div>
           <div className="inspector-tabs" role="tablist" aria-label="インスペクターの表示">
             <button role="tab" aria-selected={inspectorView === "layers"} className={inspectorView === "layers" ? "active" : ""} onClick={() => setInspectorView("layers")}>レイヤー</button>
