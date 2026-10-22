@@ -785,3 +785,75 @@ test("all human file mutations check finalization under the project lock before 
     assert.deepEqual(await readdir(root), []);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("registered home folders store only paths, have no size limit, and never delete the source", async () => {
+  const home = await mkdtemp(join(tmpdir(), "weave-linked-home-"));
+  const root = join(home, "project");
+  const source = join(home, "資料");
+  const previousHome = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    const project = await import("../server/project.mjs");
+    await mkdir(source, { recursive: true });
+    await writeFile(join(source, "brief.txt"), "first");
+    await Promise.all(Array.from({ length: 2001 }, (_, index) => writeFile(join(source, `item-${index}.txt`), "x")));
+    const { open } = await import("node:fs/promises");
+    const large = await open(join(source, "large.bin"), "w");
+    await large.truncate(501 * 1024 * 1024);
+    await large.close();
+    let stored;
+    const entry = await project.registerReferenceFolder({ source }, root, (value) => { stored = value; });
+    assert.equal(entry.storage, "linked");
+    assert.equal(entry.source, source);
+    assert.equal(entry.files, null);
+    assert.equal(entry.size, null);
+    assert.deepEqual(stored, entry);
+    await assert.rejects(project.syncReferenceFolder(entry.path, root), /do not require synchronization/);
+    assert.deepEqual(await readdir(join(root, "references")), ["index.json"]);
+    assert.equal((await project.readReferences(root))[0].size, null);
+    assert.equal((await project.readReferences(root))[0].missing, false);
+    await assert.rejects(project.registerReferenceFolder({ source }, root), /already registered/);
+    const attachment = { path: entry.path, source: "/untrusted/path", bytes: 999, name: "forged" };
+    const [resolved] = await project.resolveReferenceAttachments([attachment], root);
+    assert.equal(resolved.source, source);
+    assert.equal(resolved.name, "資料");
+    assert.equal(resolved.bytes, null);
+    await writeFile(join(source, "brief.txt"), "updated");
+    assert.equal(await readFile(join(resolved.source, "brief.txt"), "utf8"), "updated");
+    await project.removeReference(entry.path, root);
+    assert.deepEqual(await project.readReferences(root), []);
+    assert.equal(await readFile(join(source, "brief.txt"), "utf8"), "updated");
+    await assert.rejects(project.resolveReferenceAttachments([attachment], root), /missing/);
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("home folder registration includes hidden folders and internal links but rejects escaping links", async () => {
+  const home = await mkdtemp(join(tmpdir(), "weave-linked-boundary-"));
+  const outside = await mkdtemp(join(tmpdir(), "weave-linked-outside-"));
+  const root = join(home, "project");
+  const previousHome = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    const project = await import("../server/project.mjs");
+    await mkdir(join(home, ".hidden"));
+    await symlink(join(home, ".hidden"), join(home, "internal"));
+    await symlink(outside, join(home, "external"));
+    const listing = await project.listFolders(home);
+    assert.deepEqual(listing.folders.map(({ name }) => name).sort(), [".hidden", "internal"]);
+    await assert.rejects(project.registerReferenceFolder({ source: outside }, root), /inside the home/);
+    await assert.rejects(project.registerReferenceFolder({ source: join(home, "external") }, root), /inside the home/);
+    await assert.rejects(project.registerReferenceFolder({ source: "relative" }, root), /absolute/);
+    const entry = await project.registerReferenceFolder({ source: join(home, "internal") }, root);
+    assert.equal(entry.source, join(home, ".hidden"));
+    await rm(join(home, ".hidden"), { recursive: true });
+    assert.equal((await project.readReferences(root))[0].missing, true);
+    await assert.rejects(project.resolveReferenceAttachments([{ path: entry.path }], root), /missing/);
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+    await rm(home, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});

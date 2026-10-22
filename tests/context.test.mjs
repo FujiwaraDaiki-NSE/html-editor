@@ -121,3 +121,11 @@ test("folder attachments require kind and a file count", () => {
   assert.deepEqual(editorEnvelope({ attachments: [{ path: "references/docs", name: "docs", bytes: 12, kind: "folder", files: 3 }] }).attachments, [{ path: "references/docs", name: "docs", bytes: 12, kind: "folder", files: 3 }]);
   assert.equal("attachments" in editorEnvelope({ attachments: [{ path: "references/docs", name: "docs", bytes: 12, kind: "folder" }] }), false);
 });
+
+test("linked folder attachments carry explicit unknown counts and discard client source paths", () => {
+  const folder = { path: "references/folder-id", name: "資料", kind: "folder", storage: "linked", bytes: null, files: null };
+  assert.deepEqual(editorEnvelope({ attachments: [{ ...folder, source: "/untrusted" }] }).attachments, [folder]);
+  assert.equal("attachments" in editorEnvelope({ attachments: [{ ...folder, bytes: 0 }] }), false);
+  assert.match(contextPromptRules, /absolute source path supplied by the server/);
+  assert.match(contextPromptRules, /never modify or delete/);
+});
