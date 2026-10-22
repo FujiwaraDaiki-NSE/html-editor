@@ -27,3 +27,10 @@ test("exposes draft, milestone, and exploration session actions as POST routes",
   assert.deepEqual(routeMethodDecision("/api/variations/pause", "POST"), { allowed: true, allow: "POST" });
   assert.deepEqual(routeMethodDecision("/api/variations/import", "POST"), { allowed: true, allow: "POST" });
 });
+
+test("exposes the browser UI session and response bridge routes", () => {
+  assert.deepEqual(routeMethodDecision("/api/ui/state", "GET"), { allowed: true, allow: "GET" });
+  assert.deepEqual(routeMethodDecision("/api/ui/session", "POST"), { allowed: true, allow: "POST, PATCH, DELETE" });
+  assert.deepEqual(routeMethodDecision("/api/ui/session", "PATCH"), { allowed: true, allow: "POST, PATCH, DELETE" });
+  assert.deepEqual(routeMethodDecision("/api/ui/response", "POST"), { allowed: true, allow: "POST" });
+});

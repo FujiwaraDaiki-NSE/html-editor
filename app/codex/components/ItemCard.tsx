@@ -41,8 +41,11 @@ const glyphs: Record<string, string> = {
 export function ItemCard({ item }: { item: ItemState }) {
   const known = Object.hasOwn(labels, item.type);
   const isMessage = isConversationMessage(item);
-  const label = labels[item.type] ?? "不明な項目";
-  const summary = item.text || item.reasoning[0] || item.output.split("\n")[0] || item.diff.split("\n")[0];
+  const uiActionNames: Record<string, string> = { inspect: "画面を確認", click: "クリック", fill: "文字を入力", select: "項目を選択", key: "キー操作", edit_slides: "スライドを編集" };
+  const isUiAction = item.type === "dynamicToolCall" && item.raw?.namespace === "weave_ui";
+  const uiAction = isUiAction && typeof item.raw?.tool === "string" ? uiActionNames[item.raw.tool] : null;
+  const label = uiAction ? `画面操作 · ${uiAction}` : labels[item.type] ?? "不明な項目";
+  const summary = isUiAction ? "" : item.text || item.reasoning[0] || item.output.split("\n")[0] || item.diff.split("\n")[0];
   const hasWorkBody = !isMessage && Boolean(item.text || item.reasoning.length);
   return (
     <article className={`codex-item codex-item-${item.type} ${isMessage ? "message" : "work-card"}`}>

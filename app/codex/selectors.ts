@@ -5,6 +5,7 @@ export const isConversationMessage = (item: ItemState) => item.type === "agentMe
 export type PendingRequestScope = "active" | "other" | "unscoped";
 
 export function pendingRequestThreadId(request: PendingServerRequest): string | null {
+  if (typeof request.parentThreadId === "string" && request.parentThreadId.length > 0) return request.parentThreadId;
   const threadId = request.params?.threadId;
   return typeof threadId === "string" && threadId.length > 0 ? threadId : null;
 }

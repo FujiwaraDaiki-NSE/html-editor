@@ -23,7 +23,14 @@ test("deck saves are revision-guarded, replace slide files, and restore history 
 
     const onlySlide = { ...initial.slides[0], id: "renamed-slide", title: "Renamed and saved" };
     const saved = { title: "Transactional deck", defaultTemplateId: initial.defaultTemplateId, slides: [onlySlide] };
-    await project.writeProject(saved, initialRevision);
+    const written = await project.writeProject(saved, initialRevision);
+    // Turn baselines use the write result. Losing a deck field here makes a
+    // read-only UI turn look like an out-of-scope edit and breaks restoration.
+    assert.deepEqual(written, await project.readProject());
+    const recovery = await project.createRecoverySnapshot({ baseRevision: initialRevision, deck: written, css: await project.readDeckCss() });
+    await project.writeProject(recovery.baseDeck, initialRevision);
+    assert.deepEqual(await project.readProject(), written);
+    await project.discardRecoverySnapshot(recovery);
     assert.equal((await readdir(join(root, ".weave"))).includes("current-buffer.json"), false);
     assert.deepEqual(await readdir(join(root, "slides")), ["renamed-slide.html"]);
     const savedCommit = project.commitIfChanged("Save transactional deck");

@@ -9,10 +9,11 @@ const UI_REQUESTS = new Set([
 ]);
 
 export class ServerRequestRouter extends EventEmitter {
-  constructor(client, { timeoutMs = 5 * 60_000 } = {}) {
+  constructor(client, { timeoutMs = 5 * 60_000, onDynamicToolCall = null } = {}) {
     super();
     this.client = client;
     this.timeoutMs = timeoutMs;
+    this.onDynamicToolCall = onDynamicToolCall;
     this.pending = new Map();
     this.onRequest = (request) => this.route(request);
     this.onConnection = (connection) => {
@@ -26,6 +27,32 @@ export class ServerRequestRouter extends EventEmitter {
   }
 
   route(request) {
+    if (request.method === "item/tool/call") {
+      if (!this.onDynamicToolCall) {
+        this.client.respondError(request.id, -32601, `Weave does not support server request ${request.method}.`);
+        this.emit("rejected", request);
+        return;
+      }
+      try {
+        const result = this.onDynamicToolCall(request);
+        if (result && typeof result.then === "function") {
+          result.catch((error) => {
+            try {
+              this.client.respondError(request.id, -32000, error instanceof Error ? error.message : String(error));
+            } catch {
+              // The app-server process may have disconnected while the handler ran.
+            }
+          });
+        }
+      } catch (error) {
+        try {
+          this.client.respondError(request.id, -32000, error instanceof Error ? error.message : String(error));
+        } catch {
+          // The app-server process may have disconnected before the handler ran.
+        }
+      }
+      return;
+    }
     if (!UI_REQUESTS.has(request.method)) {
       this.client.respondError(request.id, -32601, `Weave does not support server request ${request.method}.`);
       this.emit("rejected", request);
