@@ -153,7 +153,7 @@ export function auditWeaveIdCoverage(input) {
   const voidTags = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
   const stack = [];
 
-  for (const match of html.matchAll(/<[^>]*>/g)) {
+  for (const match of html.matchAll(/<!--[\s\S]*?-->|<[^>]*>/g)) {
     const tagText = match[0];
     const closing = /^<\s*\/\s*([a-z][\w:-]*)/i.exec(tagText);
     if (closing) {
@@ -169,6 +169,21 @@ export function auditWeaveIdCoverage(input) {
     if (!opening) continue;
     const tag = opening[1].toLowerCase();
     const hasId = /\bdata-weave-id\s*=/i.test(tagText);
+    const svg = stack.findLast((entry) => entry.tag === "svg");
+    if (tag === "text" && svg && !svg.warned && !stack.some((entry) => entry.tag === "defs")) {
+      diagnostics.push({
+        ...finding(
+          "html.svg-text-not-editable",
+          "SVG内の文字はキャンバスで個別に編集できません",
+          "html",
+          svg.index,
+          svg.length,
+          "warning",
+        ),
+        elementId: svg.id,
+      });
+      svg.warned = true;
+    }
     if (selectableTags.has(tag) && !hasId && !stack.some((entry) => entry.hasId)) {
       diagnostics.push(finding(
         "html.missing-weave-id",
@@ -179,7 +194,10 @@ export function auditWeaveIdCoverage(input) {
         "warning",
       ));
     }
-    if (!voidTags.has(tag) && !/\/\s*>$/.test(tagText)) stack.push({ tag, hasId });
+    if (!voidTags.has(tag) && !/\/\s*>$/.test(tagText)) {
+      const idMatch = /\bdata-weave-id\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(tagText);
+      stack.push({ tag, hasId, index: match.index, length: tagText.length, id: idMatch ? idMatch[1] ?? idMatch[2] : null, warned: false });
+    }
   }
   return diagnostics;
 }
