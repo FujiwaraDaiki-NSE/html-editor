@@ -446,10 +446,10 @@ function validateAgentResult(workflow, base, agent) {
   return { ...checked, changeSet };
 }
 
-async function serializeEditorContext(payload) {
+async function serializeEditorContext(payload, root) {
   if (!payload.contextEnvelope || typeof payload.contextEnvelope !== "object") return "";
   const envelope = editorEnvelope(payload.contextEnvelope);
-  if (envelope.attachments) envelope.attachments = await resolveReferenceAttachments(envelope.attachments);
+  if (envelope.attachments) envelope.attachments = await resolveReferenceAttachments(envelope.attachments, root);
   if (Object.keys(envelope).length === 0) return "";
   const annotations = Array.isArray(envelope.annotations) ? envelope.annotations : [];
   const annotationRules = annotations.length > 0 ? `\n\nAnnotation interpretation rules:\n${annotationPromptRules}` : "";
@@ -492,7 +492,7 @@ async function startEditorTurn(payload, { variation = false } = {}) {
 
 The latest editor state has been written to slides/*.html.
 Inspect the current project and edit the slides/*.html files directly. Do not edit styles/deck.css.
-Do not commit; Weave will commit after this turn.${await serializeEditorContext(payload)}`;
+Do not commit; Weave will commit after this turn.${await serializeEditorContext(payload, root)}`;
     const result = await codex.startTurn({
       threadId: thread.id,
       prompt: context,
@@ -976,7 +976,7 @@ const server = createServer(async (request, response) => {
         pending.threadId = payload.threadId;
         pendingTurns.set(payload.threadId, pending);
         startingRoots.delete(root);
-        const result = await codex.startTurn({ ...payload, prompt: `${prompt}${await serializeEditorContext(payload)}` });
+        const result = await codex.startTurn({ ...payload, prompt: `${prompt}${await serializeEditorContext(payload, root)}` });
         startProjectPreview(pending, payload.threadId, result.turn.id);
         await updateRecoverySnapshot(recoverySnapshot, { workflow, status: "running", threadId: payload.threadId, turnId: result.turn.id }, root);
         return sendJson(request, response, 202, result);
@@ -996,8 +996,10 @@ const server = createServer(async (request, response) => {
     }
     if (url.pathname === "/api/codex/turn/steer") {
       const prompt = requireTurnPrompt(payload);
+      const pending = pendingTurns.get(payload.threadId);
+      if (!pending) return sendJson(request, response, 409, { error: "No running Agent task was found for this thread." });
       // Steer only tells the agent what to point at; writing the DOM here could overwrite its in-progress file edits.
-      return sendJson(request, response, 202, await codex.steerTurn({ ...payload, prompt: `${prompt}${await serializeEditorContext(payload)}` }));
+      return sendJson(request, response, 202, await codex.steerTurn({ ...payload, prompt: `${prompt}${await serializeEditorContext(payload, pending.root)}` }));
     }
     if (url.pathname === "/api/codex/turn/interrupt") {
       return sendJson(request, response, 202, await codex.interruptTurn(payload.threadId));
