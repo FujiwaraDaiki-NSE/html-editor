@@ -34,7 +34,7 @@ type SlideDoc = { id: string; title: string; notes: string; templateId: string; 
 type TemplateLayout = { id: string; name: string; html: string };
 type TemplateDoc = { id: string; name: string; defaultLayoutId: string; masterHtml: string; layouts: TemplateLayout[] };
 type PortableBundle = { format: "weave-deck"; version: 2; deck: { title: string; defaultTemplateId: string; slides: SlideDoc[] }; templates: TemplateDoc[]; css: string };
-type ReferenceAttachment = { path: string; name: string; mimeType?: string; size: number; kind?: "file" | "folder"; files?: number };
+type ReferenceAttachment = { path: string; name: string; mimeType?: string; size: number | null; kind?: "file" | "folder"; files?: number | null; storage?: "linked"; source?: string };
 type ReferenceShelfEntry = ReferenceAttachment & { hash?: string; addedAt?: string; source?: string; sourceMissing?: boolean; missing: boolean; kind: "file" | "folder" };
 type FolderBrowser = { path: string; parent: string | null; breadcrumbs: Array<{ name: string; path: string }>; folders: Array<{ name: string; path: string }>; folderCount: number; fileCount: number };
 
@@ -544,6 +544,8 @@ export default function Home() {
   const viewportRef = useRef<HTMLDivElement>(null);
   const annotationScrollRef = useRef<HTMLDivElement>(null);
   const presenterRef = useRef<HTMLDivElement>(null);
+  const slideShellRef = useRef<HTMLDivElement>(null);
+  const slideWheelRef = useRef({ delta: 0, lastEvent: 0, switched: false });
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
@@ -1001,7 +1003,7 @@ export default function Home() {
     } : undefined,
     annotations: annotationContext,
     overflowing,
-    attachments: attachments.map(({ path, name, size, kind, files }) => ({ path, name, bytes: size, kind, files })),
+    attachments: attachments.map(({ path, name, size, kind, files, storage }) => ({ path, name, bytes: size, kind, files, storage })),
   });
 
   const quality = useMemo(() => {
@@ -2474,6 +2476,38 @@ export default function Home() {
     reinject();
   };
 
+  useEffect(() => {
+    const surface = showPresenter ? presenterRef.current?.querySelector<HTMLElement>(".presenter-stage") : slideShellRef.current;
+    if (!surface || galleryOpen) return;
+    const onWheel = (event: WheelEvent) => {
+      if (event.ctrlKey || event.metaKey || event.altKey || event.shiftKey || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+      if (!showPresenter && (editingId || draggedId || annotationGestureRef.current || pointerPicking)) return;
+      const target = event.target;
+      if (!(target instanceof Element) || target.closest('input, textarea, select, [contenteditable="true"], button')) return;
+      // Let scrollable slide content and zoomed canvases retain their own scrolling.
+      for (let node: Element | null = target; node; node = node.parentElement) {
+        const overflow = getComputedStyle(node).overflowY;
+        if (/(auto|scroll)/.test(overflow) && node.scrollHeight > node.clientHeight + 1) return;
+        if (node.classList.contains("canvas-area") || node.classList.contains("presenter")) break;
+      }
+      event.preventDefault();
+      const now = performance.now();
+      const gesture = slideWheelRef.current;
+      if (now - gesture.lastEvent > 180) { gesture.delta = 0; gesture.switched = false; }
+      gesture.lastEvent = now;
+      if (gesture.switched) return;
+      if (Math.sign(gesture.delta) !== Math.sign(event.deltaY)) gesture.delta = 0;
+      gesture.delta += event.deltaY * (event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? surface.clientHeight : 1);
+      if (Math.abs(gesture.delta) < 40) return;
+      gesture.switched = true;
+      const direction = Math.sign(gesture.delta);
+      if (showPresenter) setPresentSlide((value) => Math.max(1, Math.min(slides.length, value + direction)));
+      else switchSlide(activeRef.current + direction);
+    };
+    surface.addEventListener("wheel", onWheel, { passive: false });
+    return () => surface.removeEventListener("wheel", onWheel);
+  });
+
   const moveSlide = (direction: -1 | 1) => {
     const target = activeRef.current - 1 + direction;
     if (target < 0 || target >= slidesRef.current.length) return;
@@ -3706,11 +3740,12 @@ export default function Home() {
               {openPopover === "references" && <>
                 <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
                 <aside className="reference-popover" aria-label="参照資料">
-                  <header><strong>{referenceView === "browse" ? "フォルダーを追加" : "参照資料"}</strong><button type="button" aria-label="参照資料を閉じる" onClick={() => dismissPopover()}>×</button></header>
+                  <header><strong>{referenceView === "browse" ? "フォルダーを登録" : "参照資料"}</strong><button type="button" aria-label="参照資料を閉じる" onClick={() => dismissPopover()}>×</button></header>
                   {referenceView === "browse" && folderBrowser ? <>
                     <div className="reference-breadcrumbs">{folderBrowser.breadcrumbs.map((crumb, index) => <span key={crumb.path}>{index > 0 && " / "}<button type="button" onClick={() => void browseFolders(crumb.path)}>{crumb.name}</button></span>)}</div>
                     <div className="reference-folder-list">{folderBrowser.parent && <button type="button" onClick={() => void browseFolders(folderBrowser.parent ?? undefined)}>↑ 親フォルダー</button>}{folderBrowser.folders.map((folder) => <button type="button" key={folder.path} onClick={() => void browseFolders(folder.path)}>📁 {folder.name}</button>)}</div>
-                    <footer className="reference-browser-footer"><span>フォルダー {folderBrowser.folderCount.toLocaleString()}件 · この場所のファイル {folderBrowser.fileCount.toLocaleString()}件</span><button type="button" onClick={() => void importFolder()} disabled={folderImporting}>{folderImporting ? "読み込み中…" : "フォルダーを追加"}</button></footer>
+                    <p className="reference-upload-status">選んだ場所を読み取り専用で参照します。コピーは作成しません。</p>
+                    <footer className="reference-browser-footer"><span>フォルダー {folderBrowser.folderCount.toLocaleString()}件 · この場所のファイル {folderBrowser.fileCount.toLocaleString()}件</span><button type="button" onClick={() => void importFolder()} disabled={folderImporting}>{folderImporting ? "登録中…" : "このフォルダーを登録"}</button></footer>
                   </> : <>
                   <section className="reference-shelf-section" aria-labelledby="reference-folders-heading">
                     <h4 id="reference-folders-heading">フォルダー</h4>
@@ -3721,15 +3756,15 @@ export default function Home() {
                         <label title={`${reference.path}\n参照元: ${reference.source ?? "不明"}`}>
                           <input type="checkbox" checked={attached} disabled={reference.missing} onChange={() => setReferenceAttachments((current) => attached ? current.filter((item) => item.path !== reference.path) : [...current, reference])} />
                           <span className="reference-shelf-name">{reference.name}</span>
-                          <small>{reference.missing ? "見つかりません" : `${reference.files ?? 0}ファイル · ${formatBytes(reference.size)}`}</small>
+                          <small>{reference.missing ? "見つかりません" : reference.storage === "linked" ? "パス参照・読み取り専用" : `${reference.files}ファイル · ${reference.size === null ? "容量未取得" : formatBytes(reference.size)}`}</small>
                         </label>
-                        {reference.source && <button type="button" aria-label={`${reference.name}を更新`} disabled={reference.sourceMissing} onClick={() => void syncFolder(reference.path)}>↻</button>}
+                        {reference.source && reference.storage !== "linked" && <button type="button" aria-label={`${reference.name}を更新`} disabled={reference.sourceMissing} onClick={() => void syncFolder(reference.path)}>↻</button>}
                         <button type="button" aria-label={`${reference.name}を参照資料から削除`} onClick={() => void removeShelfReference(reference.path)}>×</button>
                       </div>;
                     })}
                     </div>
-                    <button className="reference-add" type="button" disabled={folderImporting} aria-busy={folderImporting} onClick={() => referenceFolderInputRef.current?.click()}>＋ フォルダーを追加</button>
-                    <button className="reference-add" type="button" disabled={folderImporting} onClick={() => void browseFolders()}>サーバーのフォルダーを追加</button>
+                    <button className="reference-add" type="button" disabled={folderImporting} onClick={() => void browseFolders()}>＋ ホームのフォルダーを登録</button>
+                    <button className="reference-add" type="button" disabled={folderImporting} aria-busy={folderImporting} onClick={() => referenceFolderInputRef.current?.click()}>PCのフォルダーをアップロード</button>
                     {folderUploadStatus && <p className="reference-upload-status" role="status">{folderUploadStatus}</p>}
                   </section>
                   <section className="reference-shelf-section" aria-labelledby="reference-files-heading">
@@ -3741,7 +3776,7 @@ export default function Home() {
                         <label title={reference.path}>
                           <input type="checkbox" checked={attached} disabled={reference.missing} onChange={() => setReferenceAttachments((current) => attached ? current.filter((item) => item.path !== reference.path) : [...current, reference])} />
                           <span className="reference-shelf-name">{reference.name}</span>
-                          <small>{reference.missing ? "見つかりません" : formatBytes(reference.size)}</small>
+                          <small>{reference.missing ? "見つかりません" : reference.size === null ? "容量未取得" : formatBytes(reference.size)}</small>
                         </label>
                         <button type="button" aria-label={`${reference.name}を参照資料から削除`} onClick={() => void removeShelfReference(reference.path)}>×</button>
                       </div>;
@@ -3778,7 +3813,7 @@ export default function Home() {
                 {referenceAttachments.map((attachment) => <div className="context-chip reference-attachment" role="listitem" key={attachment.path}>
                   <span className="context-icon" aria-hidden="true">📎</span>
                   <span className="reference-attachment-name" title={attachment.name}>{attachment.name}</span>
-                  <span>{formatBytes(attachment.size)}</span>
+                  <span>{attachment.storage === "linked" ? "パス参照" : attachment.size === null ? "容量未取得" : formatBytes(attachment.size)}</span>
                   <button type="button" aria-label={`${attachment.name}を添付から外す`} onClick={() => setReferenceAttachments((current) => current.filter((item) => item.path !== attachment.path))}>×</button>
                 </div>)}
               </div>}
@@ -3867,7 +3902,7 @@ export default function Home() {
                 </div>
               </section>
             ) : mode === "preview" ? (
-              <div className={`slide-shell ${previewHighlightSlideId === activeSlideId ? "agent-preview-highlight" : ""}`}>
+              <div ref={slideShellRef} className={`slide-shell ${previewHighlightSlideId === activeSlideId ? "agent-preview-highlight" : ""}`}>
                 {/* The project stylesheet is the only thing styling the slide; the editor's
                     own chrome lives in globals.css and never overlaps these rules. */}
                 <style>{deckCss}</style>
