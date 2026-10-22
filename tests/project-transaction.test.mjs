@@ -734,3 +734,54 @@ test("uploaded folders reject unsafe paths, duplicates, limits, and partial writ
     assert.deepEqual(await project.readReferences(root), []);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("folder upload records preservation before queued Agent finalization and rejects later imports", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weave-upload-finalizing-"));
+  const project = await import("../server/project.mjs");
+  const snapshot = await project.createAgentFileSnapshot(root);
+  let acceptingDrafts = true;
+  let releaseRead;
+  let reading;
+  const readStarted = new Promise((resolve) => { reading = resolve; });
+  const heldRead = new Promise((resolve) => { releaseRead = resolve; });
+  const file = new File(["preserved"], "brief.txt");
+  const arrayBuffer = file.arrayBuffer.bind(file);
+  file.arrayBuffer = async () => { reading(); await heldRead; return arrayBuffer(); };
+  let path;
+  try {
+    const upload = project.importUploadedReferenceFolder([{ path: "docs/brief.txt", file }], root, async (entry) => {
+      assert.equal(acceptingDrafts, true);
+      path = entry.path;
+      await project.captureAgentFilePreservation(snapshot, path, root);
+    }, () => { if (!acceptingDrafts) throw new Error("finalizing"); });
+    await readStarted;
+    const completion = project.runProjectExclusive(async () => {
+      acceptingDrafts = false;
+      await project.restoreAgentFileSnapshot(snapshot, root, { preserve: [path] });
+    }, root);
+    releaseRead();
+    await Promise.all([upload, completion]);
+    assert.equal(await readFile(join(root, path, "brief.txt"), "utf8"), "preserved");
+    await assert.rejects(project.importUploadedReferenceFolder([{ path: "later/brief.txt", file }], root, null, () => { if (!acceptingDrafts) throw new Error("finalizing"); }), /finalizing/);
+  } finally {
+    await project.discardAgentFileSnapshot(snapshot, root);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("all human file mutations check finalization under the project lock before writing", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weave-file-finalizing-"));
+  const project = await import("../server/project.mjs");
+  const rejectFinalizing = () => { throw new Error("finalizing"); };
+  try {
+    for (const [mutate, payload] of [
+      [project.importImageAsset, { data: "eA==", mimeType: "image/png" }],
+      [project.importReference, { data: "eA==", name: "x.txt" }],
+      [project.importReferenceFolder, { source: root }],
+      [project.syncReferenceFolder, "references/docs"],
+      [project.removeReference, "references/docs"],
+      [project.importUploadedReferenceFolder, [{ path: "docs/x", file: new File(["x"], "x") }]],
+    ]) await assert.rejects(mutate(payload, root, null, rejectFinalizing), /finalizing/);
+    assert.deepEqual(await readdir(root), []);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
