@@ -44,6 +44,9 @@ mkdir -p /home/your-user/.local/state/weave
 ```
 
 ```bash
+# Linux/AppArmor host: install the dedicated profile before creating the container.
+sudo install -m 0644 docker/weave-codex.apparmor /etc/apparmor.d/weave-codex
+sudo apparmor_parser -r /etc/apparmor.d/weave-codex
 docker compose up -d --build
 docker compose logs --tail=100 web
 docker compose stop
