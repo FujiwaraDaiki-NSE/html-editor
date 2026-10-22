@@ -147,7 +147,6 @@ function applyEvent(state: CodexUIState, method: string, params: Record<string, 
 
   if (method === "thread/started") {
     hydrateThread(state, params.thread);
-    state.activeThreadId = params.thread.id;
     return;
   }
   if (method === "thread/status/changed") {
@@ -178,8 +177,7 @@ function applyEvent(state: CodexUIState, method: string, params: Record<string, 
     const turn = turnFrom(params.turn ?? { id: turnId }, threadId, state.turns[turnId]);
     state.turns[turn.id] = turn;
     ensureTurn(state, threadId, turn.id);
-    state.activeThreadId = threadId;
-    state.activeTurnId = turn.id;
+    if (state.activeThreadId === threadId) state.activeTurnId = turn.id;
     return;
   }
   if (method === "turn/diff/updated") {
