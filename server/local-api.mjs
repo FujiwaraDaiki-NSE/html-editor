@@ -331,6 +331,11 @@ async function restoreAgentManagedFiles(task, { preserveSkills = false } = {}) {
   await writeFile(indexPath, `${JSON.stringify({ entries: [...entries.values()] }, null, 2)}\n`);
 }
 
+function assertHumanFileMutationReady(root) {
+  const pending = [...pendingTurns.values()].find((turn) => turn.root === root);
+  if (pending && !pending.acceptingDrafts) throw Object.assign(new Error("Agent changes are being finalized. Retry adding references after completion."), { code: "WEAVE_TURN_RUNNING" });
+}
+
 async function recordHumanFileMutation(pending, { path, entry = null, remove = false }) {
   if (!pending || typeof path !== "string" || !pending.acceptingDrafts || pendingTurns.get(pending.threadId) !== pending) return;
   pending.humanFilePaths = (pending.humanFilePaths ?? []).filter((item) => item !== path);
@@ -518,6 +523,7 @@ Do not commit; Weave will commit after this turn.${serializeEditorContext(payloa
 
 async function restoreFailedTurn(pending) {
   await runProjectExclusive(async () => {
+    pending.acceptingDrafts = false;
     if (pending.variation) {
       const current = await readProject(pending.root).catch(() => null);
       if (pending.branch && current && JSON.stringify(current) === JSON.stringify(pending.baseDeck)) discardVariation(pending.branch, pending.root);
@@ -535,7 +541,6 @@ codex.on("notification", (message) => {
   const threadId = message.params?.threadId;
   const pending = pendingTurns.get(threadId);
   if (!pending) return;
-  pending.acceptingDrafts = false;
   pending.previewMonitor?.stop();
   void (async () => {
     const status = message.params?.turn?.status;
@@ -563,6 +568,7 @@ codex.on("notification", (message) => {
     }
     try {
       await runProjectExclusive(async () => {
+        pending.acceptingDrafts = false;
         const agentDeck = await readProject(pending.root);
         const scopeCheck = validateAgentResult(pending.workflow, pending.baseDeck, agentDeck);
         if (!scopeCheck.ok) throw Object.assign(new Error("Agent result exceeded the selected modification scope."), { code: "WEAVE_SCOPE_VIOLATION", diagnostics: scopeCheck.violations });
@@ -706,7 +712,9 @@ const server = createServer(async (request, response) => {
       const files = await readFolderUpload(request);
       if (root !== projectRoot()) return sendJson(request, response, 409, { error: "The project changed while the upload was being received.", code: "WEAVE_PROJECT_CHANGED" });
       if (startingRoots.has(root)) return sendJson(request, response, 409, { error: "Agent setup is capturing the project. Retry the import.", code: "WEAVE_AGENT_STARTING" });
-      const reference = await runProjectLifecycle(() => importUploadedReferenceFolder(files, root, (stored, entry) => recordHumanFileMutation([...pendingTurns.values()].find((turn) => turn.root === root), { path: stored.path, entry })), { allowPending: true });
+      const reference = await runProjectLifecycle(() => importUploadedReferenceFolder(files, root,
+        (stored, entry) => recordHumanFileMutation([...pendingTurns.values()].find((turn) => turn.root === root), { path: stored.path, entry }),
+        () => assertHumanFileMutationReady(root)), { allowPending: true });
       return sendJson(request, response, 201, reference);
     }
     const payload = await readJson(request, url.pathname === "/api/assets" ? 14_000_000 : url.pathname === "/api/references" ? 36_000_000 : ["/api/save", "/api/draft", "/api/milestones"].includes(url.pathname) ? 5_000_000 : 1_500_000);
@@ -799,35 +807,35 @@ const server = createServer(async (request, response) => {
       const root = requestProjectRoot;
       if (root !== projectRoot()) return sendJson(request, response, 409, { error: "The project changed while the upload was being received.", code: "WEAVE_PROJECT_CHANGED" });
       if (startingRoots.has(root)) return sendJson(request, response, 409, { error: "Agent setup is capturing the project. Retry the upload.", code: "WEAVE_AGENT_STARTING" });
-      const asset = await runProjectLifecycle(() => importImageAsset(payload, root, (stored) => recordHumanFileMutation([...pendingTurns.values()].find((turn) => turn.root === root), { path: stored.path })), { allowPending: true });
+      const asset = await runProjectLifecycle(() => importImageAsset(payload, root, (stored) => recordHumanFileMutation([...pendingTurns.values()].find((turn) => turn.root === root), { path: stored.path }), () => assertHumanFileMutationReady(root)), { allowPending: true });
       return sendJson(request, response, 201, asset);
     }
     if (url.pathname === "/api/references") {
       const root = requestProjectRoot;
       if (root !== projectRoot()) return sendJson(request, response, 409, { error: "The project changed while the import was being received.", code: "WEAVE_PROJECT_CHANGED" });
       if (startingRoots.has(root)) return sendJson(request, response, 409, { error: "Agent setup is capturing the project. Retry the import.", code: "WEAVE_AGENT_STARTING" });
-      const reference = await runProjectLifecycle(() => importReference(payload, root, (stored, entry) => recordHumanFileMutation([...pendingTurns.values()].find((turn) => turn.root === root), { path: stored.path, entry })), { allowPending: true });
+      const reference = await runProjectLifecycle(() => importReference(payload, root, (stored, entry) => recordHumanFileMutation([...pendingTurns.values()].find((turn) => turn.root === root), { path: stored.path, entry }), () => assertHumanFileMutationReady(root)), { allowPending: true });
       return sendJson(request, response, 201, reference);
     }
     if (url.pathname === "/api/references/folder") {
       const root = requestProjectRoot;
       if (root !== projectRoot()) return sendJson(request, response, 409, { error: "The project changed while the import was being received.", code: "WEAVE_PROJECT_CHANGED" });
       if (startingRoots.has(root)) return sendJson(request, response, 409, { error: "Agent setup is capturing the project. Retry the import.", code: "WEAVE_AGENT_STARTING" });
-      const reference = await runProjectLifecycle(() => importReferenceFolder(payload, root, (stored, entry) => recordHumanFileMutation([...pendingTurns.values()].find((turn) => turn.root === root), { path: stored.path, entry })), { allowPending: true });
+      const reference = await runProjectLifecycle(() => importReferenceFolder(payload, root, (stored, entry) => recordHumanFileMutation([...pendingTurns.values()].find((turn) => turn.root === root), { path: stored.path, entry }), () => assertHumanFileMutationReady(root)), { allowPending: true });
       return sendJson(request, response, 201, reference);
     }
     if (url.pathname === "/api/references/folder/sync") {
       const root = requestProjectRoot;
       if (root !== projectRoot()) return sendJson(request, response, 409, { error: "The project changed while the update was being received.", code: "WEAVE_PROJECT_CHANGED" });
       if (startingRoots.has(root)) return sendJson(request, response, 409, { error: "Agent setup is capturing the project. Retry the update.", code: "WEAVE_AGENT_STARTING" });
-      const result = await runProjectLifecycle(() => syncReferenceFolder(payload.path, root, (_stored, entry) => recordHumanFileMutation([...pendingTurns.values()].find((turn) => turn.root === root), { path: payload.path, entry })), { allowPending: true });
+      const result = await runProjectLifecycle(() => syncReferenceFolder(payload.path, root, (_stored, entry) => recordHumanFileMutation([...pendingTurns.values()].find((turn) => turn.root === root), { path: payload.path, entry }), () => assertHumanFileMutationReady(root)), { allowPending: true });
       return sendJson(request, response, 200, result);
     }
     if (url.pathname === "/api/references/remove") {
       const root = requestProjectRoot;
       if (root !== projectRoot()) return sendJson(request, response, 409, { error: "The project changed while the removal was being received.", code: "WEAVE_PROJECT_CHANGED" });
       if (startingRoots.has(root)) return sendJson(request, response, 409, { error: "Agent setup is capturing the project. Retry the removal.", code: "WEAVE_AGENT_STARTING" });
-      const references = await runProjectLifecycle(() => removeReference(payload.path, root, () => recordHumanFileMutation([...pendingTurns.values()].find((turn) => turn.root === root), { path: payload.path, remove: true })), { allowPending: true });
+      const references = await runProjectLifecycle(() => removeReference(payload.path, root, () => recordHumanFileMutation([...pendingTurns.values()].find((turn) => turn.root === root), { path: payload.path, remove: true }), () => assertHumanFileMutationReady(root)), { allowPending: true });
       return sendJson(request, response, 200, { references });
     }
 
