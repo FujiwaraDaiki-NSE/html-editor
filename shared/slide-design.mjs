@@ -118,9 +118,11 @@ export function renderDeckDocument(slideFragments, css, title = "Weave deck") {
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${escapeHtml(title)}</title><style>
 html,body{height:100%;margin:0;background:#0c0e11;color:white;font-family:Arial,sans-serif;overflow:hidden}
-.weave-present-stage{height:100%;display:grid;place-items:center}.weave-present-stage>.weave-slide{display:none;transform:scale(var(--slide-scale,1))}.weave-present-stage>.weave-slide.active{display:block}
+.weave-present-stage{height:100%;display:grid;place-items:center}.weave-present-stage>.weave-slide{transform:scale(var(--slide-scale,1))}
+/* Hide only inactive screen slides; keep each slide's own flex/grid layout when visible or printed. */
+@media screen{.weave-present-stage>.weave-slide:not(.active){display:none!important}}
 .weave-present-controls{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);padding:8px 12px;border-radius:99px;background:#111c;color:#fff;font:13px Arial}.weave-present-controls button{border:0;background:transparent;color:inherit;cursor:pointer}
-@page{size:13.333in 7.5in;margin:0}@media print{html,body{height:auto;overflow:visible;background:#fff}.weave-present-stage{display:block;height:auto}.weave-present-stage>.weave-slide{display:block!important;transform:none!important;break-after:page;page-break-after:always}.weave-present-controls{display:none}}
+@page{size:13.333in 7.5in;margin:0}@media print{html,body{height:auto;overflow:visible;background:#fff}.weave-present-stage{display:block;height:auto}.weave-present-stage>.weave-slide{transform:none!important;break-after:page;page-break-after:always}.weave-present-stage>.weave-slide:last-child{break-after:auto;page-break-after:auto}.weave-present-controls{display:none}}
 ${css}
 </style></head><body><div class="weave-present-stage">${slides}</div><div class="weave-present-controls"><button data-prev aria-label="Previous slide">←</button> <span data-position></span> <button data-next aria-label="Next slide">→</button> <button data-fullscreen>Fullscreen</button></div><script>
 const slides=[...document.querySelectorAll('.weave-present-stage > .weave-slide')];let current=Math.max(0,Math.min(slides.length-1,(parseInt(location.hash.slice(1),10)||1)-1));
