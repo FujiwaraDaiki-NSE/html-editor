@@ -171,7 +171,7 @@ export function readSize(classes, parentDirection, parentClasses = []) {
   if (parentDirection === "row" && ratioClasses.some((name) => list.has(name))) return "ratio";
   // A cap wins over flex-1 or self-stretch: the box stops at the measure however hard it was told
   // to grow, so Fixed is what it renders as and what the inspector has to say.
-  if (isMeasured(list)) return "fixed";
+  if (isMeasured(list) || classes.some((name) => /^w-\d+$/.test(name))) return "fixed";
   if (list.has("w-full")) return "fill";
   if (parentDirection === "column") {
     if (list.has("self-stretch")) return "fill";
@@ -192,7 +192,7 @@ const withMeasure = (classes, intent) => intent === "fixed"
 
 /** Rewrite the sizing classes for an intent, keeping any horizontal alignment already chosen. */
 export function applySize(classes, intent, parentDirection) {
-  const kept = classes.filter((name) => !sizeClasses.includes(name));
+  const kept = classes.filter((name) => !sizeClasses.includes(name) && !/^w-\d+$/.test(name));
   // A grid cell is sized by its parent's template, so it carries no sizing class of its own.
   if (parentDirection === "grid") return kept;
   if (intent === "ratio" && parentDirection === "row") {
@@ -227,6 +227,8 @@ export const structuralSlideClasses = new Set(["weave-slide", "hero", "brand", "
 export const utilityDeclarations = new Map([
   ...Object.values(slideControlGroups).flatMap((group) => group.options.flatMap(({ className, css }) => className ? [[className, css]] : [])),
   ...Object.entries(extraUtilities),
+  // Direct manipulation uses the standard spacing scale: four slide pixels per step.
+  ...Array.from({ length: 320 }, (_, index) => index + 1).flatMap((n) => [[`w-${n}`, `width: ${n * 0.25}rem`], [`h-${n}`, `height: ${n * 0.25}rem`]]),
 ]);
 export const allowedSlideClasses = new Set([...structuralSlideClasses, ...utilityDeclarations.keys()]);
 
