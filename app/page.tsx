@@ -566,6 +566,8 @@ export default function Home() {
   const viewportRef = useRef<HTMLDivElement>(null);
   const annotationScrollRef = useRef<HTMLDivElement>(null);
   const presenterRef = useRef<HTMLDivElement>(null);
+  const presenterStageRef = useRef<HTMLDivElement>(null);
+  const [presenterScale, setPresenterScale] = useState(0);
   const slideShellRef = useRef<HTMLDivElement>(null);
   const slideWheelRef = useRef({ delta: 0, lastEvent: 0, switched: false });
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -1778,6 +1780,17 @@ export default function Home() {
   }, [agentRunning, codexState.activeThreadId, codexState.turns, connectionStatus, turnSubmission]);
 
   useEffect(() => { if (showPresenter) presenterRef.current?.focus(); }, [showPresenter]);
+
+  useLayoutEffect(() => {
+    if (!showPresenter) return;
+    const stage = presenterStageRef.current;
+    if (!stage) return;
+    const observer = new ResizeObserver(([entry]) => {
+      setPresenterScale(Math.max(0, Math.min((entry.contentRect.width - 48) / designWidth, (entry.contentRect.height - 48) / designHeight)));
+    });
+    observer.observe(stage);
+    return () => observer.disconnect();
+  }, [showPresenter]);
 
   useEffect(() => {
     if (!openPopover && !threadMenuOpen) return;
@@ -3813,7 +3826,6 @@ export default function Home() {
     </>
   );
 
-  const presenterScale = typeof window === "undefined" ? 1 : Math.min((window.innerWidth - 80) / designWidth, (window.innerHeight - 120) / designHeight);
   const containerLike = !!sel && sel.container && sel.kind !== "metrics";
   const propertyRows = (schema: Control[]) => schema.map((ctl) => {
     const current = sel?.read[ctl.key] ?? "";
@@ -4715,7 +4727,7 @@ export default function Home() {
           if (event.key === "Escape") setShowPresenter(false);
         }}>
           <style>{deckCss}</style>
-          <div className="presenter-stage" style={{ "--slide-scale": presenterScale } as React.CSSProperties} dangerouslySetInnerHTML={{ __html: displayAssetHtml((() => { const slide = slides[presentSlide - 1]; if (!slide) return ""; try { return composeFor(slide, presentSlide, slides.length); } catch (error) { return error instanceof Error ? error.message : String(error); } })()) }} />
+          <div className="presenter-stage" ref={presenterStageRef} style={{ "--slide-scale": presenterScale } as React.CSSProperties} dangerouslySetInnerHTML={{ __html: displayAssetHtml((() => { const slide = slides[presentSlide - 1]; if (!slide) return ""; try { return composeFor(slide, presentSlide, slides.length); } catch (error) { return error instanceof Error ? error.message : String(error); } })()) }} />
           <footer>
             <button onClick={() => setPresentSlide((value) => Math.max(1, value - 1))}>← 前へ</button>
             <span>{presentSlide} / {slides.length}</span>
