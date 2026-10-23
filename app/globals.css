@@ -227,7 +227,9 @@ body {
 .agent-heading { border-bottom: 1px solid var(--line); }
 .agent-heading span { display: flex; align-items: center; gap: 6px; }
 .agent-heading button:disabled { cursor: not-allowed; opacity: .4; }
-.messages { min-width: 0; min-height: 0; flex: 1; overflow: auto; padding: 10px; scrollbar-width: thin; }
+/* The grid allocates the history viewport. Its potentially huge contents must not
+   participate in intrinsic track sizing whenever the composer changes. */
+.messages { min-width: 0; min-height: 0; flex: 1; overflow: auto; contain: size layout style; padding: 10px; scrollbar-width: thin; }
 .context-chip { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; padding: 4px 5px; margin-bottom: 6px; border-radius: 4px; background: var(--panel-3); color: var(--muted); font-size: var(--chat-meta); }
 .context-chip .context-icon { color: var(--accent); }
 .context-chip button { min-height: 20px; padding: 0 6px; border: 1px solid color-mix(in srgb, var(--accent) 55%, var(--line)); border-radius: 999px; background: color-mix(in srgb, var(--accent) 12%, var(--panel-2)); color: var(--accent); font-size: var(--chat-meta); cursor: pointer; }
@@ -983,8 +985,8 @@ button.project-card { cursor: pointer; }
 .quality-empty { padding: 12px; color: #62c99b; font-size: 9px; }
 
 .presenter { position: fixed; z-index: 100; inset: 0; display: grid; grid-template-rows: minmax(0,1fr) 72px; background: #090b0e; }
-.presenter-stage { display: grid; place-items: center; overflow: hidden; }
-.presenter-stage > .weave-slide { transform: scale(var(--slide-scale)); }
+.presenter-stage { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
+.presenter-stage > .weave-slide { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%) scale(var(--slide-scale)); transform-origin: center; }
 .presenter footer { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 8px 20px; border-top: 1px solid #292e36; background: #15181d; }
 .presenter footer button { height: 30px; padding: 0 10px; border: 1px solid #353b45; border-radius: 5px; background: #20252c; color: #e7e9ed; cursor: pointer; }
 .presenter footer small { max-width: 380px; flex: 1; color: #8d949f; font-size: 10px; text-align: center; }
