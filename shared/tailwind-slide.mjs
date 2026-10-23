@@ -360,6 +360,8 @@ ${utilities}
 }
 .weave-slide[data-weave-template="year-end-report"][data-weave-layout="cover"] [data-weave-slot="title"] {
   position: static;
+  max-height: none;
+  overflow: visible;
   color: #000;
   font-size: 42px;
   font-weight: 700;
