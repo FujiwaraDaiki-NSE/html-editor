@@ -106,7 +106,7 @@ export const slideControlGroups = {
   },
   borderStyle: {
     label: "Border",
-    options: [option("None", "border-transparent", "border-color: transparent"), option("All", "border", "border-width: 1px"), option("2px", "border-2", "border-width: 2px"), option("Top", "border-t", "border-top-width: 1px"), option("Bottom", "border-b", "border-bottom-width: 1px")],
+    options: [option("None", "border-transparent", "border-color: transparent"), option("All", "border", "border-width: 1px; border-style: solid"), option("2px", "border-2", "border-width: 2px; border-style: solid"), option("Top", "border-t", "border-top-width: 1px; border-top-style: solid"), option("Bottom", "border-b", "border-bottom-width: 1px; border-bottom-style: solid")],
   },
   borderColor: {
     label: "Border color",
