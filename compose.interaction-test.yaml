@@ -1,0 +1,21 @@
+name: weave-interaction-test
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    init: true
+    network_mode: host
+    user: "${WEAVE_UID:?Set WEAVE_UID}:${WEAVE_GID:?Set WEAVE_GID}"
+    working_dir: "${WEAVE_REPO_ROOT:?Set WEAVE_REPO_ROOT}"
+    environment:
+      HOME: /tmp/weave-test-home
+      PATH: /opt/codex-runtime/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      WEAVE_WEB_HOST: "127.0.0.1"
+      WEAVE_WEB_PORT: "3458"
+      WEAVE_API_PORT: "4358"
+      WEAVE_WORKSPACES_ROOT: "${WEAVE_REPO_ROOT}/work/interaction-test/workspaces"
+    volumes:
+      - "${WEAVE_REPO_ROOT}:${WEAVE_REPO_ROOT}"
+      - "${WEAVE_NODE_ROOT:?Set WEAVE_NODE_ROOT}:/opt/codex-runtime:ro"
+    command: ["npm", "run", "dev"]

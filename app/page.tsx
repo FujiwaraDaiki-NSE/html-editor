@@ -15,6 +15,9 @@ import { editorEnvelope, overflowingIds } from "../shared/context.mjs";
 import { applyEditorChange, applyEditorHistory, mergeEditorDecks } from "../shared/editor-workflow.mjs";
 import { AnnotationAttachment } from "./components/AnnotationAttachment";
 import { AnnotationLegend } from "./components/AnnotationLegend";
+import { resolveBlockDropIntent } from "../shared/block-placement.mjs";
+import { blockDimensionClasses } from "../shared/block-dimensions.mjs";
+import { BlockResizeOverlay, type BlockResizeSize, type BlockResizeCommit } from "./components/BlockResizeOverlay";
 import { AnnotationOverlay } from "./components/AnnotationOverlay";
 import type { Annotation, AnnotationGestureKind, AnnotationRect, PointerCandidate, ResizeHandle } from "./components/AnnotationOverlay";
 import { textExcerptOfNode } from "./components/editable-text-utils";
@@ -232,7 +235,12 @@ const applySizeTo = (node: Element, intent: string) => writeClasses(node, applyS
    leaves the markup alone, so dragging never churns the saved HTML. */
 const relayoutForParent = (node: Element, intent: string, fromLayout: string): string => {
   const layout = layoutOf(node.parentElement);
-  if (layout !== fromLayout) applySizeTo(node, intent);
+  if (layout !== fromLayout) {
+    if ([...node.classList].some((name) => /^w-\d+$/.test(name))) {
+      node.classList.remove("flex-1", "self-stretch");
+      node.classList.add("flex-none", "max-w-full");
+    } else applySizeTo(node, intent);
+  }
   return layout;
 };
 
@@ -287,9 +295,7 @@ type BlockDragSession = {
   originNext: ChildNode | null;
   before: Snapshot;
   committed: boolean;
-  lastReorderAt: number;
-  lastReorderX: number;
-  lastReorderY: number;
+
 };
 type AnnotationGesture = {
   pointerId: number;
@@ -401,16 +407,6 @@ const refreshSlideAnnotations = (annotations: Annotation[], slideId: string, box
   return annotations.map((annotation) => refreshed.get(annotation.id) ?? annotation);
 };
 
-/* Live reordering rewrites the DOM under the cursor, so every move changes the geometry that
-   decided it. Require the pointer to travel before re-deciding: without this, a container that
-   reflows around the dropped block flips the answer back and the block oscillates in place. */
-const REORDER_HYSTERESIS_PX = 9;
-const markReorder = (session: BlockDragSession, event: { timeStamp: number; clientX: number; clientY: number }) => {
-  session.lastReorderAt = event.timeStamp;
-  session.lastReorderX = event.clientX;
-  session.lastReorderY = event.clientY;
-};
-
 export default function Home() {
   const [deckTitle, setDeckTitle] = useState("第3四半期 戦略デッキ");
   const [slides, setSlides] = useState<SlideDoc[]>(initialSlides);
@@ -460,6 +456,10 @@ export default function Home() {
   const [apiKeyDraft, setApiKeyDraft] = useState("");
   const [mcpResult, setMcpResult] = useState("");
   const [turnSubmission, setTurnSubmission] = useState<TurnSubmissionState>(IDLE_TURN_SUBMISSION);
+  const [dropPreview, setDropPreview] = useState<{ left: number; top: number; width: number; height: number; label: string; kind: string } | null>(null);
+  const [blockBox, setBlockBox] = useState<{ left: number; top: number; width: number; height: number; maxWidth: number; maxHeight: number; tagName: string } | null>(null);
+  const [resizePreview, setResizePreview] = useState<BlockResizeSize | null>(null);
+  const resizeSessionRef = useRef<{ node: HTMLElement; before: Snapshot; classes: string[]; width: number; height: number } | null>(null);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draggedSlide, setDraggedSlide] = useState<number | null>(null);
@@ -514,6 +514,7 @@ export default function Home() {
   const [referenceView, setReferenceView] = useState<"shelf" | "browse">("shelf");
   const [folderBrowser, setFolderBrowser] = useState<FolderBrowser | null>(null);
   const [folderImporting, setFolderImporting] = useState(false);
+  const [folderUploadStatus, setFolderUploadStatus] = useState<string | null>(null);
   const [changedReview, setChangedReview] = useState<ChangedTarget[]>([]);
   const [structuredChanges, setStructuredChanges] = useState<any[]>([]);
   const [mergeConflicts, setMergeConflicts] = useState<MergeConflict[]>([]);
@@ -547,6 +548,8 @@ export default function Home() {
   const importRef = useRef<HTMLInputElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const referenceInputRef = useRef<HTMLInputElement>(null);
+  const referenceFolderInputRef = useRef<HTMLInputElement>(null);
+  const folderUploadInFlightRef = useRef(false);
   const skillInputRef = useRef<HTMLInputElement>(null);
   const skillDialogRef = useRef<HTMLFormElement>(null);
   const skillDialogTriggerRef = useRef<HTMLElement | null>(null);
@@ -1447,6 +1450,8 @@ export default function Home() {
     return () => observer.disconnect();
   }, [mode]);
 
+  const hostRectForResize = (node: HTMLElement) => node.closest(".weave-slide")!.getBoundingClientRect();
+
   useLayoutEffect(() => {
     if (!selectedId || mode !== "preview") return;
     const viewport = viewportRef.current;
@@ -1456,7 +1461,12 @@ export default function Home() {
     const update = () => {
       const shellBox = shell.getBoundingClientRect();
       const box = node.getBoundingClientRect();
-      const toolbarWidth = Math.min(360, shellBox.width - 16);
+      const parentBox = node.parentElement?.getBoundingClientRect();
+      const rootBox = hostRectForResize(node);
+      setBlockBox({ left: box.left - shellBox.left, top: box.top - shellBox.top, width: box.width, height: box.height,
+        maxWidth: parentBox ? Math.max(24, (parentBox.right - box.left) / slideScale) : box.width / slideScale,
+        maxHeight: Math.max(24, (rootBox.bottom - box.top) / slideScale), tagName: node.tagName.toLowerCase() });
+      const toolbarWidth = Math.min(620, shellBox.width - 16);
       const centered = box.left - shellBox.left + box.width / 2;
       const left = Math.min(shellBox.width - toolbarWidth / 2 - 8, Math.max(toolbarWidth / 2 + 8, centered));
       const above = box.top - shellBox.top - 44;
@@ -1471,7 +1481,7 @@ export default function Home() {
     observer.observe(viewport);
     observer.observe(node);
     return () => { viewport.removeEventListener("scroll", update); observer.disconnect(); };
-  }, [activeSlide, injectKey, mode, selectedId, slideScale]);
+  }, [activeSlide, injectKey, mode, selectedId, slideScale, slides]);
 
   useLayoutEffect(() => {
     const host = canvasRef.current;
@@ -1890,23 +1900,6 @@ export default function Home() {
   };
 
   const clearDropMarkers = () => canvasRef.current?.querySelectorAll(".weave-drop-before, .weave-drop-after, .weave-drop-horizontal").forEach((node) => node.classList.remove("weave-drop-before", "weave-drop-after", "weave-drop-horizontal"));
-  const nearestContainerChild = (container: HTMLElement, dragged: HTMLElement, clientX: number, clientY: number) => {
-    const children = Array.from(container.children).filter((child): child is HTMLElement => child instanceof HTMLElement && child !== dragged && child.hasAttribute("data-weave-id"));
-    const horizontal = container.classList.contains("flex-row");
-    const grid = container.classList.contains("grid");
-    return children.reduce<HTMLElement | null>((nearest, child) => {
-      if (!nearest) return child;
-      const childRect = child.getBoundingClientRect();
-      const nearestRect = nearest.getBoundingClientRect();
-      const childX = clientX - (childRect.left + childRect.width / 2);
-      const childY = clientY - (childRect.top + childRect.height / 2);
-      const nearestX = clientX - (nearestRect.left + nearestRect.width / 2);
-      const nearestY = clientY - (nearestRect.top + nearestRect.height / 2);
-      const childDistance = grid ? childX ** 2 + childY ** 2 : Math.abs(horizontal ? childX : childY);
-      const nearestDistance = grid ? nearestX ** 2 + nearestY ** 2 : Math.abs(horizontal ? nearestX : nearestY);
-      return childDistance < nearestDistance ? child : nearest;
-    }, null);
-  };
   const animateDomReorder = (mutate: () => void) => {
     const host = canvasRef.current;
     if (!host) return mutate();
@@ -1926,11 +1919,11 @@ export default function Home() {
     }
   };
 
-  const onCanvasDragStart = (event: DragEvent<HTMLDivElement>) => {
-    if (annotationMode) { event.preventDefault(); event.stopPropagation(); return; }
-    const target = (event.target as HTMLElement).closest<HTMLElement>("[data-weave-id]");
+  const onCanvasDragStart = (event: DragEvent<HTMLElement>, chosen: HTMLElement | null) => {
+    if (annotationMode || pointerPicking) { event.preventDefault(); event.stopPropagation(); return; }
+    const target = chosen === null ? (event.target as HTMLElement).closest<HTMLElement>("[data-weave-id]") : chosen;
     const id = target?.getAttribute("data-weave-id");
-    if (!target || !id || !isEditableSlideNode(target) || isTitleSlot(target) || target.getAttribute("contenteditable") === "true" || !target.parentNode) {
+    if (!target || !id || !isEditableSlideNode(target) || destroysTitleSlot(target) || target.getAttribute("contenteditable") === "true" || !target.parentNode) {
       event.preventDefault();
       return;
     }
@@ -1941,72 +1934,39 @@ export default function Home() {
     event.dataTransfer.setData("text/plain", id);
     // A block's sizing intent survives the move; the class expressing it is rewritten whenever the
     // block lands on a parent that runs the other way.
-    blockDragRef.current = { id, node: target, sizeIntent: sizeOf(target), sizeLayout: layoutOf(target.parentElement), originParent: target.parentNode, originNext: target.nextSibling, before: snapshot(), committed: false, lastReorderAt: 0, lastReorderX: event.clientX, lastReorderY: event.clientY };
-    requestAnimationFrame(() => target.classList.add("weave-dragging"));
+    blockDragRef.current = { id, node: target, sizeIntent: sizeOf(target), sizeLayout: layoutOf(target.parentElement), originParent: target.parentNode, originNext: target.nextSibling, before: snapshot(), committed: false };
+    requestAnimationFrame(() => { if (blockDragRef.current?.node === target) target.classList.add("weave-dragging"); });
   };
 
+  const resolveCanvasDrop = (clientX: number, clientY: number) => {
+    const session = blockDragRef.current;
+    const content = contentSlot();
+    if (!session || !content) return null;
+    const rootId = "__content__";
+    const nodes = Array.from(content.querySelectorAll<HTMLElement>("[data-weave-id]"));
+    const candidates = nodes.map((node) => {
+      const parent = node.parentElement?.closest<HTMLElement>("[data-weave-id]");
+      return { id: node.dataset.weaveId!, parentId: parent && parent !== content && content.contains(parent) ? parent.dataset.weaveId! : rootId,
+        rect: node.getBoundingClientRect(), layout: layoutOf(node), container: node.classList.contains("weave-container"), locked: destroysTitleSlot(node) };
+    });
+    return resolveBlockDropIntent({ candidates, pointer: { x: clientX, y: clientY }, draggedId: session.id,
+      root: { id: rootId, rect: content.getBoundingClientRect(), layout: layoutOf(content), container: true, locked: false } });
+  };
   const onCanvasDragOver = (event: DragEvent<HTMLDivElement>) => {
     if (annotationMode) { event.preventDefault(); event.stopPropagation(); return; }
     if (Array.from(event.dataTransfer.items).some((item) => item.kind === "file")) {
-      event.preventDefault();
-      event.dataTransfer.dropEffect = "copy";
-      return;
+      event.preventDefault(); event.dataTransfer.dropEffect = "copy"; return;
     }
-    const session = blockDragRef.current;
-    const host = canvasRef.current;
-    if (!session || !host) return;
+    if (!blockDragRef.current) return;
     event.preventDefault();
-    event.dataTransfer.dropEffect = "move";
-    const now = event.timeStamp;
-    if (now - session.lastReorderAt < 110) return;
-    if (Math.hypot(event.clientX - session.lastReorderX, event.clientY - session.lastReorderY) < REORDER_HYSTERESIS_PX) return;
-    host.querySelectorAll<HTMLElement>("[data-weave-id]").forEach((node) => node.getAnimations().forEach((animation) => animation.finish()));
-    const hit = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null;
-    // The dragged block and its whole subtree are pointer-events: none, so a hit is never inside
-    // it; the contains() guard only catches the frame before .weave-dragging lands.
-    let target = hit?.closest<HTMLElement>("[data-weave-id]") ?? null;
-    if (!target || !isEditableSlideNode(target) || target === session.node || session.node.contains(target)) return;
-    clearDropMarkers();
-
-    // Containers nest: a Row carrying its children can be dropped into another Row, Column or Grid.
-    if (target.classList.contains("weave-container")) {
-      const container = target;
-      const nearestChild = nearestContainerChild(container, session.node, event.clientX, event.clientY);
-      if (nearestChild) {
-        target = nearestChild;
-      } else {
-        container.classList.add("weave-drop-after");
-        if (session.node.parentNode !== container || session.node.nextSibling) {
-          animateDomReorder(() => { container.appendChild(session.node); session.sizeLayout = relayoutForParent(session.node, session.sizeIntent, session.sizeLayout); });
-          markReorder(session, event);
-        }
-        return;
-      }
-    }
-
-    if (target === session.node || session.node.contains(target)) return;
-    const parent = target.parentElement;
-    if (!parent) return;
-    const rect = target.getBoundingClientRect();
-    // A grid cell can be approached from any side, so compare on the axis the pointer is
-    // actually crossing: below the cell means "after", not "before the cell to its left".
-    const horizontal = parent.classList.contains("grid")
-      ? event.clientY >= rect.top && event.clientY <= rect.bottom
-      : parent.classList.contains("flex-row");
-    const siblings = Array.from(parent.children);
-    const draggedIndex = siblings.indexOf(session.node);
-    const targetIndex = siblings.indexOf(target);
-    const pointer = horizontal ? event.clientX : event.clientY;
-    const start = horizontal ? rect.left : rect.top;
-    const size = horizontal ? rect.width : rect.height;
-    const threshold = session.node.parentElement === parent && draggedIndex < targetIndex ? 0.7 : session.node.parentElement === parent && draggedIndex > targetIndex ? 0.3 : 0.5;
-    const after = pointer > start + size * threshold;
-    target.classList.add(after ? "weave-drop-after" : "weave-drop-before");
-    if (horizontal) target.classList.add("weave-drop-horizontal");
-    const reference = after ? target.nextSibling : target;
-    if (reference === session.node || (!after && session.node.nextSibling === target) || (after && target.nextSibling === session.node)) return;
-    animateDomReorder(() => { parent.insertBefore(session.node, reference); session.sizeLayout = relayoutForParent(session.node, session.sizeIntent, session.sizeLayout); });
-    markReorder(session, event);
+    const intent = resolveCanvasDrop(event.clientX, event.clientY);
+    event.dataTransfer.dropEffect = intent ? "move" : "none";
+    const shell = canvasRef.current?.closest(".slide-shell")?.getBoundingClientRect();
+    if (!intent || !shell) { setDropPreview(null); return; }
+    const rect = intent.preview.rect;
+    const label = intent.kind === "wrap" ? (intent.placement === "before" ? "左に並べる" : "右に並べる")
+      : intent.kind === "inside" ? "この中に入れる" : intent.axis === "x" ? (intent.placement === "before" ? "左に挿入" : "右に挿入") : (intent.placement === "before" ? "上に挿入" : "下に挿入");
+    setDropPreview({ left: rect.left - shell.left, top: rect.top - shell.top, width: rect.right - rect.left, height: rect.bottom - rect.top, label, kind: intent.kind });
   };
 
   const onCanvasDrop = (event: DragEvent<HTMLDivElement>) => {
@@ -2025,18 +1985,57 @@ export default function Home() {
     }
     const session = blockDragRef.current;
     if (!session) return;
-    session.committed = true;
-    const changed = session.node.parentNode !== session.originParent || session.node.nextSibling !== session.originNext;
+    const intent = resolveCanvasDrop(event.clientX, event.clientY);
+    const target = intent?.targetId === "__content__" ? contentSlot() : intent?.targetId ? canvasRef.current?.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(intent.targetId)}"]`) : null;
     session.node.classList.remove("weave-dragging");
+    setDropPreview(null);
     clearDropMarkers();
     blockDragRef.current = null;
     setDraggedId(null);
-    if (!changed) return;
+    if (!intent || !target || session.node === target || session.node.contains(target)) return;
+    if (intent.kind === "wrap") {
+      const parent = target.parentElement;
+      if (!parent || target.contains(session.node)) return;
+      const wrapper = document.createElement("div");
+      wrapper.className = "weave-container row flex flex-row gap-4 items-start";
+      wrapper.dataset.weaveId = `row-${createMessageId()}`;
+      wrapper.draggable = true;
+      animateDomReorder(() => {
+        parent.insertBefore(wrapper, target);
+        wrapper.append(...(intent.placement === "before" ? [session.node, target] : [target, session.node]));
+        for (const child of [target, session.node]) {
+          // Equal columns make the inferred side-by-side arrangement fit its existing parent.
+          applySizeTo(child, "fill");
+        }
+      });
+    } else {
+      const parent = intent.kind === "inside" ? target : target.parentElement;
+      const reference = intent.kind === "inside" ? null : intent.placement === "after" ? target.nextSibling : target;
+      if (!parent || reference === session.node || (session.node.parentNode === parent && session.node.nextSibling === reference)) return;
+      animateDomReorder(() => { parent.insertBefore(session.node, reference); session.sizeLayout = relayoutForParent(session.node, session.sizeIntent, session.sizeLayout); });
+    }
+    session.committed = true;
     undoRef.current = [...undoRef.current.slice(-79), session.before];
     redoRef.current = [];
     setHistoryState({ undo: undoRef.current.length, redo: 0 });
     syncFromDom();
     setAnnouncement("ブロックを移動しました");
+  };
+
+  const commitBlockResize = ({ size, handle }: BlockResizeCommit) => {
+    const session = resizeSessionRef.current;
+    resizeSessionRef.current = null;
+    setResizePreview(null);
+    if (!session || !session.node.isConnected) return;
+    const changeWidth = handle !== "s";
+    const changeHeight = handle !== "e";
+    if ((!changeWidth || Math.round(size.width / 4) === Math.round(session.width / 4)) && (!changeHeight || Math.round(size.height / 4) === Math.round(session.height / 4))) return;
+    writeClasses(session.node, blockDimensionClasses(session.classes, size.width, size.height, changeWidth, changeHeight));
+    undoRef.current = [...undoRef.current.slice(-79), session.before];
+    redoRef.current = [];
+    setHistoryState({ undo: undoRef.current.length, redo: 0 });
+    syncFromDom();
+    setAnnouncement("ブロックのサイズを変更しました");
   };
 
   const onCanvasPaste = (event: React.ClipboardEvent<HTMLDivElement>) => {
@@ -2050,7 +2049,7 @@ export default function Home() {
   const onCanvasDragEnd = () => {
     const session = blockDragRef.current;
     if (!session) return;
-    if (!session.committed) animateDomReorder(() => session.originParent.insertBefore(session.node, session.originNext));
+    setDropPreview(null);
     session.node.classList.remove("weave-dragging");
     clearDropMarkers();
     blockDragRef.current = null;
@@ -2184,6 +2183,38 @@ export default function Home() {
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   }, []);
 
+  const uploadReferenceFolder = useCallback(async (selectedFiles: FileList) => {
+    if (folderUploadInFlightRef.current) return;
+    folderUploadInFlightRef.current = true;
+    setFolderImporting(true);
+    setFolderUploadStatus("フォルダーを読み込み中…");
+    try {
+      const files = Array.from(selectedFiles).filter((file) => !file.webkitRelativePath.split("/").some((part) => part.startsWith(".")));
+      if (!files.length) throw new Error("ファイルが入ったフォルダーを選択してください。");
+      if (files.length > 2_000 || files.reduce((total, file) => total + file.size, 0) > 500 * 1024 * 1024) throw new Error("フォルダーは2,000ファイル・合計500 MB以下にしてください。");
+      const body = new FormData();
+      for (const file of files) {
+        if (!file.webkitRelativePath) throw new Error("フォルダーの相対パスを取得できませんでした。");
+        body.append(file.webkitRelativePath, file, file.name);
+      }
+      const response = await fetch(`${apiBase}/references/folder/upload`, { method: "POST", body });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error ?? "フォルダーを読み込めませんでした。");
+      setReferenceShelf((current) => [...current, { ...result, missing: false }]);
+      setReferenceAttachments((current) => [...current, result]);
+      setFolderUploadStatus(`${result.name}を追加しました（${result.files}ファイル）。`);
+      setApiError(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setFolderUploadStatus(message);
+      setApiError(message);
+    } finally {
+      folderUploadInFlightRef.current = false;
+      setFolderImporting(false);
+      if (referenceFolderInputRef.current) referenceFolderInputRef.current.value = "";
+    }
+  }, []);
+
   const browseFolders = useCallback(async (path?: string) => {
     try {
       const response = await fetch(`${apiBase}/folders${path ? `?path=${encodeURIComponent(path)}` : ""}`);
@@ -2201,6 +2232,7 @@ export default function Home() {
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "フォルダーを読み込めませんでした。");
       setReferenceShelf((current) => [...current, { ...result, missing: false, sourceMissing: false }]);
+      setReferenceAttachments((current) => [...current, result]);
       setReferenceView("shelf"); setApiError(null);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
     finally { setFolderImporting(false); }
@@ -3687,12 +3719,14 @@ export default function Home() {
                           <span className="reference-shelf-name">{reference.name}</span>
                           <small>{reference.missing ? "見つかりません" : `${reference.files ?? 0}ファイル · ${formatBytes(reference.size)}`}</small>
                         </label>
-                        <button type="button" aria-label={`${reference.name}を更新`} disabled={reference.sourceMissing} onClick={() => void syncFolder(reference.path)}>↻</button>
+                        {reference.source && <button type="button" aria-label={`${reference.name}を更新`} disabled={reference.sourceMissing} onClick={() => void syncFolder(reference.path)}>↻</button>}
                         <button type="button" aria-label={`${reference.name}を参照資料から削除`} onClick={() => void removeShelfReference(reference.path)}>×</button>
                       </div>;
                     })}
                     </div>
-                    <button className="reference-add" type="button" onClick={() => void browseFolders()}>＋ フォルダーを追加</button>
+                    <button className="reference-add" type="button" disabled={folderImporting} aria-busy={folderImporting} onClick={() => referenceFolderInputRef.current?.click()}>＋ フォルダーを追加</button>
+                    <button className="reference-add" type="button" disabled={folderImporting} onClick={() => void browseFolders()}>サーバーのフォルダーを追加</button>
+                    {folderUploadStatus && <p className="reference-upload-status" role="status">{folderUploadStatus}</p>}
                   </section>
                   <section className="reference-shelf-section" aria-labelledby="reference-files-heading">
                     <h4 id="reference-files-heading">ファイル</h4>
@@ -3747,6 +3781,7 @@ export default function Home() {
               <textarea ref={promptRef} value={promptDraft} onChange={onPromptChange} onCompositionStart={() => { compositionRef.current = true; }} onCompositionEnd={onPromptCompositionEnd} onKeyDown={onPromptKeyDown} placeholder={agentReady ? "Agentにこのスライドの編集を依頼…" : "Codexへの接続を待っています…"} aria-label="Agentへのメッセージ" aria-busy={turnBusy} maxLength={20000} disabled={!agentReady} />
               <div className="chat-actions">
                 <input ref={referenceInputRef} className="sr-only" type="file" multiple onChange={(event) => { if (event.target.files) void uploadReferences(event.target.files); }} />
+                <input ref={referenceFolderInputRef} className="sr-only" type="file" aria-label="参照フォルダーを選択" multiple {...{ webkitdirectory: "" }} onChange={(event) => { if (event.target.files?.length) void uploadReferenceFolder(event.target.files); }} />
                 <button className={`attach-button${openPopover === "references" ? " active" : ""}`} type="button" onClick={(event) => togglePopover("references", event.currentTarget)} disabled={!agentReady} aria-expanded={openPopover === "references"} aria-haspopup="dialog" aria-label="参照資料" title="Agentへ渡すファイルやフォルダーを選びます">📎</button>
                 {codexState.catalog.models.length > 0 && selectedModelInfo && (
                   <div className="agent-model-control">
@@ -3847,7 +3882,7 @@ export default function Home() {
                     ? `Mark for Agent · 変更したい範囲をドラッグ${recalledAnnotations.length > 0 ? ` · ${activeOverlayLabel}と比較中` : ""}`
                     : recalledAnnotations.length > 0
                       ? `送信済みの指示と比較中 · ${activeOverlayLabel}`
-                      : draggedId ? "ブロックを移動中 · 離して配置" : editingId ? "テキストを編集中 · Escで終了" : selectedId ? "選択中 · ドラッグで並べ替え" : "ブロックをクリックして選択"}
+                      : draggedId ? "ブロックを移動中 · 離して配置" : editingId ? "テキストを編集中 · Escで終了" : selectedId ? "選択中 · ドラッグで移動 · 端のハンドルでサイズ変更" : "ブロックをクリックして選択"}
                 </div>
                 <div
                   className="slide-viewport"
@@ -3863,7 +3898,8 @@ export default function Home() {
                   onDoubleClick={onCanvasDoubleClick}
                   onBlurCapture={onCanvasBlurCapture}
                   onKeyDown={onCanvasKeyDown}
-                  onDragStart={onCanvasDragStart}
+                  onDragStart={(event) => onCanvasDragStart(event, null)}
+                  onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropPreview(null); }}
                   onDragOver={onCanvasDragOver}
                   onDrop={onCanvasDrop}
                   onPaste={onCanvasPaste}
@@ -3894,9 +3930,24 @@ export default function Home() {
                     onGestureEnd={onAnnotationGestureEnd}
                   />
                 </div>
-                {selectedId && sel && !annotationMode && <div className="selection-toolbar" data-placement={selectionToolbarPosition.placement} style={{ left: selectionToolbarPosition.left, top: selectionToolbarPosition.top }} role="toolbar" aria-label="選択した要素の簡易操作">
-                  {!sel.container && sel.kind !== "image" && <button onClick={beginEditSelected}>編集</button>}
-                  {!sel.container && sel.kind !== "image" && <button aria-label="太字を切り替える" onClick={() => { const node = selectedNode(); if (!node) return; checkpoint(); node.classList.toggle("font-bold"); syncFromDom(); markDirty(); }}>太字</button>}
+                {dropPreview && <div className={`block-drop-preview ${dropPreview.kind}`} style={{ left: dropPreview.left, top: dropPreview.top, width: dropPreview.width, height: dropPreview.height }}><span>{dropPreview.label}</span></div>}
+                {selectedId && sel && !annotationMode && !draggedId && !editingId && !pointerPicking && blockBox && !outline.some((item) => item.id === selectedId && item.locked) && <BlockResizeOverlay
+                  key={selectedId + ":" + activeSlide + ":" + injectKey}
+                  rect={blockBox} scale={slideScale}
+                  activeNode={{ width: blockBox.width / slideScale, height: blockBox.height / slideScale, tagName: blockBox.tagName, aspectRatio: null }}
+                  maxSize={{ width: blockBox.maxWidth, height: blockBox.maxHeight }} minSize={24} previewSize={resizePreview}
+                  onStart={() => { const node = selectedNode(); if (!node) return; resizeSessionRef.current = { node, before: snapshot(), classes: [...node.classList], width: blockBox.width / slideScale, height: blockBox.height / slideScale }; }}
+                  onPreview={({ size }) => setResizePreview(size)}
+                  onCommit={commitBlockResize}
+                  onCancel={() => { resizeSessionRef.current = null; setResizePreview(null); setAnnouncement("サイズ変更をキャンセルしました"); }}
+                />}
+                {resizePreview && selectedId && <style>{`.slide-viewport [data-weave-id="${cssEscape(selectedId)}"] { width: ${resizePreview.width}px !important; height: ${resizePreview.height}px !important; max-width: none !important; flex: none !important; }`}</style>}
+                {resizePreview && blockBox && <div className="block-size-readout" style={{ left: blockBox.left, top: blockBox.top - 26 }}>{Math.round(resizePreview.width)} × {Math.round(resizePreview.height)} · Escで取消</div>}
+                {selectedId && sel && !annotationMode && !resizePreview && <div className="selection-toolbar" data-placement={selectionToolbarPosition.placement} style={{ left: selectionToolbarPosition.left, top: selectionToolbarPosition.top }} role="toolbar" aria-label="選択した要素の簡易操作" onDragOver={onCanvasDragOver} onDrop={onCanvasDrop}>
+                  {!outline.some((item) => item.id === selectedId && item.locked) && <button draggable className="block-move-handle" aria-label="選択ブロックをドラッグして移動" title="このブロックをまとめて移動" onDragStart={(event) => onCanvasDragStart(event, selectedNode())} onDragEnd={onCanvasDragEnd}>⠿ 移動</button>}
+                  {selectedNode()?.parentElement?.closest("[data-weave-id]") && <button onClick={() => { const parent = selectedNode()?.parentElement?.closest<HTMLElement>("[data-weave-id]"); if (parent && isEditableSlideNode(parent)) setSelectedId(parent.dataset.weaveId!); }}>親を選択</button>}
+                  {!sel.container && sel.kind !== "image" && sel.kind !== "svg" && <button onClick={beginEditSelected}>編集</button>}
+                  {!sel.container && sel.kind !== "image" && sel.kind !== "svg" && <button aria-label="太字を切り替える" onClick={() => { const node = selectedNode(); if (!node) return; checkpoint(); node.classList.toggle("font-bold"); syncFromDom(); markDirty(); }}>太字</button>}
                   {agentReady && <button onClick={referenceSelectedElement}>Agentへ指示</button>}
                   <button className="mobile-detail-action" onClick={() => { setLeftPanelOpen(false); setInspectorOpen(true); setMobileView("inspector"); }}>詳細</button>
                   <button onClick={copySelectedStyle}>スタイルをコピー</button>

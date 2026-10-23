@@ -256,6 +256,8 @@ body {
 .reference-shelf-item > button { padding: 0 3px; background: transparent; color: var(--muted); font-size: 15px; }
 .reference-add { width: 100%; padding: 8px 10px; border: 0; background: transparent; color: var(--accent); font-size: var(--chat-meta); text-align: left; cursor: pointer; }
 .reference-add:hover, .reference-shelf-item:hover { background: var(--panel-3); }
+.reference-add:disabled { opacity: .45; cursor: not-allowed; }
+.reference-upload-status { margin: 0; padding: 6px 10px; font-size: var(--chat-meta); color: var(--muted); overflow-wrap: anywhere; }
 .reference-shelf-section + .reference-shelf-section { border-top: 1px solid var(--line); }
 .reference-shelf-section h4 { margin: 0; padding: 7px 10px 4px; color: var(--muted); font-size: var(--chat-micro); letter-spacing: .08em; text-transform: uppercase; }
 .reference-folder-list { max-height: 220px; overflow-y: auto; display: grid; }
@@ -769,11 +771,8 @@ button.project-card { cursor: pointer; }
 .slide-viewport .weave-drop-after.weave-drop-horizontal { box-shadow: inset calc(-4px / var(--slide-scale)) 0 0 var(--accent); }
 .slide-viewport .weave-container.weave-drop-after { background: color-mix(in srgb, var(--accent) 10%, transparent); outline: calc(2px / var(--slide-scale)) dashed var(--accent); }
 
-/* Empty Row/Column/Grid: editor-only chrome via :empty so HTML stays clean (no placeholder nodes).
-   The drag ghost keeps the box: without it the container would shed 88px of min-height the moment
-   a block lands inside, jumping out from under the cursor and bouncing the block straight back. */
-.slide-viewport .weave-container:empty,
-.slide-viewport .weave-container:has(> .weave-dragging:only-child) {
+/* Empty containers have a visible drop target; occupied containers retain their geometry during drag. */
+.slide-viewport .weave-container:empty {
   box-sizing: border-box;
   min-height: 88px;
   padding: 16px;
@@ -1343,3 +1342,20 @@ button.project-card { cursor: pointer; }
   .review-toggle { padding-inline: 6px; }
   .review-dock { margin-bottom: 52px; }
 }
+
+/* Geometry overlays live outside serialized slide content and stay usable at every zoom. */
+.block-drop-preview { position: absolute; z-index: 24; pointer-events: none; background: var(--accent); border-radius: 2px; }
+.block-drop-preview.inside, .block-drop-preview.wrap { background: color-mix(in srgb, var(--accent) 12%, transparent); border: 2px dashed var(--accent); }
+.block-drop-preview span { position: absolute; left: 0; bottom: calc(100% + 6px); white-space: nowrap; padding: 5px 9px; border-radius: 6px; color: #10141b; background: var(--accent); font-size: 12px; font-weight: 700; box-shadow: 0 2px 8px #0003; }
+.block-resize-overlay { position: absolute; z-index: 22; border: 1px solid var(--accent); }
+.block-resize-handle { position: absolute; width: 14px; height: 14px; border: 2px solid var(--accent); border-radius: 4px; padding: 0; background: #fff; box-shadow: 0 1px 5px #0005; }
+.block-resize-handle::after { content: ''; position: absolute; inset: -5px; }
+.block-resize-handle:focus-visible { outline: 3px solid #fff; outline-offset: 3px; }
+.block-resize-handle.e { right: -7px; top: calc(50% - 7px); cursor: ew-resize; }
+.block-resize-handle.s { bottom: -7px; left: calc(50% - 7px); cursor: ns-resize; }
+.block-resize-handle.se { right: -7px; bottom: -7px; cursor: nwse-resize; }
+.block-size-readout { position: absolute; z-index: 25; pointer-events: none; padding: 3px 7px; background: #17212e; color: #fff; border-radius: 4px; font-size: 12px; white-space: nowrap; }
+.selection-toolbar .block-move-handle { cursor: grab; touch-action: none; }
+.selection-toolbar .block-move-handle:active { cursor: grabbing; }
+.selection-toolbar { width: max-content; max-width: min(620px, calc(100% - 16px)); }
+.selection-toolbar button { flex-shrink: 0; }
