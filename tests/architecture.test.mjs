@@ -340,7 +340,7 @@ test("issue 3 keeps every primary surface reachable and removes implementation-f
   ]);
   for (const view of ["キャンバス", "スライド", "Agent"]) assert.match(page, new RegExp(`>${view}<\\/button>`));
   assert.match(page, />その他\{/);
-  assert.match(page, />履歴とマイルストーン<\/button>/);
+  assert.match(page, />履歴・保存<\/button>/);
   assert.match(page, />スキル<\/button>/);
   assert.match(css, /@media \(max-width: 900px\)[\s\S]*\.mobile-tabs/);
   assert.match(page, /className="slide-thumbnail"[\s\S]*dangerouslySetInnerHTML/);
@@ -356,7 +356,7 @@ test("issue 3 keeps every primary surface reachable and removes implementation-f
 
 test("the primary interface is Japanese and every button receives hover help", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-  for (const label of ["プレゼン・書き出し", "履歴とマイルストーン", "キーボードショートカット", "デザイン", "同期済み"]) {
+  for (const label of ["プレゼン・書き出し", "履歴・保存", "キーボードショートカット", "デザイン", "同期済み"]) {
     assert.match(page, new RegExp(label));
   }
   assert.match(page, /document\.querySelectorAll<HTMLButtonElement>\("button"\)/);
@@ -500,6 +500,18 @@ test("async editor updates preserve newer local edits", async () => {
   assert.match(page, /targetElementId/);
   assert.match(page, /annotations: annotations\.map\(cloneAnnotation\)/);
   assert.match(page, /embedAssetReferences/);
+});
+
+test("learning events refresh skill snapshots without replacing the editor draft", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const start = page.indexOf('if (envelope.type === "weave/learning")');
+  assert.ok(start > -1);
+  const branch = page.slice(start, page.indexOf('if (envelope.type === "weave/project"', start));
+  assert.match(branch, /await loadSkills\(\)/);
+  assert.match(branch, /eventSequenceRef\.current = Math\.max/);
+  assert.match(branch, /continue;/);
+  assert.doesNotMatch(branch, /applyServerState|\/state|setDeckTitle|setSlides/);
+  assert.match(page, /latestRevision=\{skills\.find/);
 });
 
 test("production code does not call excluded or experimental app-server APIs", async () => {

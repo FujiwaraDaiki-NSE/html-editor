@@ -8,6 +8,8 @@ export const UI_RESULT_LIMIT = 120_000;
 
 const BROWSER_UI_TOOL_NAMES = new Set(["inspect", "click", "fill", "select", "key"]);
 export const EDIT_SLIDES_TOOL_NAME = "edit_slides";
+export const GET_SLIDE_LEARNING_TOOL_NAME = "get_slide_learning_context";
+export const LEARN_SLIDE_PREFERENCE_TOOL_NAME = "learn_slide_preference";
 const EDIT_SLIDE_SCOPE_KINDS = new Set(["element", "current-slide", "selected-slides", "deck"]);
 const EDIT_SLIDE_EXECUTIONS = new Set(["apply", "plan", "propose"]);
 
@@ -99,6 +101,41 @@ const uiToolSchemas = {
     },
     required: ["prompt", "scope", "execution", "allowSkillChanges"],
   },
+  [GET_SLIDE_LEARNING_TOOL_NAME]: {
+    type: "object",
+    additionalProperties: false,
+    properties: {},
+    required: [],
+  },
+  [LEARN_SLIDE_PREFERENCE_TOOL_NAME]: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      editCallId: { type: "string", minLength: 1, maxLength: 200 },
+      expectedRevision: { type: "string", pattern: "^[a-f0-9]{40}$" },
+      evidence: { oneOf: [{
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          messageId: { type: "string", minLength: 1, maxLength: 200 },
+          quote: { type: "string", minLength: 6, maxLength: 4_000 },
+        },
+        required: ["messageId", "quote"],
+      }, { type: "null" }] },
+      preference: { oneOf: [{
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          aspect: { enum: ["information-density", "typography", "diagram", "image", "emphasis", "layout", "color"] },
+          condition: { type: "string", minLength: 1, maxLength: 600 },
+          prefer: { type: "string", minLength: 1, maxLength: 600 },
+          exceptions: { oneOf: [{ type: "string", minLength: 1, maxLength: 600 }, { type: "null" }] },
+        },
+        required: ["aspect", "condition", "prefer", "exceptions"],
+      }, { type: "null" }] },
+    },
+    required: ["editCallId", "expectedRevision", "evidence", "preference"],
+  },
 };
 
 const uiToolDescriptions = {
@@ -108,6 +145,8 @@ const uiToolDescriptions = {
   select: "Choose one option in a live Weave editor select element by its value and report the resulting visible state.",
   key: "Send one keyboard key with optional modifiers to the current live Weave editor or a selected control.",
   [EDIT_SLIDES_TOOL_NAME]: "Delegate a slide editing request to a scoped Weave editor turn and report its actual result.",
+  [GET_SLIDE_LEARNING_TOOL_NAME]: "Read automatic learning availability, the current skill revision, original human messages, and verified applied slide edits for this active chat turn. Read this before learning; rewritten editor prompts are not human evidence.",
+  [LEARN_SLIDE_PREFERENCE_TOOL_NAME]: "After a verified applied slide correction, record a conditional slide presentation preference using an exact quote from the original human message. One presentation's inferred correction stays a candidate; only explicit future preferences or independent presentations can become active. Pass both evidence and preference as null when there is nothing reusable. Cannot change source files, permissions, or learning rules.",
 };
 
 function toolSpec(name) {
@@ -124,13 +163,13 @@ function toolSpec(name) {
  * HTTP server. Keep this as a function so a caller cannot mutate the shared
  * schema object between thread starts.
  */
-export function uiDynamicTools({ purpose } = {}) {
+export function uiDynamicTools({ purpose, learning = false } = {}) {
   if (purpose !== "chat") return [];
   return [{
     type: "namespace",
     name: UI_TOOL_NAMESPACE,
     description: "Operate the currently attached Weave browser UI through a visible, correlated action.",
-    tools: [...BROWSER_UI_TOOL_NAMES, EDIT_SLIDES_TOOL_NAME].map(toolSpec),
+    tools: [...BROWSER_UI_TOOL_NAMES, EDIT_SLIDES_TOOL_NAME, ...(learning ? [GET_SLIDE_LEARNING_TOOL_NAME, LEARN_SLIDE_PREFERENCE_TOOL_NAME] : [])].map(toolSpec),
   }];
 }
 
@@ -389,6 +428,14 @@ export class UiToolBridge extends EventEmitter {
       sessions: [...this.sessions.values()].map((session) => publicSession(session)),
       pending: [...this.pending.values()].map(publicPending),
     };
+  }
+
+  activeThreadSession(threadId) {
+    this.prune();
+    const sessionId = this.threadSessions.get(threadId);
+    const session = sessionId ? this.sessions.get(sessionId) : null;
+    if (!session || session.activeThreadId !== threadId) throw bridgeError("No active Weave browser session is attached to this thread.", "WEAVE_UI_NO_SESSION");
+    return publicSession(session);
   }
 
   validateArguments(tool, rawArguments) {

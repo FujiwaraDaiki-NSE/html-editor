@@ -73,6 +73,8 @@ import {
   updateSkill,
   uploadSkill,
 } from "./skills.mjs";
+import { initializeApplicationSkills, listApplicationSkills, updateApplicationSkill, getApplicationSkillHistory, getApplicationSkillVersion, restoreApplicationSkill } from "./application-skills.mjs";
+import { initializeSlidePreferenceLearning, getLearningState, setLearningEnabled, slidePreferenceLearning } from "./slide-preference-learning.mjs";
 import { CodexService } from "./codex/service.mjs";
 import { annotationPromptRules, canSendTurn } from "../shared/annotation.mjs";
 import { contextPromptRules, editorEnvelope, isReferencePath } from "../shared/context.mjs";
@@ -84,9 +86,11 @@ import { ProjectPreviewMonitor } from "./project-preview.mjs";
 import { chatInstructions, delegatedEditorContext } from "./chat-workflow.mjs";
 
 const apiPort = Number(process.env.WEAVE_API_PORT ?? 4317);
+await initializeApplicationSkills();
+await initializeSlidePreferenceLearning();
 await initializeCurrentProject();
 const webPort = parseConfiguredPort(process.env.WEAVE_WEB_PORT);
-const codex = new CodexService({ projectRoot: projectRoot(), workspaceRoot: workspacesRoot, instructions: agentInstructions, chatInstructions });
+const codex = new CodexService({ projectRoot: projectRoot(), workspaceRoot: workspacesRoot, instructions: agentInstructions, chatInstructions, slidePreferenceLearning });
 let codexProjectRoot = projectRoot();
 // Pending work is keyed by thread but every entry carries its immutable project
 // root. This allows project switching while another project's turn is settling.
@@ -219,7 +223,7 @@ async function statePayload() {
     templates: await readTemplates(),
     references: await readReferences(),
     ...state,
-    project: { ...state.project, backgroundTasks: backgroundTasks[String(projectRoot()).split(/[\\/]/).filter(Boolean).pop()] ?? [] },
+    project: { ...state.project, historyCapabilities: { preview: !activeProjectTurn(), returnToDraft: !activeProjectTurn() && state.project.historyPreview, createMilestone: !activePending || activePending.acceptingDrafts === true }, historyUnavailableReason: activeProjectTurn() ? "Agentの処理が終わってから履歴を開いてください。" : null, backgroundTasks: backgroundTasks[String(projectRoot()).split(/[\\/]/).filter(Boolean).pop()] ?? [] },
     backgroundTasks,
     variations: state.variations.map((variation) => ({
       ...variation,
@@ -236,7 +240,7 @@ async function statePayload() {
       ui: codex.uiTools.snapshot(),
       editing: activePending !== undefined || startingRoots.has(projectRoot()),
     },
-    skills: await listSkills(projectRoot()),
+    skills: await allSkills(projectRoot()),
     agentPreview: activePending ? {
       threadId: activePendingEntry[0],
       turnId: activePending.turnId,
@@ -282,6 +286,10 @@ function startProjectPreview(pending, threadId, turnId) {
   }).start();
 }
 
+async function allSkills(root) {
+  return [...await listApplicationSkills(), ...await listSkills(root)];
+}
+
 async function refreshSkillCatalog() {
   if (!codex.ready || codexProjectRoot !== projectRoot()) return;
   try {
@@ -297,7 +305,7 @@ async function runSkillMutation(operation) {
     const root = projectRoot();
     const skill = await operation(root);
     await refreshSkillCatalog();
-    return { skill, skills: await listSkills(root), project: projectState().project };
+    return { skill, skills: await allSkills(root), project: projectState().project };
   });
 }
 
@@ -730,7 +738,7 @@ const server = createServer(async (request, response) => {
     }
     if (request.method === "GET" && url.pathname === "/api/skills") {
       const scope = url.searchParams.has("scope") ? url.searchParams.get("scope") : undefined;
-      return sendJson(request, response, 200, { skills: await listSkills(projectRoot(), scope) });
+      return sendJson(request, response, 200, { skills: scope === undefined ? await allSkills(projectRoot()) : scope === "application" ? await listApplicationSkills() : await listSkills(projectRoot(), scope) });
     }
     if (request.method === "GET" && url.pathname === "/api/folders") {
       return sendJson(request, response, 200, await listFolders(url.searchParams.get("path") || undefined));
@@ -740,6 +748,14 @@ const server = createServer(async (request, response) => {
       let assetPath;
       try { assertAssetFilename(filename); assetPath = join(projectRoot(), "assets", filename); } catch { return sendJson(request, response, 404, { error: "Asset not found." }); }
       return sendAsset(request, response, filename, assetPath);
+    }
+    const applicationSkillRead = url.pathname.match(/^\/api\/skills\/application\/([^/]+)\/(history|version)$/);
+    if (request.method === "GET" && applicationSkillRead) {
+      const name = decodeSkillName(applicationSkillRead[1]);
+      const result = applicationSkillRead[2] === "history"
+        ? await getApplicationSkillHistory(name)
+        : await getApplicationSkillVersion(name, url.searchParams.get("commit"));
+      return sendJson(request, response, 200, result);
     }
     const projectAssetMatch = request.method === "GET" && url.pathname.match(/^\/api\/projects\/([^/]+)\/assets\/([^/]+)$/);
     if (projectAssetMatch) {
@@ -758,6 +774,9 @@ const server = createServer(async (request, response) => {
       });
       codex.events.attach(response, Number.isFinite(sequence) ? sequence : 0);
       return;
+    }
+    if (request.method === "GET" && url.pathname === "/api/skills/learning") {
+      return sendJson(request, response, 200, await getLearningState());
     }
     if (request.method === "GET" && url.pathname === "/api/ui/state") {
       return sendJson(request, response, 200, codex.uiTools.snapshot());
@@ -833,8 +852,24 @@ const server = createServer(async (request, response) => {
       return sendJson(request, response, 200, { projects: await listProjects() });
     }
 
+    if (request.method === "PATCH" && url.pathname === "/api/skills/learning") {
+      return sendJson(request, response, 200, await setLearningEnabled({ enabled: payload.enabled, expectedRevision: payload.expectedRevision }));
+    }
+
     if (activeProjectTurn() && request.method !== "GET" && /^\/api\/skills(?:\/|$)/.test(url.pathname)) {
       return sendJson(request, response, 409, { error: "Finish the running Agent turn before changing skills.", code: "WEAVE_TURN_RUNNING" });
+    }
+
+    const applicationSkillMutation = url.pathname.match(/^\/api\/skills\/application\/([^/]+)(?:\/(restore))?$/);
+    if (applicationSkillMutation && ((request.method === "PATCH" && !applicationSkillMutation[2]) || (request.method === "POST" && applicationSkillMutation[2] === "restore"))) {
+      const name = decodeSkillName(applicationSkillMutation[1]);
+      const result = await runSkillMutation(async () => {
+        if (startingRoots.size || pendingTurns.size || codex.activeTurns.size) throw Object.assign(new Error("Agentの処理が終わってから共通スキルを変更してください。"), { code: "WEAVE_TURN_RUNNING" });
+        return applicationSkillMutation[2] === "restore"
+          ? restoreApplicationSkill({ ...payload, name })
+          : updateApplicationSkill({ ...payload, name });
+      });
+      return sendJson(request, response, 200, result);
     }
 
     if (request.method === "POST" && url.pathname === "/api/skills") {
@@ -963,12 +998,20 @@ const server = createServer(async (request, response) => {
     }
     if (url.pathname === "/api/history/checkout") {
       if (activeProjectTurn()) return sendJson(request, response, 409, { error: "An Agent turn is running." });
-      await checkoutHistory(String(payload.commit ?? ""));
+      await enqueueProjectSwitch(async () => {
+        if (requestProjectRoot !== projectRoot()) throw Object.assign(new Error("資料が切り替わりました。履歴を読み直してください。"), { code: "WEAVE_PROJECT_CHANGED" });
+        if (activeProjectTurn()) throw Object.assign(new Error("An Agent turn is running."), { code: "WEAVE_TURN_RUNNING" });
+        await checkoutHistory(requireText(payload.commit, "History commit", 40), requireText(payload.expectedRevision, "Expected revision", 40), requestProjectRoot);
+      });
       return sendJson(request, response, 200, await statePayload());
     }
     if (url.pathname === "/api/history/main") {
       if (activeProjectTurn()) return sendJson(request, response, 409, { error: "An Agent turn is running." });
-      await checkoutMain();
+      await enqueueProjectSwitch(async () => {
+        if (requestProjectRoot !== projectRoot()) throw Object.assign(new Error("資料が切り替わりました。履歴を読み直してください。"), { code: "WEAVE_PROJECT_CHANGED" });
+        if (activeProjectTurn()) throw Object.assign(new Error("An Agent turn is running."), { code: "WEAVE_TURN_RUNNING" });
+        await checkoutMain(requireText(payload.expectedRevision, "Expected revision", 40), requestProjectRoot);
+      });
       return sendJson(request, response, 200, await statePayload());
     }
     if (url.pathname === "/api/variations/checkout") {
@@ -1037,7 +1080,7 @@ const server = createServer(async (request, response) => {
         const contextEnvelope = editorEnvelope(payload.contextEnvelope);
         chatTurns.set(thread.id, { root, contextEnvelope, model: payload.model, effort: payload.effort, approvalPolicy: payload.approvalPolicy });
         startingRoots.delete(root);
-        const result = await codex.startTurn({ ...payload, threadId: thread.id, purpose: "chat", cwd: root, instructions: `${chatInstructions}${await serializeEditorContext(payload, root)}`, prompt });
+        const result = await codex.startTurn({ ...payload, threadId: thread.id, purpose: "chat", humanPrompt: payload.prompt, cwd: root, instructions: `${chatInstructions}${await serializeEditorContext(payload, root)}`, prompt });
         return sendJson(request, response, 202, { ...result, thread });
       } catch (error) {
         if (thread) chatTurns.delete(thread.id);
@@ -1055,7 +1098,7 @@ const server = createServer(async (request, response) => {
         ? await serializeEditorContext(payload, pending.root)
         : await serializeEditorContext(payload, chat.root);
       // Steer only tells the agent what to point at; writing the DOM here could overwrite its in-progress file edits.
-      return sendJson(request, response, 202, await codex.steerTurn({ ...payload, prompt: `${prompt}${editorContext}` }));
+      return sendJson(request, response, 202, await codex.steerTurn({ ...payload, humanPrompt: payload.prompt, prompt: `${prompt}${editorContext}` }));
     }
     if (url.pathname === "/api/codex/turn/interrupt") {
       await Promise.all([...pendingTurns.entries()].filter(([, pending]) => pending.parentThreadId === payload.threadId).map(([threadId]) => codex.interruptTurn(threadId)));
@@ -1113,10 +1156,10 @@ const server = createServer(async (request, response) => {
     return sendJson(request, response, 404, { error: "Not found." });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const status = ["WEAVE_REVISION_CONFLICT", "WEAVE_SKILL_CONFLICT", "WEAVE_TURN_RUNNING", "WEAVE_UI_REPLAY", "WEAVE_UI_NOT_PENDING", "WEAVE_UI_SESSION_MISMATCH", "WEAVE_UI_OWNERSHIP_REQUIRED"].includes(error?.code) ? 409
+    const status = ["WEAVE_REVISION_CONFLICT", "WEAVE_SKILL_CONFLICT", "WEAVE_PROJECT_CHANGED", "WEAVE_TURN_RUNNING", "WEAVE_UI_REPLAY", "WEAVE_UI_NOT_PENDING", "WEAVE_UI_SESSION_MISMATCH", "WEAVE_UI_OWNERSHIP_REQUIRED"].includes(error?.code) ? 409
       : ["WEAVE_UI_UNAUTHORIZED", "WEAVE_UI_SESSION_EXPIRED"].includes(error?.code) ? 401
       : error?.code === "WEAVE_SKILL_NOT_FOUND" ? 404
-      : error?.code === "WEAVE_SKILL_INVALID" ? 400
+      : ["WEAVE_SKILL_INVALID", "WEAVE_LEARNING_INVALID"].includes(error?.code) ? 400
       : error?.code === "WEAVE_REQUEST_TOO_LARGE" ? 413
       : error?.code === "WEAVE_INVALID_JSON" ? 400
       : ["WEAVE_QUALITY_FAILED", "WEAVE_CONTENT_POLICY", "WEAVE_SCOPE_VIOLATION"].includes(error?.code) ? 422

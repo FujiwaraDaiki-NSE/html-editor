@@ -34,3 +34,12 @@ test("exposes the browser UI session and response bridge routes", () => {
   assert.deepEqual(routeMethodDecision("/api/ui/session", "PATCH"), { allowed: true, allow: "POST, PATCH, DELETE" });
   assert.deepEqual(routeMethodDecision("/api/ui/response", "POST"), { allowed: true, allow: "POST" });
 });
+
+
+test("application skill history is read-only and restoration creates a new version", () => {
+  assert.deepEqual(routeMethodDecision("/api/skills/application/author-slide-preferences/history", "POST"), { allowed: false, allow: "GET" });
+  assert.deepEqual(routeMethodDecision("/api/skills/application/author-slide-preferences/version", "GET"), { allowed: true, allow: "GET" });
+  assert.deepEqual(routeMethodDecision("/api/skills/application/author-slide-preferences/restore", "GET"), { allowed: false, allow: "POST" });
+  assert.deepEqual(routeMethodDecision("/api/skills/application/author-slide-preferences", "DELETE"), { allowed: false, allow: "PATCH" });
+  assert.deepEqual(routeMethodDecision("/api/skills/learning", "PATCH"), { allowed: true, allow: "GET, PATCH" });
+});

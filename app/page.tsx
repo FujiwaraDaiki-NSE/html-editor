@@ -18,6 +18,9 @@ import { AnnotationLegend } from "./components/AnnotationLegend";
 import { AnnotationOverlay } from "./components/AnnotationOverlay";
 import type { Annotation, AnnotationGestureKind, AnnotationRect, PointerCandidate, ResizeHandle } from "./components/AnnotationOverlay";
 import { useEditorDialog } from "./components/EditorDialog";
+import { ApplicationSkillDialog } from "./components/ApplicationSkillDialog";
+import { ApplicationSkillLearning } from "./components/ApplicationSkillLearning";
+import { isApplicationSkill, type ApplicationSkillEntry, type SkillEntry, type SkillScope } from "./components/application-skill-requests";
 import { textExcerptOfNode } from "./components/editable-text-utils";
 import { sourceElementIdAtOffset, sourceOffsetForElement, validateEditableSlideSource } from "./editor-source";
 import { installUiBridge, type UiBridge, type UiBridgeStatus, type UiRequest } from "./ui-bridge";
@@ -41,9 +44,8 @@ type ReferenceShelfEntry = ReferenceAttachment & { hash?: string; addedAt?: stri
 type FolderBrowser = { path: string; parent: string | null; breadcrumbs: Array<{ name: string; path: string }>; folders: Array<{ name: string; path: string }>; folderCount: number; fileCount: number };
 
 type SlideNav = "filmstrip" | "rail";
-type SkillScope = "project" | "common";
-type SkillEntry = { name: string; description: string; body: string; content: string; frontmatter: string | null; scope: SkillScope; location: SkillScope; path: string; filePath: string; valid: boolean; error: string | null };
-type SkillDraft = { scope: SkillScope; name: string; description: string; body: string; frontmatter: string };
+type UserSkillScope = "project" | "common";
+type SkillDraft = { scope: UserSkillScope; name: string; description: string; body: string; frontmatter: string };
 type SkillDialog = { mode: "create" | "edit"; source: SkillEntry | null };
 type SkillStatus = { state: "idle" | "busy" | "success" | "error"; message: string };
 type ActivityView = "agent" | "history" | "shortcuts" | "skills" | "settings";
@@ -83,7 +85,7 @@ type ServerState = {
   references: ReferenceShelfEntry[];
   history: HistoryEntry[];
   variations: Array<{ branch: string; label: string; commit: string; message: string; status: "ready" | "generating" | "paused" | "archived"; state?: "pending" | "ready" | "paused" | "archived" }>;
-  project: { root: string; slug?: string; branch: string; commit: string; revision?: string; clean: boolean; historyPreview?: boolean; backgroundTasks?: Array<{ threadId?: string; turnId?: string; status: string; variation?: boolean; branch?: string }> };
+  project: { root: string; slug?: string; branch: string; commit: string; revision?: string; clean: boolean; historyPreview?: boolean; historyCapabilities?: { preview: boolean; returnToDraft: boolean; createMilestone: boolean }; historyUnavailableReason?: string | null; backgroundTasks?: Array<{ threadId?: string; turnId?: string; status: string; variation?: boolean; branch?: string }> };
   backgroundTasks?: Record<string, Array<{ threadId?: string; turnId?: string; status: string; variation?: boolean; branch?: string }>>;
   codex: {
     ready: boolean;
@@ -107,7 +109,7 @@ type ServerState = {
   migrationNotice: string;
 };
 
-type HistoryEntry = { id: string; shortId: string; message: string; date: string };
+type HistoryEntry = { id: string; shortId: string; message: string; date: string; kind: "milestone" | "automatic" };
 type ProjectSummary = { slug: string; title: string; slideCount: number; updatedAt: string | null; current: boolean; blocked: boolean; blockedCount: number; thumbnailHtml: string; css: string };
 type GalleryDialog = { kind: "rename"; slug: string; title: string } | { kind: "archive"; slug: string; title: string };
 
@@ -459,12 +461,13 @@ export default function Home() {
   const [threadMenuOpen, setThreadMenuOpen] = useState(false);
   const [activityView, setActivityView] = useState<ActivityView>("agent");
   const [skills, setSkills] = useState<SkillEntry[]>([]);
-  const [skillScope, setSkillScope] = useState<SkillScope>("project");
+  const [skillScope, setSkillScope] = useState<SkillScope>("application");
   const [skillSearch, setSkillSearch] = useState("");
   const [skillDialog, setSkillDialog] = useState<SkillDialog | null>(null);
   const [skillDraft, setSkillDraft] = useState<SkillDraft>({ scope: "project", name: "", description: "", body: "", frontmatter: "" });
   const [skillStatus, setSkillStatus] = useState<SkillStatus>({ state: "idle", message: "" });
   const [skillBusyKey, setSkillBusyKey] = useState<string | null>(null);
+  const [applicationSkillDialog, setApplicationSkillDialog] = useState<{ skill: ApplicationSkillEntry; tab: "edit" | "history" } | null>(null);
   const agentModel = useSyncExternalStore(agentModelStore.subscribe, agentModelStore.read, agentModelStore.serverRead);
   const selectedModel = agentModel.model;
   const reasoningEffort = agentModel.effort;
@@ -476,6 +479,10 @@ export default function Home() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draggedSlide, setDraggedSlide] = useState<number | null>(null);
   const [history, setHistory] = useState<HistoryEntry[]>([]);
+  const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
+  const [historyBusy, setHistoryBusy] = useState(false);
+  const [historyStatus, setHistoryStatus] = useState<{ state: "idle" | "busy" | "success" | "error"; message: string }>({ state: "idle", message: "" });
+  const historyBusyRef = useRef(false);
   const [project, setProject] = useState<ServerState["project"] | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
   const [projectEventDiagnostics, setProjectEventDiagnostics] = useState<Array<{ code?: string; message?: string; severity?: string; source?: string }>>([]);
@@ -654,13 +661,16 @@ export default function Home() {
       if (!Array.isArray(result?.skills)) throw new Error("スキルの応答が不正です。");
       setSkills(result.skills);
       setSkillStatus({ state: "idle", message: "" });
+      return result.skills as SkillEntry[];
     } catch (error) {
       setSkillStatus({ state: "error", message: error instanceof Error ? error.message : String(error) });
+      return null;
     }
   }, []);
 
   const showActivity = (view: ActivityView) => {
     setActivityView(view);
+    setCanvasFocused(false);
     setLeftPanelOpen(true);
     setInspectorOpen(false);
     setMobileView(view);
@@ -1196,7 +1206,7 @@ export default function Home() {
   }, [mode, selectedId]);
 
   useEffect(() => {
-    if (!deckLoadedRef.current || !browserDirtyRef.current) return;
+    if (historyBusy || !deckLoadedRef.current || !browserDirtyRef.current) return;
     const draft = { title: deckTitle, defaultTemplateId, slides };
     const fingerprint = JSON.stringify(draft);
     if (fingerprint === lastDraftFingerprintRef.current) return;
@@ -1230,7 +1240,7 @@ export default function Home() {
       }
     }, 700);
     return () => { window.clearTimeout(timer); controller.abort(); };
-  }, [deckTitle, defaultTemplateId, importedTemplates, serverRevision, slides]);
+  }, [deckTitle, defaultTemplateId, historyBusy, importedTemplates, serverRevision, slides]);
 
   const contextEnvelope = (annotationContext: Annotation[] = [], overflowing: string[] = [], attachments: ReferenceAttachment[] = []) => editorEnvelope({
     slide: activeSlideId,
@@ -1349,7 +1359,9 @@ export default function Home() {
     return nameMatches.length === 1 ? nameMatches[0] : undefined;
   };
   const visibleSkills = useMemo(() => skills.filter((skill) => skill.scope === skillScope && (!skillSearch.trim() || `${skill.name} ${skill.description}`.toLowerCase().includes(skillSearch.trim().toLowerCase()))), [skillScope, skillSearch, skills]);
-  const activityLabel = activityView === "history" ? "バージョン履歴" : activityView === "shortcuts" ? "ショートカット" : activityView === "skills" ? "スキル" : activityView === "settings" ? "設定" : "チャット";
+  const selectedHistoryEntry = history.find((entry) => entry.id === selectedHistoryId);
+  const historyEntryLabel = (entry: HistoryEntry) => entry.kind === "milestone" && entry.message.startsWith("Milestone: ") ? entry.message.slice("Milestone: ".length) : entry.message;
+  const activityLabel = activityView === "history" ? "履歴・保存" : activityView === "shortcuts" ? "ショートカット" : activityView === "skills" ? "スキル" : activityView === "settings" ? "設定" : "チャット";
 
   /* `applyDeck` controls whether the on-disk deck replaces the editor buffer. Status-only polls
      (retrying while Codex connects) pass false so they never clobber unsaved edits — the local
@@ -1470,6 +1482,11 @@ export default function Home() {
               eventSequenceRef.current = Math.max(eventSequenceRef.current, envelopeSequence);
               continue;
             }
+            if (envelope.type === "weave/learning") {
+              await loadSkills();
+              eventSequenceRef.current = Math.max(eventSequenceRef.current, envelopeSequence);
+              continue;
+            }
             if (envelope.type === "weave/project" || envelope.type === "codex/gap") {
               const projectEvent = envelope.type === "weave/project" ? projectEventDecision(envelope.payload) : null;
               const generation = editGenerationRef.current;
@@ -1575,7 +1592,7 @@ export default function Home() {
     };
     void connect();
     return () => { canceled = true; if (retryTimer) clearTimeout(retryTimer); };
-  }, [applyServerState, handleUiToolEvent]);
+  }, [applyServerState, handleUiToolEvent, loadSkills]);
 
   useEffect(() => {
     if (!previewHighlightSlideId) return;
@@ -2962,10 +2979,14 @@ export default function Home() {
   const thumbHtml = (html: string, css: string, title: string) => html ? <iframe className="project-live" sandbox="" title={title} loading="lazy" srcDoc={`<!doctype html><html><head><style>${css}</style><style>html,body{width:${designWidth}px;height:${designHeight}px;margin:0;overflow:hidden;background:#0d1017}body > .weave-slide{width:${designWidth}px;height:${designHeight}px}</style></head><body>${html}</body></html>`} /> : null;
 
   const saveProject = async () => {
-    const promptedName = saveMessage.trim() || await editorPrompt("マイルストーン名", `${deckTitle} レビュー版`);
-    const requestedName = promptedName?.trim();
-    if (!requestedName) return false;
+    if (historyBusyRef.current || project?.historyCapabilities?.createMilestone !== true) return false;
+    historyBusyRef.current = true;
+    setHistoryBusy(true);
     try {
+      const promptedName = saveMessage.trim() || await editorPrompt("保存する名前", `${deckTitle} レビュー版`);
+      const requestedName = promptedName?.trim();
+      if (!requestedName) return false;
+      setHistoryStatus({ state: "busy", message: "名前を付けて保存中…" });
       const generation = editGenerationRef.current;
       if (draftSync !== "synced") {
         const draftResponse = await fetch(`${apiBase}/draft`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ deck: deckPayload(), expectedRevision: serverRevision, templates: importedTemplates }) });
@@ -2974,7 +2995,7 @@ export default function Home() {
       }
       const response = await fetch(`${apiBase}/milestones`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: requestedName, expectedRevision: serverRevision }) });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "マイルストーンを作成できませんでした。");
+      if (!response.ok) throw new Error(result.error ?? "名前付きの保存を作成できませんでした。");
       const unchanged = generation === editGenerationRef.current;
       applyServerState(result as ServerState, unchanged);
       if (result.queued) {
@@ -2982,7 +3003,8 @@ export default function Home() {
         setSaved(false);
         setDraftSync("synced");
         setSaveMessage("");
-        setAnnouncement(`マイルストーン「${requestedName}」をAgent完了後に作成します`);
+        setAnnouncement(`「${requestedName}」をチャットの編集完了後に保存します`);
+        setHistoryStatus({ state: "busy", message: `「${requestedName}」はチャットの編集完了後に保存されます。` });
         setApiError(null);
         return false;
       }
@@ -2991,12 +3013,19 @@ export default function Home() {
       setSaved(unchanged);
       setDraftSync("synced");
       setSaveMessage("");
-      setAnnouncement(unchanged ? `マイルストーン「${requestedName}」を作成しました` : "マイルストーンを作成しました。以降の編集は作業中ドラフトへ同期します");
+      const message = unchanged ? `「${requestedName}」を保存しました。` : "名前を付けて保存しました。以降の編集は自動保存します。";
+      setAnnouncement(message);
+      setHistoryStatus({ state: "success", message });
       setApiError(null);
       return unchanged;
     } catch (error) {
-      setApiError(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      setApiError(message);
+      setHistoryStatus({ state: "error", message });
       return false;
+    } finally {
+      historyBusyRef.current = false;
+      setHistoryBusy(false);
     }
   };
 
@@ -3097,17 +3126,41 @@ export default function Home() {
   };
 
   const restoreHistory = async (commit?: string) => {
+    const available = commit ? project?.historyCapabilities?.preview : project?.historyCapabilities?.returnToDraft;
+    if (historyBusyRef.current || available !== true) return;
+    historyBusyRef.current = true;
+    setHistoryBusy(true);
+    setHistoryStatus({ state: "busy", message: commit ? "選んだ版を作業ドラフトとして開いています…" : "履歴を開く前のドラフトへ戻しています…" });
     try {
+      const generation = editGenerationRef.current;
+      if (draftSync !== "synced" || browserDirtyRef.current) {
+        const draftResponse = await fetch(`${apiBase}/draft`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ deck: deckPayload(), expectedRevision: serverRevision, templates: importedTemplates }) });
+        const draftResult = await draftResponse.json();
+        if (!draftResponse.ok) throw new Error(draftResult.error ?? "作業中の内容を自動保存できませんでした。履歴はまだ開いていません。");
+      }
+      if (generation !== editGenerationRef.current) throw new Error("保存中に編集が変わりました。編集が落ち着いてから、もう一度履歴を開いてください。");
       const endpoint = commit ? "history/checkout" : "history/main";
-      const response = await fetch(`${apiBase}/${endpoint}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(commit ? { commit } : {}) });
+      const response = await fetch(`${apiBase}/${endpoint}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(commit ? { commit, expectedRevision: serverRevision } : { expectedRevision: serverRevision }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "履歴を復元できませんでした。");
-      clearEditorHistory();
-      applyServerState(result as ServerState);
-      setSelectedId(null);
+      const unchanged = generation === editGenerationRef.current;
+      if (unchanged) {
+        clearEditorHistory();
+        setSelectedId(null);
+        setDraftSync("synced");
+      }
+      applyServerState(result as ServerState, unchanged);
+      const message = !unchanged ? "履歴を開く間に編集が変わったため、現在の編集内容を保持しました。" : commit ? "選んだ版を作業ドラフトとして開きました。過去の履歴は残っています。" : "履歴を開く前のドラフトへ戻りました。";
+      setHistoryStatus({ state: "success", message });
+      setAnnouncement(message);
       setApiError(null);
     } catch (error) {
-      setApiError(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      setApiError(message);
+      setHistoryStatus({ state: "error", message });
+    } finally {
+      historyBusyRef.current = false;
+      setHistoryBusy(false);
     }
   };
 
@@ -3625,6 +3678,7 @@ export default function Home() {
   };
 
   const openNewSkillDialog = () => {
+    if (skillScope === "application") return;
     skillDialogTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setSkillDraft({ scope: skillScope, name: "", description: "", body: "", frontmatter: "" });
     setSkillDialog({ mode: "create", source: null });
@@ -3632,6 +3686,10 @@ export default function Home() {
   };
 
   const openEditSkillDialog = (skill: SkillEntry) => {
+    if (skill.scope === "application") {
+      if (isApplicationSkill(skill) && skill.capabilities?.edit === true) setApplicationSkillDialog({ skill, tab: "edit" });
+      return;
+    }
     skillDialogTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setSkillDraft({ scope: skill.scope, name: skill.name, description: skill.valid ? skill.description : "", body: skill.valid ? skill.body : skill.content, frontmatter: skill.frontmatter ?? "" });
     setSkillDialog({ mode: "edit", source: skill });
@@ -3655,16 +3713,19 @@ export default function Home() {
   };
 
   const deleteManagedSkill = async (skill: SkillEntry) => {
+    if (skill.scope === "application") return;
     if (!(await editorConfirm(`スキル「${skill.name}」を削除しますか？`))) return;
     await runSkillMutation(`${skill.scope}:${skill.name}`, () => fetch(`${apiBase}/skills/${skill.scope}/${encodeURIComponent(skill.name)}`, { method: "DELETE" }), "スキルを削除しました。");
   };
 
   const moveManagedSkill = async (skill: SkillEntry) => {
+    if (skill.scope === "application") return;
     const action = skill.scope === "project" ? "promote" : "demote";
     await runSkillMutation(`${skill.scope}:${skill.name}`, () => fetch(`${apiBase}/skills/${action}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: skill.name }) }), skill.scope === "project" ? "共通スキルに格上げしました。" : "プロジェクト固有へ格下げしました。");
   };
 
   const uploadManagedSkill = async (file: File) => {
+    if (skillScope === "application") return;
     const scope = skillScope;
     setSkillBusyKey(`upload:${scope}`);
     setSkillStatus({ state: "busy", message: "SKILL.mdをアップロード中…" });
@@ -3844,29 +3905,23 @@ export default function Home() {
   const chatReturnButton = (id: string) => <button type="button" className="activity-panel-chat-return" data-ui-id={id} onClick={() => showActivity("agent")} aria-label="チャットへ戻る">チャットへ戻る</button>;
 
   const historySidebar = (
-    <section className="activity-panel history-panel" aria-label="バージョン履歴">
-      <header className="activity-panel-heading"><span>バージョン履歴</span>{chatReturnButton("return-chat-history")}</header>
-      <div className="activity-panel-body">
+    <section className="activity-panel history-panel" aria-label="履歴・保存">
+      <header className="activity-panel-heading"><span>履歴・保存</span>{chatReturnButton("return-chat-history")}</header>
+      <div className="activity-panel-body history-sidebar">
         {(project?.backgroundTasks?.length ?? 0) > 0 && <section className="background-task-list" aria-label="このプロジェクトのバックグラウンドタスク"><strong>バックグラウンド</strong>{project!.backgroundTasks!.map((task, index) => <p key={`${task.threadId ?? "recovery"}-${index}`}><span>{task.variation ? "探索案" : "Agentタスク"}</span><small>{task.status === "running" ? "実行中" : task.status === "starting" ? "開始中" : task.status === "interrupted" ? "復旧可能" : task.status}</small></p>)}</section>}
-        <div className="repository-summary">
-          <span><i className={draftSync === "synced" ? "clean" : "dirty"} />{draftSync === "synced" ? "作業中ドラフトは同期済みです" : "作業中ドラフトを同期しています"}</span>
-          {project && <details className="version-details"><summary>技術情報</summary><small>{project.branch} · {project.commit}</small></details>}
+        <section className="history-autosave" aria-label="自動保存の状態"><strong>作業中の内容は自動保存</strong><span role="status">{draftSync === "synced" ? "自動保存済み" : draftSync === "saving" ? "自動保存中…" : draftSync === "offline" ? "オフライン・サーバーへ未保存" : "自動保存できていません"}</span><p>あとで戻りたい区切りには、名前を付けて保存できます。</p></section>
+        <div className="history-named-save"><label className="save-message"><span>保存する名前</span><input value={saveMessage} maxLength={180} disabled={historyBusy} onChange={(event) => setSaveMessage(event.target.value)} placeholder={`${deckTitle} レビュー版`} /></label><button className="sidebar-primary-action" onClick={() => void saveProject()} disabled={historyBusy || project?.historyCapabilities?.createMilestone !== true}>{historyBusy ? "処理中…" : "名前を付けて保存"}</button></div>
+        {project?.historyUnavailableReason && <p className="activity-warning">{project.historyUnavailableReason}</p>}
+        <div className={`history-status ${historyStatus.state}`} role={historyStatus.state === "error" ? "alert" : "status"} aria-live="polite" aria-busy={historyBusy}>{historyStatus.message}</div>
+        {project?.historyPreview && <div className="history-preview-notice"><strong>過去の版を作業ドラフトとして開いています</strong><button className="return-latest" onClick={() => void restoreHistory()} disabled={historyBusy || project.historyCapabilities?.returnToDraft !== true}>履歴を開く前のドラフトへ戻る</button></div>}
+        <div className="activity-section-label">保存した版 <small>{history.length}件</small></div>
+        <p className="history-list-help">一覧から選ぶと、日時と保存名を確認できます。</p>
+        <div className="history-list" aria-label="資料の保存履歴">
+          {history.map((entry) => <div className={`history-entry ${selectedHistoryId === entry.id ? "selected" : ""}`} key={entry.id}><button onClick={() => setSelectedHistoryId(entry.id)} aria-pressed={selectedHistoryId === entry.id}><i className={entry.id === serverRevision ? "current" : ""} /><span><span className={`history-kind ${entry.kind}`}>{entry.kind === "milestone" ? "名前付き保存" : "自動記録"}</span><strong>{historyEntryLabel(entry)}</strong><time dateTime={entry.date}>{new Date(entry.date).toLocaleString("ja-JP")}</time></span></button></div>)}
+          {history.length === 0 && <p className="skills-empty">保存した版はまだありません。</p>}
         </div>
-        <label className="save-message"><span>マイルストーン名</span><input value={saveMessage} onChange={(event) => setSaveMessage(event.target.value)} placeholder={`${deckTitle} レビュー版`} /></label>
-        <button className="sidebar-primary-action" onClick={() => void saveProject()}>マイルストーンを作成</button>
-        {project?.historyPreview && <button className="return-latest" onClick={() => void restoreHistory()}>履歴を開く前のドラフトへ戻る</button>}
-        <div className="activity-section-label">マイルストーン</div>
-        <div className="history-list">
-          {history.map((entry, index) => (
-            <div className="history-entry" key={entry.id}>
-              <button onClick={() => void restoreHistory(entry.id)}>
-                <i className={index === 0 ? "current" : ""} /><span><strong>{entry.message}</strong><small>{new Date(entry.date).toLocaleString()}</small></span>
-              </button>
-              <details className="version-details"><summary>詳細</summary><small>{entry.shortId}</small></details>
-            </div>
-          ))}
-        </div>
-        <p className="activity-warning">過去の状態は既存履歴を上書きせず、新しい作業中ドラフトとして開きます。</p>
+        {selectedHistoryEntry && <section className="history-selection" aria-label="選んだ保存内容"><h3>{historyEntryLabel(selectedHistoryEntry)}</h3><time dateTime={selectedHistoryEntry.date}>{new Date(selectedHistoryEntry.date).toLocaleString("ja-JP")}</time><p>この版を作業ドラフトとして開きます。今の編集内容を先に自動保存し、既存の履歴は残します。</p><button type="button" disabled={historyBusy || project?.historyCapabilities?.preview !== true} onClick={() => void restoreHistory(selectedHistoryEntry.id)}>この版を作業ドラフトとして開く</button><details className="version-details"><summary>技術情報</summary><code>{selectedHistoryEntry.id}</code></details></section>}
+        {project && <details className="version-details history-technical"><summary>資料の技術情報</summary><small>{project.branch} · {project.commit}</small></details>}
       </div>
     </section>
   );
@@ -3875,32 +3930,34 @@ export default function Home() {
     <section className="activity-panel skills-panel" aria-label="スキルライブラリ">
       <header className="activity-panel-heading"><span>スキル</span><small>{skills.length}件</small>{chatReturnButton("return-chat-skills")}</header>
       <div className="activity-panel-body skills-sidebar">
-        <div className="skills-intro"><strong>再利用できる指示</strong><p>Codexが使うプロジェクト固有・共通スキルを管理します。</p></div>
-        <div className="skills-actions">
+        <div className="skills-intro"><strong>資料づくりの指示を管理</strong><p>このアプリ共通の作り方、この資料だけの指示、個人で使う共通の指示を確認・編集できます。</p></div>
+        <div className="skills-tabs" role="tablist" aria-label="スキルの適用範囲">
+          {(["application", "project", "common"] as SkillScope[]).map((scope) => <button key={scope} type="button" role="tab" aria-selected={skillScope === scope} className={skillScope === scope ? "active" : ""} onClick={() => setSkillScope(scope)}><span>{scope === "application" ? "このアプリ共通" : scope === "project" ? "この資料" : "個人共通"}</span><small>{skills.filter((skill) => skill.scope === scope).length}</small></button>)}
+        </div>
+        {skillScope === "application" && <p className="skill-scope-description">すべての資料で使う2つのスキルです。編集した内容は履歴から確認・復元できます。</p>}
+        {skillScope === "application" && <ApplicationSkillLearning skills={skills} />}
+        {skillScope !== "application" && <div className="skills-actions">
           <button className="sidebar-primary-action" type="button" onClick={openNewSkillDialog} disabled={skillBusyKey !== null || codexState.editing}>新しいスキル</button>
           <input ref={skillInputRef} className="sr-only" type="file" accept="SKILL.md,.md,text/markdown" onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadManagedSkill(file); }} />
           <button className="skills-upload-button" type="button" data-ui-agent-exclude="true" onClick={() => skillInputRef.current?.click()} disabled={skillBusyKey !== null || codexState.editing}>SKILL.mdをアップロード</button>
-        </div>
+        </div>}
         {codexState.editing && <p className="activity-warning">スライドの編集処理が完了してからスキルを変更してください。</p>}
-        <div className="skills-tabs" role="tablist" aria-label="スキルの適用範囲">
-          {(["project", "common"] as SkillScope[]).map((scope) => <button key={scope} type="button" role="tab" aria-selected={skillScope === scope} className={skillScope === scope ? "active" : ""} onClick={() => { setSkillScope(scope); setSkillDraft((current) => ({ ...current, scope })); }}>{scope === "project" ? "プロジェクト固有" : "共通"}<small>{skills.filter((skill) => skill.scope === scope).length}</small></button>)}
-        </div>
         <label className="skills-search"><span className="sr-only">スキルを絞り込む</span><input type="search" value={skillSearch} onChange={(event) => setSkillSearch(event.target.value)} placeholder="スキルを検索" aria-label="スキルを絞り込む" /></label>
         {skillStatus.state !== "idle" && <div className={`skill-status ${skillStatus.state}`} role={skillStatus.state === "error" ? "alert" : "status"} aria-live="polite" aria-busy={skillStatus.state === "busy"}>{skillStatus.message}</div>}
         <div className="skill-card-list">
           {visibleSkills.map((skill) => {
             const catalogSkill = catalogSkillFor(skill);
-            const supportsToggle = skill.valid && typeof catalogSkill?.enabled === "boolean";
+            const supportsToggle = skill.scope !== "application" && skill.valid && typeof catalogSkill?.enabled === "boolean";
             const key = `${skill.scope}:${skill.name}`;
             return <article className="skill-card" key={key} aria-busy={skillBusyKey === key}>
-              <div className="skill-card-head"><div><strong>{skill.name}</strong><span className={`skill-scope-badge ${skill.scope}`}>{skill.scope === "project" ? "固有" : "共通"}</span>{!skill.valid && <span className="skill-invalid-badge">要修復</span>}</div><button type="button" aria-label={`${skill.name}を編集`} onClick={() => openEditSkillDialog(skill)} disabled={skillBusyKey !== null || codexState.editing}>{skill.valid ? "編集" : "修復"}</button></div>
+              <div className="skill-card-head"><div><strong>{skill.name}</strong><span className={`skill-scope-badge ${skill.scope}`}>{skill.scope === "application" ? "アプリ共通" : skill.scope === "project" ? "この資料" : "個人共通"}</span>{!skill.valid && <span className="skill-invalid-badge">要修復</span>}</div><button type="button" aria-label={`${skill.name}を編集`} onClick={() => openEditSkillDialog(skill)} disabled={skillBusyKey !== null || codexState.editing || (skill.scope === "application" && (skill.capabilities?.edit !== true || !isApplicationSkill(skill)))}>{skill.valid ? "編集" : "修復"}</button></div>
               <p>{skill.valid ? skill.description : skill.error}</p>
-              <code title={skill.path}>{skill.path}</code>
+              <details className="version-details skill-location"><summary>保存場所</summary><code title={skill.path}>{skill.path}</code></details>
               {supportsToggle && <label className="skill-enable-toggle"><span>Codexで有効</span><input type="checkbox" checked={catalogSkill.enabled} onChange={(event) => void updateSkill(catalogSkill, event.target.checked)} disabled={skillBusyKey !== null || codexState.editing} /></label>}
-              <footer><button type="button" onClick={() => void moveManagedSkill(skill)} disabled={!skill.valid || skillBusyKey !== null || codexState.editing}>{skill.scope === "project" ? "共通に格上げ" : "プロジェクト固有へ格下げ"}</button><button type="button" className="danger" onClick={() => void deleteManagedSkill(skill)} disabled={skillBusyKey !== null || codexState.editing}>削除</button></footer>
+              {skill.scope === "application" ? <footer><button type="button" disabled={skill.capabilities?.history !== true || !isApplicationSkill(skill)} onClick={() => { if (isApplicationSkill(skill)) setApplicationSkillDialog({ skill, tab: "history" }); }}>変更履歴を見る</button><small>すべての資料に適用</small></footer> : <footer><button type="button" onClick={() => void moveManagedSkill(skill)} disabled={!skill.valid || skillBusyKey !== null || codexState.editing}>{skill.scope === "project" ? "個人共通へ移す" : "この資料へ移す"}</button><button type="button" className="danger" onClick={() => void deleteManagedSkill(skill)} disabled={skillBusyKey !== null || codexState.editing}>削除</button></footer>}
             </article>;
           })}
-          {visibleSkills.length === 0 && <p className="skills-empty">{skillSearch.trim() ? "条件に一致するスキルはありません。" : skillScope === "project" ? "プロジェクト固有のスキルはまだありません。" : "共通スキルはまだありません。"}</p>}
+          {visibleSkills.length === 0 && <p className="skills-empty">{skillSearch.trim() ? "条件に一致するスキルはありません。" : skillScope === "application" ? "アプリ共通スキルを読み込めませんでした。再読み込みしてください。" : skillScope === "project" ? "この資料のスキルはまだありません。" : "個人共通スキルはまだありません。"}{skillScope === "application" && !skillSearch.trim() && <button type="button" onClick={() => void loadSkills()} disabled={skillStatus.state === "busy"}>再読み込み</button>}</p>}
         </div>
       </div>
     </section>
@@ -3917,7 +3974,7 @@ export default function Home() {
     <section className="activity-panel settings-panel" aria-label="設定">
       <header className="activity-panel-heading"><span>設定</span>{chatReturnButton("return-chat-settings")}</header>
       <div className="activity-panel-body settings-sidebar">
-        <nav className="more-navigation" aria-label="その他の機能"><button onClick={() => { setActivityView("history"); setMobileView("history"); }}>履歴とマイルストーン</button><button onClick={(event) => togglePopover("quality", event.currentTarget)}>品質チェック</button><button onClick={() => showActivity("skills")}>スキル</button><button onClick={() => showActivity("shortcuts")}>ヘルプとショートカット</button></nav>
+        <nav className="more-navigation" aria-label="その他の機能"><button onClick={() => showActivity("history")}>履歴・保存</button><button onClick={(event) => togglePopover("quality", event.currentTarget)}>品質チェック</button><button onClick={() => showActivity("skills")}>スキル</button><button onClick={() => showActivity("shortcuts")}>ヘルプとショートカット</button></nav>
         <section><h3>表示</h3><label><span>カラーモード</span><select value={theme} onChange={(event) => setTheme(event.target.value as "dark" | "light")}><option value="dark">ダーク</option><option value="light">ライト</option></select></label><label><span>表示密度</span><select value={density} onChange={(event) => densityStore.write(event.target.value as Density)}><option value="comfortable">通常</option><option value="compact">コンパクト</option></select></label><p>スライド一覧は左、チャットを常に表示するコンテキストパネルは右にあります。タブでデザインや変更レビューへ切り替えられます。</p></section>
         <section><h3>Agent</h3>
           <label><span>承認方法</span><select value={approvalPolicy} onChange={(event) => setApprovalPolicy(event.target.value)}><option value="never">確認しない</option><option value="on-request">必要なとき確認</option><option value="untrusted">未確認コマンドのみ</option></select></label>
@@ -3943,15 +4000,19 @@ export default function Home() {
           <span className="document-title-field" data-unsaved={!saved ? "true" : undefined}>
             <input aria-label="資料タイトル" value={deckTitle} onChange={(event) => { setDeckTitle(event.target.value); markDirty(); }} />
             {!saved && <i className="unsaved-dot" aria-hidden="true" />}
-            {!saved && <span className="sr-only">マイルストーン未作成の変更あり</span>}
+            {!saved && <span className="sr-only">名前付き保存の後に変更あり</span>}
           </span>
           <small>{activeSlide} / {slides.length} 枚目</small>
         </div>
+        <nav className="management-actions" aria-label="スキルと保存履歴">
+          <button type="button" data-ui-id="open-skills" aria-pressed={activityView === "skills" && leftPanelOpen} onClick={() => showActivity("skills")}><span aria-hidden="true">✦</span> スキル</button>
+          <button type="button" data-ui-id="open-history" aria-pressed={activityView === "history" && leftPanelOpen} onClick={() => showActivity("history")}><span aria-hidden="true">↶</span> 履歴・保存</button>
+        </nav>
         <div className="top-actions">
           <button className="more-button" data-ui-id="open-settings" onClick={() => showActivity("settings")} aria-label="その他の機能">その他</button>
           <button className="delivery-button" data-ui-id="open-delivery" onClick={(event) => togglePopover("delivery", event.currentTarget)} aria-expanded={openPopover === "delivery"} aria-haspopup="menu" data-help="プレゼン表示、書き出し、印刷を選びます">プレゼン・書き出し <span aria-hidden="true">⌄</span></button>
           <input ref={importRef} className="sr-only" type="file" accept=".json,.weave.json,application/json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void importBundle(file); }} />
-          <button className="save-button" data-ui-id="create-milestone" onClick={() => void saveProject()} data-help="現在のドラフトへ名前を付け、長期履歴として残します"><span>◇</span> マイルストーン</button>
+          <button className="save-button" data-ui-id="create-milestone" disabled={historyBusy || project?.historyCapabilities?.createMilestone !== true} onClick={() => void saveProject()} data-help="現在の内容に名前を付け、あとで戻れる版として残します"><span aria-hidden="true">◇</span> 名前を付けて保存</button>
         </div>
       </header>
 
@@ -4660,6 +4721,8 @@ export default function Home() {
 
 
 
+      {applicationSkillDialog && <ApplicationSkillDialog key={applicationSkillDialog.skill.name} skill={applicationSkillDialog.skill} latestRevision={skills.find((skill) => skill.scope === "application" && skill.name === applicationSkillDialog.skill.name)?.revision} initialTab={applicationSkillDialog.tab} editing={codexState.editing} onClose={() => setApplicationSkillDialog(null)} onMutation={setSkillMutationStateFromResponse} onRefresh={loadSkills} />}
+
       {skillDialog && (
         <div className="skill-dialog-backdrop" role="presentation" onPointerDown={(event) => { if (event.target === event.currentTarget && skillBusyKey === null) setSkillDialog(null); }}>
           <form ref={skillDialogRef} className="skill-dialog" role="dialog" aria-modal="true" aria-labelledby="skill-dialog-title" onSubmit={(event) => void saveSkill(event)} onKeyDown={(event) => {
@@ -4678,7 +4741,7 @@ export default function Home() {
           }}>
             <header><strong id="skill-dialog-title">{skillDialog.mode === "create" ? "新しいスキル" : `${skillDialog.source?.name ?? "スキル"}を編集`}</strong><button type="button" aria-label="スキル編集を閉じる" onClick={() => { if (skillBusyKey === null) setSkillDialog(null); }}>×</button></header>
             <div className="skill-dialog-body">
-              <label className="skill-dialog-field"><span>適用範囲</span><select value={skillDraft.scope} disabled={skillDialog.mode === "edit" || skillBusyKey !== null || codexState.editing} onChange={(event) => setSkillDraft((current) => ({ ...current, scope: event.target.value as SkillScope }))}><option value="project">プロジェクト固有 · このデッキ</option><option value="common">共通 · すべてのプロジェクト</option></select></label>
+              <label className="skill-dialog-field"><span>適用範囲</span><select value={skillDraft.scope} disabled={skillDialog.mode === "edit" || skillBusyKey !== null || codexState.editing} onChange={(event) => setSkillDraft((current) => ({ ...current, scope: event.target.value as UserSkillScope }))}><option value="project">この資料</option><option value="common">個人共通 · すべての資料</option></select></label>
               <label className="skill-dialog-field"><span>名前</span><input autoFocus className="skill-name-input" value={skillDraft.name} required pattern="[a-z0-9]+(-[a-z0-9]+)*" maxLength={63} disabled={skillBusyKey !== null || codexState.editing} onChange={(event) => setSkillDraft((current) => ({ ...current, name: event.target.value }))} /><small className="skill-dialog-help">英小文字のkebab-case、63文字以内。</small></label>
               <label className="skill-dialog-field"><span>説明</span><input value={skillDraft.description} required maxLength={20000} disabled={skillBusyKey !== null || codexState.editing} onChange={(event) => setSkillDraft((current) => ({ ...current, description: event.target.value }))} /></label>
               <label className="skill-dialog-field"><span>指示内容</span><textarea value={skillDraft.body} required maxLength={900000} disabled={skillBusyKey !== null || codexState.editing} onChange={(event) => setSkillDraft((current) => ({ ...current, body: event.target.value }))} /></label>

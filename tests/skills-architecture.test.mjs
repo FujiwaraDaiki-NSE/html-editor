@@ -18,11 +18,17 @@ test("Skills is a first-class activity on desktop and mobile", () => {
   assert.match(page, /activityView === "skills" \? skillsSidebar/);
   assert.match(page, /className="activity-panel skills-panel"/);
   assert.match(page, /role="tablist" aria-label="スキルの適用範囲"/);
-  assert.match(page, /scope === "project" \? "プロジェクト固有" : "共通"/);
+  assert.match(page, /scope === "application" \? "このアプリ共通" : scope === "project" \? "この資料" : "個人共通"/);
   assert.match(page, /SKILL\.mdをアップロード/);
   assert.match(page, /className="skill-dialog" role="dialog"/);
   assert.match(page, /共通スキルに格上げしました。/);
-  assert.match(page, /プロジェクト固有へ格下げ/);
+  assert.match(page, /個人共通へ移す/);
+  assert.match(page, /この資料へ移す/);
+  assert.match(page, /data-ui-id="open-skills"/);
+  assert.match(page, /data-ui-id="open-history"/);
+  assert.match(page, /ApplicationSkillDialog/);
+  assert.match(page, /skill\.capabilities\?\.edit !== true/);
+  assert.match(page, /skill\.capabilities\?\.history !== true/);
   assert.match(page, /typeof catalogSkill\?\.enabled === "boolean"/);
   assert.match(page, /entry\.path === skill\.filePath/);
   assert.doesNotMatch(page, /entry\.path\.endsWith\(skill\.path\)/);
@@ -58,7 +64,7 @@ test("Skills API has explicit scoped CRUD, upload, and move routes", () => {
   assert.match(project, /managedPaths = \[[\s\S]*\.codex\/skills/);
   assert.match(project, /createAgentFileSnapshot/);
   assert.match(project, /for \(const name of \["assets", "templates", "AGENTS\.md", "references", "\.codex\/skills"\]\)/);
-  assert.match(project, /restoreGitDirectoryToDraft\(commit, "templates", currentProjectRoot, true\)/);
+  assert.match(project, /restoreGitDirectoryToDraft\(commit, "templates", root, true\)/);
 });
 
 test("Legacy cramped Settings skill toggles are removed but catalog support remains card-local", () => {
