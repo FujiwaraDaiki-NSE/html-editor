@@ -887,3 +887,35 @@ test("reference attachment resolution stays with the initiating project when pat
     await rm(home, { recursive: true, force: true });
   }
 });
+
+
+test("named history checkpoints preserve drafts and reject stale restoration", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weave-history-checkpoint-"));
+  const previousRoot = process.env.WEAVE_PROJECT_ROOT;
+  process.env.WEAVE_PROJECT_ROOT = root;
+  try {
+    const project = await import(`../server/project.mjs?history-checkpoint=${Date.now()}`);
+    await project.ensureProject();
+    const initial = await project.readProject();
+    const first = project.getRevision();
+    const unchanged = await project.createMilestone("Initial approval", first);
+    assert.notEqual(unchanged.commit, first);
+    assert.equal(project.projectState().history[0].kind, "milestone");
+    await project.writeProject({ ...initial, title: "Unsaved working draft" });
+    await assert.rejects(project.checkoutHistory(first, first), { code: "WEAVE_REVISION_CONFLICT" });
+    assert.equal((await project.readProject()).title, "Unsaved working draft");
+    await project.checkoutHistory(first, unchanged.commit);
+    assert.equal((await project.readProject()).title, initial.title);
+    await project.checkoutMain(unchanged.commit);
+    assert.equal((await project.readProject()).title, "Unsaved working draft");
+    await project.checkoutHistory(first, unchanged.commit);
+    const adopted = await project.createMilestone("Adopt old version", unchanged.commit);
+    assert.notEqual(adopted.commit, unchanged.commit);
+    assert.equal(project.projectState().project.historyPreview, false);
+    await assert.rejects(project.checkoutMain(adopted.commit), /No history preview/);
+  } finally {
+    if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
+    else process.env.WEAVE_PROJECT_ROOT = previousRoot;
+    await rm(root, { recursive: true, force: true });
+  }
+});

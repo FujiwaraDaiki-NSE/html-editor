@@ -2,10 +2,20 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import test from "node:test";
+import test, { after } from "node:test";
 import { load } from "js-yaml";
-import { applicationSkillInstructions } from "../server/agent-skills.mjs";
-import { chatInstructions } from "../server/chat-workflow.mjs";
+const skillRoot = await mkdtemp(join(tmpdir(), "weave-managed-skills-"));
+const previousSkillsRoot = process.env.WEAVE_APPLICATION_SKILLS_ROOT;
+process.env.WEAVE_APPLICATION_SKILLS_ROOT = skillRoot;
+const { initializeApplicationSkills } = await import("../server/application-skills.mjs");
+await initializeApplicationSkills();
+const { applicationSkillInstructions } = await import("../server/agent-skills.mjs");
+const { chatInstructions } = await import("../server/chat-workflow.mjs");
+after(async () => {
+  if (previousSkillsRoot === undefined) delete process.env.WEAVE_APPLICATION_SKILLS_ROOT;
+  else process.env.WEAVE_APPLICATION_SKILLS_ROOT = previousSkillsRoot;
+  await rm(skillRoot, { recursive: true, force: true });
+});
 
 const paths = [...applicationSkillInstructions.matchAll(/^- (.+\/SKILL\.md)$/gm)].map((match) => match[1]);
 
@@ -15,7 +25,7 @@ test("root chat and editor use the same readable application skills, outside use
   assert.ok(chatInstructions.includes(applicationSkillInstructions));
   assert.ok(agentInstructions.includes(applicationSkillInstructions));
   for (const path of paths) {
-    assert.ok(path.includes("/agent-skills/"));
+    assert.ok(path.startsWith(`${skillRoot}/`));
     assert.ok(!path.includes("/.codex/skills/"));
     const content = await readFile(path, "utf8");
     const metadata = load(content.match(/^---\n([\s\S]*?)\n---/)[1]);

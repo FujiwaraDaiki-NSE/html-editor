@@ -1098,7 +1098,12 @@ export async function createMilestone(name, expectedRevision = null, root = curr
     assertRevision(expectedRevision, root);
     const deck = await readProject(root);
     await assertCommittable(root);
-    const commit = commitIfChanged(`Milestone: ${label}`, root);
+    let commit = commitIfChanged(`Milestone: ${label}`, root);
+    if (commit === null) {
+      runGit(["-c", "user.name=Weave", "-c", "user.email=weave@localhost", "commit", "--allow-empty", "--only", "-m", `Milestone: ${label}`], { cwd: root });
+      commit = getRevision(root);
+    }
+    await rm(join(root, ".weave", "history-preview.json"), { force: true });
     return { deck, commit, name: label };
   }, root);
 }
@@ -1159,7 +1164,7 @@ export function getHistory() {
   const output = runGit(["log", "--all", "-30", "--pretty=format:%H%x1f%h%x1f%s%x1f%aI"]);
   return output ? output.split("\n").map((line) => {
     const [id, shortId, message, date] = line.split("\x1f");
-    return { id, shortId, message, date };
+    return { id, shortId, message, date, kind: message.startsWith("Milestone: ") ? "milestone" : "automatic" };
   }) : [];
 }
 
@@ -1322,37 +1327,44 @@ async function readProjectAtCommit(commit, root = currentProjectRoot) {
   return { title: String(manifest.title ?? ""), defaultTemplateId: String(manifest.defaultTemplateId ?? ""), slides };
 }
 
-export async function checkoutHistory(commit) {
-  if (!/^[0-9a-f]{7,40}$/i.test(commit)) throw new Error("Invalid history id.");
-  runGit(["cat-file", "-e", `${commit}^{commit}`]);
-  const previewPath = join(currentProjectRoot, ".weave", "history-preview.json");
-  if (!existsSync(previewPath)) {
-    const snapshot = { deck: await readProject(currentProjectRoot), css: await readDeckCss(currentProjectRoot), templates: await readTemplates(currentProjectRoot) };
-    await writeFile(previewPath, `${JSON.stringify(snapshot, null, 2)}\n`);
-  }
-  // A history preview is a draft on top of the current main. It must not move
-  // HEAD or rewrite the existing commit graph.
-  const target = await readProjectAtCommit(commit, currentProjectRoot);
-  await materializeMissingGitDirectoryFiles(commit, "assets", currentProjectRoot);
-  await restoreGitDirectoryToDraft(commit, "templates", currentProjectRoot, true);
-  await writeProjectUnlocked(target, null, currentProjectRoot);
-  const css = gitFileAt(currentProjectRoot, commit, "styles/deck.css");
-  if (css !== null) await restoreDeckCss(css, currentProjectRoot);
-  return getRevision();
+export async function checkoutHistory(commit, expectedRevision = null, root = currentProjectRoot) {
+  return runProjectExclusive(async () => {
+    assertRevision(expectedRevision, root);
+    if (!/^[0-9a-f]{7,40}$/i.test(commit)) throw new Error("Invalid history id.");
+    runGit(["cat-file", "-e", `${commit}^{commit}`], { cwd: root });
+    const previewPath = join(root, ".weave", "history-preview.json");
+    if (!existsSync(previewPath)) {
+      const snapshot = { deck: await readProject(root), css: await readDeckCss(root), templates: await readTemplates(root) };
+      await writeFile(previewPath, `${JSON.stringify(snapshot, null, 2)}\n`);
+    }
+    // A history preview is a draft on top of the current main. It must not move
+    // HEAD or rewrite the existing commit graph.
+    const target = await readProjectAtCommit(commit, root);
+    await materializeMissingGitDirectoryFiles(commit, "assets", root);
+    await restoreGitDirectoryToDraft(commit, "templates", root, true);
+    await writeProjectUnlocked(target, null, root);
+    const css = gitFileAt(root, commit, "styles/deck.css");
+    if (css !== null) await restoreDeckCss(css, root);
+    return getRevision(root);
+  }, root);
 }
 
-export async function checkoutMain() {
-  const previewPath = join(currentProjectRoot, ".weave", "history-preview.json");
-  if (!existsSync(previewPath)) throw new Error("No history preview is open.");
-  const snapshot = JSON.parse(await readFile(previewPath, "utf8"));
-  const templates = await normalizeTemplatePackages(snapshot.templates);
-  await rm(templatesRoot(currentProjectRoot), { recursive: true, force: true });
-  await writeTemplatePackages(templates, currentProjectRoot);
-  await writeProjectUnlocked(snapshot.deck, null, currentProjectRoot);
-  await restoreDeckCss(snapshot.css, currentProjectRoot);
-  await rm(previewPath, { force: true });
-  return getRevision(currentProjectRoot);
+export async function checkoutMain(expectedRevision = null, root = currentProjectRoot) {
+  return runProjectExclusive(async () => {
+    assertRevision(expectedRevision, root);
+    const previewPath = join(root, ".weave", "history-preview.json");
+    if (!existsSync(previewPath)) throw new Error("No history preview is open.");
+    const snapshot = JSON.parse(await readFile(previewPath, "utf8"));
+    const templates = await normalizeTemplatePackages(snapshot.templates);
+    await rm(templatesRoot(root), { recursive: true, force: true });
+    await writeTemplatePackages(templates, root);
+    await writeProjectUnlocked(snapshot.deck, null, root);
+    await restoreDeckCss(snapshot.css, root);
+    await rm(previewPath, { force: true });
+    return getRevision(root);
+  }, root);
 }
+
 
 export async function checkoutVariation(branch) {
   if (managedStatus()) throw new Error("Save current changes before switching directions.");

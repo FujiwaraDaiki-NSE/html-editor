@@ -4,7 +4,8 @@ import { fileURLToPath } from "node:url";
 import { CodexAppServerClient } from "./client.mjs";
 import { CodexEventStream } from "./event-stream.mjs";
 import { ServerRequestRouter } from "./request-router.mjs";
-import { EDIT_SLIDES_TOOL_NAME, UI_RESULT_LIMIT, UI_TOOL_NAMESPACE, UiToolBridge, uiDynamicTools, validateEditSlidesArguments } from "./ui-tools.mjs";
+import { EDIT_SLIDES_TOOL_NAME, GET_SLIDE_LEARNING_TOOL_NAME, LEARN_SLIDE_PREFERENCE_TOOL_NAME, UI_RESULT_LIMIT, UI_TOOL_NAMESPACE, UiToolBridge, uiDynamicTools, validateEditSlidesArguments } from "./ui-tools.mjs";
+import { validateLearnSlidePreferenceArguments } from "../slide-preference-learning.mjs";
 import { checkGeneratedVersion } from "./version.mjs";
 import { referencesRoot } from "../project.mjs";
 import { isReferencePath } from "../../shared/context.mjs";
@@ -15,6 +16,7 @@ const WEAVE_NAME_PREFIX = "Weave · ";
 // persisted thread/read shape. Keep a zero-width marker in the durable title
 // so a service restart can distinguish a tool-capable chat from a legacy one.
 const CHAT_TOOL_MARKER = "\u2063weave-ui-v1";
+const CHAT_LEARNING_MARKER = "\u2063weave-ui-v2";
 const EDITOR_THREAD_MARKER = "\u2063weave-editor-v1";
 const THREAD_PURPOSES = new Set(["chat", "editor"]);
 
@@ -39,8 +41,8 @@ function isWithinRoot(root, candidate) {
   return relativePath === "" || (relativePath !== ".." && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath));
 }
 
-function markedThreadName(name) {
-  return `${name}${CHAT_TOOL_MARKER}`;
+function markedThreadName(name, learning = false) {
+  return `${name}${learning ? CHAT_LEARNING_MARKER : CHAT_TOOL_MARKER}`;
 }
 
 function markedEditorThreadName(name) {
@@ -48,7 +50,7 @@ function markedEditorThreadName(name) {
 }
 
 function visibleThreadName(name) {
-  return typeof name === "string" ? name.replaceAll(CHAT_TOOL_MARKER, "").replaceAll(EDITOR_THREAD_MARKER, "") : name;
+  return typeof name === "string" ? name.replaceAll(CHAT_TOOL_MARKER, "").replaceAll(CHAT_LEARNING_MARKER, "").replaceAll(EDITOR_THREAD_MARKER, "") : name;
 }
 
 function threadWithVisibleName(thread) {
@@ -57,7 +59,19 @@ function threadWithVisibleName(thread) {
 }
 
 function isChatToolThread(thread) {
-  return typeof thread?.name === "string" && thread.name.includes(CHAT_TOOL_MARKER);
+  return typeof thread?.name === "string" && (thread.name.includes(CHAT_TOOL_MARKER) || thread.name.includes(CHAT_LEARNING_MARKER));
+}
+
+function isLearningToolThread(thread) {
+  return typeof thread?.name === "string" && thread.name.includes(CHAT_LEARNING_MARKER);
+}
+
+function originalHumanMessage(id, prompt) {
+  // Missing original text never falls back to the constructed agent prompt.
+  if (prompt === undefined || prompt === null || prompt === "") return null;
+  if (typeof prompt !== "string" || prompt.length > 50_000 || prompt.includes("\0")) throw new Error("The original human prompt must be a string of at most 50,000 characters or null.");
+  if (typeof id !== "string" || !id || id.length > 200) throw new Error("A human message id of at most 200 characters is required for learning evidence.");
+  return { id, prompt };
 }
 
 function isSubagentThread(thread) {
@@ -115,7 +129,7 @@ export function validateOAuthUrl(value) {
 }
 
 export class CodexService extends EventEmitter {
-  constructor({ projectRoot, workspaceRoot, instructions, chatInstructions, client, eventStream, uiTools, editSlidesHandler = null, checkVersion = checkGeneratedVersion } = {}) {
+  constructor({ projectRoot, workspaceRoot, instructions, chatInstructions, client, eventStream, uiTools, editSlidesHandler = null, slidePreferenceLearning = null, checkVersion = checkGeneratedVersion } = {}) {
     super();
     this.projectRoot = requireThreadCwd(projectRoot);
     this.workspaceRoot = requireWorkspaceCwd(workspaceRoot, workspaceRoot, "workspaceRoot");
@@ -125,6 +139,7 @@ export class CodexService extends EventEmitter {
     this.events = eventStream ?? new CodexEventStream();
     this.uiTools = uiTools ?? new UiToolBridge({ events: this.events });
     this.onEditSlides = editSlidesHandler;
+    this.slidePreferenceLearning = slidePreferenceLearning;
     this.router = null;
     this.ready = false;
     this.initializing = null;
@@ -153,6 +168,7 @@ export class CodexService extends EventEmitter {
     // that needs a user response.
     this.editorParentThreads = new Map();
     this.chatToolThreads = new Set();
+    this.chatLearningThreads = new Set();
     this.turnPurposes = new Map();
     this.chatMigrations = new Map();
     this.editorThreadStarts = 0;
@@ -161,6 +177,8 @@ export class CodexService extends EventEmitter {
     // sent as explicit context in that turn input instead.
     this.threadHistories = new Map();
     this.editSlidesCalls = new Map();
+    this.learningCalls = new Set();
+    this.chatTurnMessages = new Map();
 
     this.attachClient(this.client);
   }
@@ -358,6 +376,8 @@ export class CodexService extends EventEmitter {
       if (threadId && turnId) {
         this.activeTurns.set(threadId, turnId);
         this.turnPurposes.set(threadId, this.threadPurposes.get(threadId) ?? "chat");
+        const messages = this.chatTurnMessages.get(threadId);
+        if (messages && messages.turnId === null) messages.turnId = turnId;
       }
     }
     if (method === "turn/completed") {
@@ -368,10 +388,15 @@ export class CodexService extends EventEmitter {
         this.activeTurns.delete(threadId);
         this.turnPurposes.delete(threadId);
         this.interruptingThreads.delete(threadId);
+        this.chatTurnMessages.delete(threadId);
+        const prefix = `${threadId}:${turnId}:`;
+        for (const key of this.editSlidesCalls.keys()) if (key.startsWith(prefix)) this.editSlidesCalls.delete(key);
+        for (const key of this.learningCalls) if (key.startsWith(prefix)) this.learningCalls.delete(key);
       }
     }
     if (method === "thread/deleted" && params.threadId) {
       this.editorParentThreads.delete(params.threadId);
+      this.chatTurnMessages.delete(params.threadId);
     }
     if (method === "account/updated" || method === "account/login/completed") void this.refreshCatalog();
     if (method === "skills/changed") void this.refreshCatalog();
@@ -499,7 +524,7 @@ export class CodexService extends EventEmitter {
         sessionStartSource: "clear",
         ephemeral: false,
         model: options.model ?? null,
-        ...(isChat ? { dynamicTools: uiDynamicTools({ purpose }) } : {}),
+        ...(isChat ? { dynamicTools: uiDynamicTools({ purpose, learning: this.slidePreferenceLearning !== null }) } : {}),
       });
       // Record the purpose before the name request. A child thread can emit
       // notifications between thread/start and thread/name/set; those events
@@ -511,9 +536,10 @@ export class CodexService extends EventEmitter {
         this.editorParentThreads.set(result.thread.id, options.parentThreadId);
       }
       if (isChat) this.chatToolThreads.add(result.thread.id);
+      if (isChat && this.slidePreferenceLearning !== null) this.chatLearningThreads.add(result.thread.id);
       const threadName = `${WEAVE_NAME_PREFIX}New conversation`;
       const persistedThreadName = isChat
-        ? markedThreadName(threadName)
+        ? markedThreadName(threadName, this.slidePreferenceLearning !== null)
         : markedEditorThreadName(threadName);
       await this.client.request("thread/name/set", {
         threadId: result.thread.id,
@@ -538,9 +564,11 @@ export class CodexService extends EventEmitter {
       this.chatToolThreads.add(threadId);
       this.threadPurposes.set(threadId, "chat");
     }
+    if (isLearningToolThread(source)) this.chatLearningThreads.add(threadId);
     const targetCwd = requireWorkspaceCwd(cwd, this.workspaceRoot);
     const alreadyToolCapable = this.chatToolThreads.has(threadId);
-    if (alreadyToolCapable && targetCwd === requireThreadCwd(source.cwd)) {
+    const hasLearningTools = this.slidePreferenceLearning === null || this.chatLearningThreads.has(threadId);
+    if (alreadyToolCapable && hasLearningTools && targetCwd === requireThreadCwd(source.cwd)) {
       return { thread: threadWithVisibleName(source), migrated: false, sourceThreadId: threadId };
     }
     if (this.activeTurns.has(threadId)) {
@@ -558,7 +586,7 @@ export class CodexService extends EventEmitter {
       const continuationName = `${WEAVE_NAME_PREFIX}Continuation`;
       await this.client.request("thread/name/set", {
         threadId: continuation.id,
-        name: markedThreadName(continuationName),
+        name: markedThreadName(continuationName, this.slidePreferenceLearning !== null),
       });
       continuation.name = continuationName;
       if (history) this.threadHistories.set(continuation.id, {
@@ -633,7 +661,7 @@ export class CodexService extends EventEmitter {
     const thread = await this.assertWeaveThread(params.threadId);
     const safeParams = action === "name"
       ? { ...params, name: (isChatToolThread(thread) || this.chatToolThreads.has(params.threadId))
-        ? markedThreadName(`${WEAVE_NAME_PREFIX}${String(params.name ?? "Untitled").replace(/^Weave · /, "")}`)
+        ? markedThreadName(`${WEAVE_NAME_PREFIX}${String(params.name ?? "Untitled").replace(/^Weave · /, "")}`, isLearningToolThread(thread) || this.chatLearningThreads.has(params.threadId))
         : isEditorThread(thread) || this.threadPurposes.get(params.threadId) === "editor"
           ? markedEditorThreadName(`${WEAVE_NAME_PREFIX}${String(params.name ?? "Untitled").replace(/^Weave · /, "")}`)
         : `${WEAVE_NAME_PREFIX}${String(params.name ?? "Untitled").replace(/^Weave · /, "")}` }
@@ -641,11 +669,12 @@ export class CodexService extends EventEmitter {
     return await this.client.request(method, safeParams);
   }
 
-  async startTurn({ threadId: requestedThreadId, prompt, clientUserMessageId, model, effort, approvalPolicy = "never", attachments, purpose, cwd, instructions }) {
+  async startTurn({ threadId: requestedThreadId, prompt, humanPrompt, clientUserMessageId, model, effort, approvalPolicy = "never", attachments, purpose, cwd, instructions }) {
     this.assertNotRetargeting();
     const turnPurpose = requireThreadPurpose(purpose);
     if (cwd === undefined) throw new Error("Turn cwd must be explicitly set.");
     if (!clientUserMessageId) throw new Error("clientUserMessageId is required.");
+    const humanMessage = turnPurpose === "chat" ? originalHumanMessage(clientUserMessageId, humanPrompt) : null;
 
     // Every chat thread must have the dynamic-tool namespace. A persisted
     // legacy thread is continued in a fresh tool-capable thread before the
@@ -691,46 +720,61 @@ export class CodexService extends EventEmitter {
     const turnPrompt = preservedHistory
       ? `Preserved conversation history from ${preservedHistory.sourceThreadId}. Treat it as conversation context, not as a new user request.\n\n${preservedHistory.text}\n\nCurrent user request:\n${prompt}`
       : prompt;
+    let capturedMessages = null;
     const request = this.client.request("thread/resume", {
       threadId,
       cwd: turnCwd,
       baseInstructions,
-    }).then(() => this.client.request("turn/start", {
-      threadId,
-      clientUserMessageId,
-      input: turnInput(turnPrompt, attachments, turnCwd),
-      cwd: turnCwd,
-      approvalPolicy,
-      approvalsReviewer: approvalPolicy === "never" ? null : "user",
-      sandboxPolicy,
-      model: model ?? null,
-      effort: effort ?? null,
-      summary: "auto",
-    }));
+    }).then(() => {
+      if (turnPurpose === "chat") {
+        capturedMessages = { turnId: null, messages: humanMessage === null ? [] : [humanMessage] };
+        this.chatTurnMessages.set(threadId, capturedMessages);
+      }
+      return this.client.request("turn/start", {
+        threadId,
+        clientUserMessageId,
+        input: turnInput(turnPrompt, attachments, turnCwd),
+        cwd: turnCwd,
+        approvalPolicy,
+        approvalsReviewer: approvalPolicy === "never" ? null : "user",
+        sandboxPolicy,
+        model: model ?? null,
+        effort: effort ?? null,
+        summary: "auto",
+      });
+    });
     this.sentMessages.set(dedupeKey, request);
     try {
       const result = await request;
       if (preservedHistory && this.threadHistories.get(threadId) === preservedHistory) this.threadHistories.delete(threadId);
       this.activeTurns.set(threadId, result.turn.id);
       this.turnPurposes.set(threadId, turnPurpose);
+      if (capturedMessages) capturedMessages.turnId = result.turn.id;
       if (migrated) return { ...result, thread: threadWithVisibleName(thread), sourceThreadId: requestedThreadId };
       return result;
+    } catch (error) {
+      if (capturedMessages && this.chatTurnMessages.get(threadId) === capturedMessages) this.chatTurnMessages.delete(threadId);
+      throw error;
     } finally {
       setTimeout(() => this.sentMessages.delete(dedupeKey), 60_000);
     }
   }
 
-  async steerTurn({ threadId, prompt, clientUserMessageId, attachments }) {
+  async steerTurn({ threadId, prompt, humanPrompt, clientUserMessageId, attachments }) {
     this.assertNotRetargeting();
     const thread = await this.assertWeaveThread(threadId);
     const expectedTurnId = this.activeTurns.get(threadId);
     if (!expectedTurnId) throw new Error("This thread has no running turn.");
-    return await this.client.request("turn/steer", {
+    const humanMessage = this.turnPurposes.get(threadId) === "chat" ? originalHumanMessage(clientUserMessageId, humanPrompt) : null;
+    const result = await this.client.request("turn/steer", {
       threadId,
       expectedTurnId,
       clientUserMessageId,
       input: turnInput(prompt, attachments, thread.cwd),
     });
+    const captured = this.chatTurnMessages.get(threadId);
+    if (humanMessage && captured?.turnId === expectedTurnId && this.activeTurns.get(threadId) === expectedTurnId && !captured.messages.some((message) => message.id === humanMessage.id)) captured.messages.push(humanMessage);
+    return result;
   }
 
   async interruptTurn(threadId) {
@@ -787,7 +831,8 @@ export class CodexService extends EventEmitter {
     return typeof params?.threadId === "string"
       && typeof params?.turnId === "string"
       && this.activeTurns.get(params.threadId) === params.turnId
-      && this.turnPurposes.get(params.threadId) === "chat";
+      && this.turnPurposes.get(params.threadId) === "chat"
+      && !this.interruptingThreads.has(params.threadId);
   }
 
   rejectStaleUiTool(request) {
@@ -826,23 +871,111 @@ export class CodexService extends EventEmitter {
       this.client.respond(request.id, dynamicToolResult({ error: error.message }, false));
       return { accepted: false, error };
     }
+    let sessionId = null;
+    let originalMessages = [];
+    if (this.slidePreferenceLearning !== null) {
+      try {
+        sessionId = this.uiTools.activeThreadSession(threadId).sessionId;
+      } catch (error) {
+        this.client.respond(request.id, dynamicToolResult({ error: error.message, code: error.code }, false));
+        return { accepted: false, error };
+      }
+      const captured = this.chatTurnMessages.get(threadId);
+      if (captured?.turnId === turnId) originalMessages = structuredClone(captured.messages);
+    }
     this.editSlidesCalls.set(callKey, { state: "pending" });
     try {
       const result = await this.onEditSlides(params, args);
       if (!result || typeof result !== "object" || typeof result.success !== "boolean") throw new Error("The edit_slides handler must return { success, result } or { success, error }.");
       if (result.success === true) {
         if (!Object.hasOwn(result, "result")) throw new Error("A successful edit_slides result must contain result.");
-        this.client.respond(request.id, dynamicToolResult(result.result, true));
+        const response = dynamicToolResult(result.result, true);
+        this.editSlidesCalls.set(callKey, {
+          state: "completed",
+          threadId,
+          turnId,
+          sessionId,
+          originalMessages,
+          edit: {
+            callId,
+            execution: args.execution,
+            scope: structuredClone(args.scope),
+            projectRoot: result.result?.projectRoot,
+            changeCount: result.result?.changeCount,
+            conflictCount: result.result?.conflictCount,
+          },
+        });
+        this.client.respond(request.id, response);
       } else {
         if (typeof result.error !== "string" || result.error.length === 0) throw new Error("A failed edit_slides result must contain a non-empty error.");
         this.client.respond(request.id, dynamicToolResult({ error: result.error }, false));
+        this.editSlidesCalls.set(callKey, { state: "completed" });
       }
-      this.editSlidesCalls.set(callKey, { state: "completed" });
       return { accepted: true };
     } catch (error) {
       this.editSlidesCalls.set(callKey, { state: "completed" });
       const message = error instanceof Error ? error.message : String(error);
       this.client.respond(request.id, dynamicToolResult({ error: message }, false));
+      return { accepted: false, error };
+    } finally {
+      // A delegated edit can settle after its root turn was interrupted. Keep
+      // its actual result, but never retain old human evidence for a new turn.
+      if (!this.isActiveChatTurn(params)) this.editSlidesCalls.delete(callKey);
+    }
+  }
+
+  assertLearningSession(params, sessionId) {
+    if (!this.isActiveChatTurn(params)) throw Object.assign(new Error("Learning requires an active chat coordinator turn."), { code: "WEAVE_UI_STALE_TURN" });
+    const session = this.uiTools.activeThreadSession(params.threadId);
+    if (session.sessionId !== sessionId) throw Object.assign(new Error("The browser that owned the slide correction is no longer attached to this chat."), { code: "WEAVE_UI_SESSION_MISMATCH" });
+  }
+
+  async handleSlideLearningCall(request) {
+    const params = request.params;
+    let canRecordFailure = false;
+    try {
+      if (this.slidePreferenceLearning === null) throw new Error("Slide preference learning is not configured.");
+      if (typeof params.callId !== "string" || !params.callId || params.callId.length > 200) throw new Error("A learning tool call id is required.");
+      const sessionId = this.uiTools.activeThreadSession(params.threadId).sessionId;
+      this.assertLearningSession(params, sessionId);
+      const callKey = `${params.threadId}:${params.turnId}:${params.callId}`;
+      if (this.learningCalls.has(callKey)) throw Object.assign(new Error("This learning call has already been handled and will not be replayed."), { code: "WEAVE_UI_REPLAY" });
+      this.learningCalls.add(callKey);
+      canRecordFailure = true;
+      let result;
+      if (params.tool === GET_SLIDE_LEARNING_TOOL_NAME) {
+        if (!params.arguments || typeof params.arguments !== "object" || Array.isArray(params.arguments) || Object.keys(params.arguments).length !== 0) throw new Error("get_slide_learning_context requires an empty argument object.");
+        const state = await this.slidePreferenceLearning.getContext();
+        this.assertLearningSession(params, sessionId);
+        const captured = this.chatTurnMessages.get(params.threadId);
+        const originalMessages = captured?.turnId === params.turnId ? structuredClone(captured.messages) : [];
+        const successfulEdits = [...this.editSlidesCalls.values()]
+          .filter((call) => call.state === "completed" && call.threadId === params.threadId && call.turnId === params.turnId && call.sessionId === sessionId && call.edit?.execution === "apply" && Number.isSafeInteger(call.edit.changeCount) && call.edit.changeCount > 0 && call.edit.conflictCount === 0 && typeof call.edit.projectRoot === "string")
+          .map((call) => ({ ...call.edit, messageIds: call.originalMessages.map((message) => message.id) }));
+        const reason = !state.enabled ? "Automatic slide preference learning is disabled." : originalMessages.length === 0 ? "No original human text is available for this turn." : successfulEdits.length === 0 ? "No successful applied slide edit with changes is available in this browser session." : null;
+        result = { ...state, available: reason === null, reason, originalMessages, successfulEdits };
+      } else {
+        const args = validateLearnSlidePreferenceArguments(params.arguments);
+        const edit = this.editSlidesCalls.get(`${params.threadId}:${params.turnId}:${args.editCallId}`);
+        if (!edit || edit.state !== "completed" || !edit.edit) throw Object.assign(new Error("The referenced slide edit did not complete successfully in this chat turn."), { code: "WEAVE_LEARNING_NO_EDIT" });
+        if (edit.sessionId !== sessionId) throw Object.assign(new Error("The referenced slide edit belongs to a different browser session."), { code: "WEAVE_UI_SESSION_MISMATCH" });
+        result = await this.slidePreferenceLearning.learn(args, {
+          threadId: params.threadId,
+          turnId: params.turnId,
+          edit: edit.edit,
+          originalMessages: edit.originalMessages,
+          assertAvailable: () => this.assertLearningSession(params, sessionId),
+        });
+        this.events.publish("weave/learning", { ...result, threadId: params.threadId, turnId: params.turnId });
+      }
+      this.client.respond(request.id, dynamicToolResult(result, true));
+      return { accepted: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (canRecordFailure && params.tool === LEARN_SLIDE_PREFERENCE_TOOL_NAME && this.slidePreferenceLearning !== null) {
+        try { await this.slidePreferenceLearning.recordFailure({ threadId: params.threadId, turnId: params.turnId }, message); } catch { /* Never roll back saved slides when learning storage is unavailable. */ }
+      }
+      this.client.respond(request.id, dynamicToolResult({ error: message, ...(error.code ? { code: error.code } : {}) }, false));
       return { accepted: false, error };
     }
   }
@@ -853,6 +986,9 @@ export class CodexService extends EventEmitter {
     }
     if (request.params?.namespace === UI_TOOL_NAMESPACE && request.params?.tool === EDIT_SLIDES_TOOL_NAME) {
       return this.handleEditSlidesCall(request);
+    }
+    if (request.params?.namespace === UI_TOOL_NAMESPACE && [GET_SLIDE_LEARNING_TOOL_NAME, LEARN_SLIDE_PREFERENCE_TOOL_NAME].includes(request.params?.tool)) {
+      return this.handleSlideLearningCall(request);
     }
     return this.uiTools.dispatch(request, (id, result) => this.client.respond(id, result));
   }
