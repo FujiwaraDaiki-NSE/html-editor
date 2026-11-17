@@ -565,6 +565,7 @@ export async function updateSkill(root, input) {
     await assertSafeSkillDirectory(dirname(currentPath));
     const currentInfo = await entryInfo(currentPath);
     if (currentInfo && (!currentInfo.isFile() || currentInfo.isSymbolicLink())) throw skillError("Skill file path is not a regular file.", "WEAVE_SKILL_INVALID");
+    if (Object.hasOwn(input, "expectedContent") && await readFile(currentPath, "utf8") !== input.expectedContent) throw skillError("The skill changed after this proposal. Review a new proposal before saving.", "WEAVE_SKILL_CONFLICT");
     const content = serializeSkillDocument({ name: nextName, description, body, unknownFrontmatter: input.frontmatter });
     if (nextName !== currentName) {
       await assertNoNameConflict(projectRoot, scope, nextName);

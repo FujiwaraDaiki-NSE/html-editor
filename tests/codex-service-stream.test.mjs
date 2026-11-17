@@ -117,7 +117,7 @@ test("sending after restart resumes the saved thread before starting a turn", as
   const result = await service.startTurn({ threadId: "new", prompt: "continue", clientUserMessageId: "message-1" });
   assert.equal(result.turn.id, "resumed-turn");
   assert.deepEqual(client.calls.map(({ method }) => method), ["thread/read", "thread/resume", "turn/start"]);
-  assert.deepEqual(client.calls[1].params, { threadId: "new", cwd: "/workspace", baseInstructions: "current rules" });
+  assert.deepEqual(client.calls[1].params, { threadId: "new", cwd: "/workspace", baseInstructions: await service.editorInstructions() });
   assert.equal(client.calls[2].params.threadId, "new");
 });
 

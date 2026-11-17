@@ -1,3 +1,4 @@
+import { skillProposalInstructions } from "../skill-proposals.mjs";
 import { listSkills } from "../skills.mjs";
 import { EventEmitter } from "node:events";
 import { resolve } from "node:path";
@@ -332,7 +333,7 @@ export class CodexService extends EventEmitter {
   async editorInstructions() {
     const skills = await listSkills(this.projectRoot);
     const valid = skills.filter((skill) => skill.valid && skill.enabled);
-    return this.instructions + (valid.length ? "\n\nhtml-editor shared skills (apply those relevant to the request):\n" + valid.map((skill) => JSON.stringify({ name: skill.name, description: skill.description, instructions: skill.body, path: skill.filePath })).join("\n") : "");
+    return this.instructions + "\n\n" + skillProposalInstructions + (valid.length ? "\n\nhtml-editor shared skills (apply those relevant to the request):\n" + valid.map((skill) => JSON.stringify({ name: skill.name, description: skill.description, instructions: skill.body, path: skill.filePath })).join("\n") : "");
   }
 
   async startThread(options = {}) {

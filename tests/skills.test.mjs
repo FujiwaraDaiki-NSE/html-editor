@@ -307,7 +307,7 @@ test("editor skills are shared across decks, isolated from Codex home, and passe
     assert.doesNotMatch(await harness.editorInstructions(), /external|legacy/);
     await setEditorSkillEnabled(project, "meaning", false);
     assert.equal((await listSkills(other))[0].enabled, false);
-    assert.equal(await harness.editorInstructions(), "Base");
+    assert.doesNotMatch(await harness.editorInstructions(), /Preserve causes and examples/);
     await setEditorSkillEnabled(other, "meaning", true);
     assert.match(await harness.editorInstructions(), /Preserve causes and examples/);
     await assert.rejects(createSkill(project, { scope: "project", name: "rejected", description: "Old", body: "Old" }), /scope must be editor/);

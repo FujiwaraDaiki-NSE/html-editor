@@ -197,7 +197,7 @@ If no file change is needed, respond with a concise explanation.
 
 Reusable instructions are managed in the html-editor Skills GUI and apply to all decks.
 Do not create project-local skills or change user-wide Codex skills. When asked to remember
-instructions, explain the proposed reusable instruction for the human to save in the Skills GUI.
+instructions, use the skill proposal workflow so the human can review and approve the contents.
 
 Files under references/ are materials brought in by a human through chat. Open and read the paths
 provided in the envelope's attachments yourself. pptx, docx, and xlsx files are zip archives, so

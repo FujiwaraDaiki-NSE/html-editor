@@ -1346,3 +1346,9 @@ button.project-card { cursor: pointer; }
   .review-toggle { padding-inline: 6px; }
   .review-dock { margin-bottom: 52px; }
 }
+
+.skill-review-list { padding: 12px; border-top: 1px solid var(--line-strong); max-height: 45vh; overflow: auto; flex-shrink: 0; }
+.skill-review-list > p { color: var(--muted); font-size: 12px; }
+.skill-review-list .skill-card { margin-top: 10px; }
+.skill-review-list summary { cursor: pointer; padding: 8px 0; }
+.skill-review-list pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; padding: 8px; background: var(--panel-3); }

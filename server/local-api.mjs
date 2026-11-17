@@ -1,3 +1,4 @@
+import { captureSkillProposal, listSkillProposals, resetSkillProposal, resolveSkillProposal } from "./skill-proposals.mjs";
 import { createServer } from "node:http";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -230,6 +231,7 @@ async function statePayload() {
       pendingRequests: codex.router.list(),
     },
     skills: await listSkills(projectRoot()),
+    skillProposals: await listSkillProposals(projectRoot()),
     agentPreview: activePending ? {
       threadId: activePendingEntry[0],
       turnId: activePending.turnId,
@@ -290,7 +292,7 @@ async function runSkillMutation(operation) {
     const root = projectRoot();
     const skill = await operation(root);
     await refreshSkillCatalog();
-    return { skill, skills: await listSkills(root), project: projectState().project };
+    return { skill, skills: await listSkills(root), skillProposals: await listSkillProposals(root), project: projectState().project };
   });
 }
 
@@ -467,6 +469,7 @@ async function startEditorTurn(payload, { variation = false } = {}) {
   let agentFileSnapshot = null;
   try {
     await clearRecoveryTask(root);
+    await resetSkillProposal(root);
     if (variation) {
       branch = createVariationBranch();
       await setVariationState(branch, "pending", projectRoot());
@@ -590,6 +593,9 @@ codex.on("notification", (message) => {
         }
         if (pending.queuedMilestone) commitIfChanged(`Milestone: ${pending.queuedMilestone}`, pending.root);
       }, pending.root);
+      let skillProposalError = null;
+      try { await captureSkillProposal(pending.root, { threadId, turnId: pending.turnId }); }
+      catch (error) { skillProposalError = error.message; }
       pending.previewSnapshot = await readProject(pending.root);
       pending.humanDraft = pending.previewSnapshot;
       recentAgentMerges.set(pending.root, { base: pending.baseDeck, agent: pending.previewSnapshot, expiresAt: Date.now() + 10_000 });
@@ -597,6 +603,7 @@ codex.on("notification", (message) => {
       await discardRecoverySnapshot(pending.recoverySnapshot, pending.root);
       codex.events.publish("weave/project", {
         status: "updated",
+        skillProposalError,
         projectRoot: pending.root,
         threadId,
         turnId: pending.turnId,
@@ -768,8 +775,14 @@ const server = createServer(async (request, response) => {
       return sendJson(request, response, 200, { projects: await listProjects() });
     }
 
-    if (activeProjectTurn() && request.method !== "GET" && /^\/api\/skills(?:\/|$)/.test(url.pathname)) {
+    if (activeProjectTurn() && request.method !== "GET" && /^\/api\/(?:skills|skill-proposals)(?:\/|$)/.test(url.pathname)) {
       return sendJson(request, response, 409, { error: "Finish the running Agent turn before changing skills.", code: "WEAVE_TURN_RUNNING" });
+    }
+
+    const skillReview = url.pathname.match(/^\/api\/skill-proposals\/([a-f0-9-]+)\/(accept|dismiss)$/);
+    if (request.method === "POST" && skillReview) {
+      const result = await runSkillMutation((root) => resolveSkillProposal(root, skillReview[1], skillReview[2]));
+      return sendJson(request, response, 200, result);
     }
 
     if (request.method === "POST" && url.pathname === "/api/skills") {
@@ -954,6 +967,7 @@ const server = createServer(async (request, response) => {
       let pending = null;
       try {
         await clearRecoveryTask(root);
+        await resetSkillProposal(root);
         const deck = payload.deck ? await writeProject(payload.deck, null, root) : await readProject(root);
         const preTurnCss = await readDeckCss(root);
         agentFileSnapshot = await createAgentFileSnapshot(root);

@@ -39,6 +39,7 @@ type ReferenceShelfEntry = ReferenceAttachment & { hash?: string; addedAt?: stri
 type FolderBrowser = { path: string; parent: string | null; breadcrumbs: Array<{ name: string; path: string }>; folders: Array<{ name: string; path: string }>; folderCount: number; fileCount: number };
 
 type SlideNav = "filmstrip" | "rail";
+type SkillProposal = { id: string; threadId: string; name: string; targetName: string | null; description: string; body: string; previousBody: string | null; reason: string; evidence: string };
 type SkillScope = "editor";
 type SkillEntry = { name: string; description: string; body: string; content: string; frontmatter: string | null; scope: SkillScope; location: SkillScope; path: string; filePath: string; enabled: boolean; valid: boolean; error: string | null };
 type SkillDraft = { scope: SkillScope; name: string; description: string; body: string; frontmatter: string };
@@ -93,6 +94,7 @@ type ServerState = {
     pendingRequests: Array<{ id: string | number; method: string; params: Record<string, any>; createdAt: number }>;
   };
   skills: SkillEntry[];
+  skillProposals: SkillProposal[];
   agentPreview: null | {
     threadId: string;
     turnId: string | null;
@@ -449,6 +451,7 @@ export default function Home() {
   const [skills, setSkills] = useState<SkillEntry[]>([]);
   const skillScope: SkillScope = "editor";
   const [skillSearch, setSkillSearch] = useState("");
+  const [skillProposals, setSkillProposals] = useState<SkillProposal[]>([]);
   const [skillDialog, setSkillDialog] = useState<SkillDialog | null>(null);
   const [skillDraft, setSkillDraft] = useState<SkillDraft>({ scope: "editor", name: "", description: "", body: "", frontmatter: "" });
   const [skillStatus, setSkillStatus] = useState<SkillStatus>({ state: "idle", message: "" });
@@ -626,6 +629,7 @@ export default function Home() {
       if (!response.ok) throw new Error(result.error ?? "スキルを読み込めませんでした。");
       if (!Array.isArray(result?.skills)) throw new Error("スキルの応答が不正です。");
       setSkills(result.skills);
+    if (Array.isArray(result.skillProposals)) setSkillProposals(result.skillProposals);
       setSkillStatus({ state: "idle", message: "" });
     } catch (error) {
       setSkillStatus({ state: "error", message: error instanceof Error ? error.message : String(error) });
@@ -1111,6 +1115,7 @@ export default function Home() {
     setHistory(state.history);
     setReferenceShelf(state.references ?? []);
     setSkills(state.skills ?? []);
+    setSkillProposals(state.skillProposals ?? []);
     setVariations(state.variations ?? []);
     setProject(state.project);
     setServerRevision(state.project.revision ?? state.project.commit);
@@ -1236,6 +1241,7 @@ export default function Home() {
                   if (viewedSlideId && changedIds.includes(viewedSlideId)) setPreviewHighlightSlideId(viewedSlideId);
               }
               if (projectStatus === "updated") {
+                if (envelope.payload?.skillProposalError) setApiError(`資料を更新しましたが、スキル案を作成できませんでした：${envelope.payload.skillProposalError}`);
                 if (typeof envelope.payload?.milestone === "string" && envelope.payload.milestone) setAnnouncement(`マイルストーン「${envelope.payload.milestone}」を作成しました`);
                 const eventBaseline = Array.isArray(envelope.payload?.baseline?.slides)
                   ? envelope.payload.baseline.slides as SlideDoc[]
@@ -3169,6 +3175,7 @@ export default function Home() {
     if (!Array.isArray(result?.skills)) throw new Error("スキルの応答が不正です。");
     if (!result?.project || typeof result.project.clean !== "boolean") throw new Error("スキルの応答にプロジェクト状態がありません。");
     setSkills(result.skills);
+    if (Array.isArray(result.skillProposals)) setSkillProposals(result.skillProposals);
     setProject(result.project);
     setSaved(!browserDirtyRef.current && result.project.clean);
     setServerRevision(result.project.revision ?? result.project.commit);
@@ -3431,11 +3438,33 @@ export default function Home() {
     </section>
   );
 
+  const resolveSkillReview = async (proposal: SkillProposal, action: "accept" | "dismiss") => {
+    await runSkillMutation(`proposal:${proposal.id}`, () => fetch(`${apiBase}/skill-proposals/${proposal.id}/${action}`, { method: "POST" }), action === "accept" ? "共通スキルに保存しました。有効なスキルは次のAgent依頼から参照されます。" : "今回は保存しません。資料への修正はそのまま残ります。");
+  };
+
+  const skillReviewCards = (proposals: SkillProposal[]) => proposals.length > 0 && <section className="skill-review-list" aria-label="スキルを育てる提案">
+    <strong>今回の指示を、ほかの資料にも活かしますか？</strong>
+    <p>確認して保存すると、html-editorの全資料で使える共通スキルになります。</p>
+    {proposals.map((proposal) => <article className="skill-card" key={proposal.id} aria-busy={skillBusyKey === `proposal:${proposal.id}`}>
+      <strong>{proposal.targetName === null ? "新しいスキル" : "既存スキルの更新"}：{proposal.name}</strong>
+      <p>{proposal.reason}</p>
+      <details><summary>指示と変更内容を確認</summary>
+        <p>元の指示：{proposal.evidence}</p>
+        <p>適用条件：{proposal.description}</p>
+        {proposal.previousBody !== null && <><h4>現在の内容</h4><pre>{proposal.previousBody}</pre></>}
+        <h4>保存する内容</h4><pre>{proposal.body}</pre>
+        <button type="button" className="sidebar-primary-action" disabled={skillBusyKey !== null || agentRunning} onClick={() => void resolveSkillReview(proposal, "accept")}>全資料の共通スキルに保存</button>
+      </details>
+      <footer><button type="button" disabled={skillBusyKey !== null || agentRunning} onClick={() => void resolveSkillReview(proposal, "dismiss")}>今回は保存しない</button></footer>
+    </article>)}
+  </section>;
+
   const skillsSidebar = (
     <section className="activity-panel skills-panel" aria-label="スキルライブラリ">
       <header className="activity-panel-heading"><span>スキル</span><small>{skills.length}件</small><button className="panel-close" aria-label="スキルを閉じる" onClick={() => setLeftPanelOpen(false)}>×</button></header>
       <div className="activity-panel-body skills-sidebar">
         <div className="skills-intro"><strong>再利用できる指示</strong><p>html-editorのすべての資料で使う制作ルールを管理します。有効な指示は次のAgent依頼から参照されます。</p></div>
+        {skillReviewCards(skillProposals)}
         <div className="skills-actions">
           <button className="sidebar-primary-action" type="button" onClick={openNewSkillDialog} disabled={skillBusyKey !== null || agentRunning}>新しいスキル</button>
           <input ref={skillInputRef} className="sr-only" type="file" accept="SKILL.md,.md,text/markdown" onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadManagedSkill(file); }} />
@@ -3631,6 +3660,8 @@ export default function Home() {
               />)}
               <div ref={messagesEndRef} className="messages-end" />
             </div>
+            {skillReviewCards(skillProposals.filter((proposal) => proposal.threadId === codexState.activeThreadId))}
+            {skillStatus.state !== "idle" && <div className={`skill-status ${skillStatus.state}`} role={skillStatus.state === "error" ? "alert" : "status"} aria-live="polite">{skillStatus.message}</div>}
             <div className="composer-dock" data-turn-state={turnPresentation} aria-busy={turnBusy}>
               {pendingServerRequests.length > 0 && <section className="blocking-region" role="region" aria-live="assertive" aria-label="確認が必要な操作" data-pending-count={pendingServerRequests.length}>
                 <div className="blocking-heading"><strong>{activePendingServerRequests.length > 0 ? "確認が必要です" : "確認が必要な要求があります"}</strong><span>{pendingServerRequests.length}件</span></div>

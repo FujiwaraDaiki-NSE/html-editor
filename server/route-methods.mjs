@@ -2,6 +2,7 @@ const ROUTE_METHODS = [
   [/^\/api\/references\/folder\/upload$/, ["POST"]],
   [/^\/healthz$/, ["GET"]],
   [/^\/api\/(?:state|variations|variations\/compare|codex\/events|codex\/threads)$/, ["GET"]],
+  [/^\/api\/skill-proposals\/[a-f0-9-]+\/(?:accept|dismiss)$/, ["POST"]],
   [/^\/api\/skills$/, ["GET", "POST"]],
   [/^\/api\/skills\/upload$/, ["POST"]],
   [/^\/api\/skills\/(?:editor)\/[^/]+$/, ["PATCH", "DELETE"]],
