@@ -112,3 +112,5 @@ npm test
 開発者向けの仕様は [html-editor共通スキルのsummary](docs/editor-shared-skills-summary.html) を参照してください。
 
 Agentは修正のやり取りから再利用できる指示を見つけると、「今回の指示を、ほかの資料にも活かしますか？」と提案します。元の指示・適用理由・保存する全文を確認し、「全資料の共通スキルに保存」を選ぶと新規作成または既存スキルの更新を行います。「今回は保存しない」を選んでも資料の修正は保持されます。未回答の提案は再読み込み後もスキル画面から確認できます。既存スキルが提案後に変更されていた場合は上書きを拒否します。
+
+資料制作の知見をまとめた共通スキルの配布原稿は [slide-authoring](skills/slide-authoring/SKILL.md) です。内容の意味・情報の関係・図表と実画面・統一感・画像・事実の扱い・表示確認を扱います。[出典と適用範囲](skills/slide-authoring/references/sources.md)、[開発者向けsummary](docs/slide-authoring-skill-summary.html) を参照してください。別環境へ導入する場合は「SKILL.mdをアップロード」で登録できます。GUIで編集する実体と配布原稿は自動同期しません。

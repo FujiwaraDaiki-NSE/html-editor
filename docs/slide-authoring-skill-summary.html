@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="ja"><meta charset="utf-8"><title>資料制作の知見を共通スキルへ整理</title>
+<style>body{max-width:880px;margin:3rem auto;padding:0 1.5rem;font:16px/1.8 system-ui;color:#172033}h1,h2{line-height:1.4}code{background:#eef2f6;padding:.15em .4em}li{margin:.5em 0}</style>
+<h1>資料制作の知見を共通スキルへ整理</h1>
+<p>2026年11月17日。html-editorの基本指示、技術報告スライドのスキル、作成者の表現方針、今回の修正指示を、共通スキル <code>slide-authoring</code> に統合した。</p>
+<h2>統合した内容</h2>
+<ol><li>各ページの主題と、必要な事実・理由・図表を決める。</li><li>言い換えでも意味・条件・因果・具体例を保持する。</li><li>並列・手順・比較・全体と部分の関係を配置でも保持する。</li><li>説明図・実画面・文章の役割を分け、理解に必要な情報を残す。</li><li>同じ役割のページを揃え、枠・線・文字の強弱で読み順を作る。</li><li>画像の縦横比・全体表示・解像度・読み取れる大きさを両立する。</li><li>事実・実績の帰属・開発状況・個人的見解を正確に扱う。</li><li>意味の照合と実表示を確認し、最新の修正・削除指示を守る。</li></ol>
+<h2>保存と管理</h2>
+<p>配布用の原稿は <a href="../skills/slide-authoring/SKILL.md">skills/slide-authoring/SKILL.md</a>。根拠は <a href="../skills/slide-authoring/references/sources.md">references/sources.md</a> に記載した。今回の環境ではeditor専用の .weave/skills/slide-authoring に登録し、有効にした。新しいハーネスの「スキル」画面から編集でき、次のAgent依頼で参照される。稼働中の旧サーバーを更新するには再起動が必要。</p>
+<p>配布原稿とGUI上の実体は自動同期しない。GUIで育てた実体を、後から配布原稿で自動上書きしない。他環境ではSKILL.mdをアップロードし、根拠資料も必要ならreferencesをコピーする。</p>
+<h2>共通化しなかった内容</h2>
+<p>固定のページ数、案件名、特許件数、黒背景禁止、文字サイズ、画像の縮小率、特定図の削除などは資料固有の決定として除外した。旧スキルの原本とハーネスのHTML・保存契約は変更していない。</p>
+</html>
