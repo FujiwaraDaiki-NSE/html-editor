@@ -1,3 +1,4 @@
+import { listSkills } from "../skills.mjs";
 import { EventEmitter } from "node:events";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -328,6 +329,12 @@ export class CodexService extends EventEmitter {
     return { ...result, data };
   }
 
+  async editorInstructions() {
+    const skills = await listSkills(this.projectRoot);
+    const valid = skills.filter((skill) => skill.valid && skill.enabled);
+    return this.instructions + (valid.length ? "\n\nhtml-editor shared skills (apply those relevant to the request):\n" + valid.map((skill) => JSON.stringify({ name: skill.name, description: skill.description, instructions: skill.body, path: skill.filePath })).join("\n") : "");
+  }
+
   async startThread(options = {}) {
     this.assertNotRetargeting();
     this.assertReady();
@@ -336,7 +343,7 @@ export class CodexService extends EventEmitter {
       approvalPolicy: options.approvalPolicy ?? "never",
       approvalsReviewer: options.approvalPolicy === "never" || !options.approvalPolicy ? null : "user",
       sandbox: "workspace-write",
-      baseInstructions: this.instructions,
+      baseInstructions: await this.editorInstructions(),
       serviceName: "Weave",
       threadSource: WEAVE_THREAD_SOURCE,
       sessionStartSource: "clear",
@@ -362,7 +369,7 @@ export class CodexService extends EventEmitter {
     const result = await this.client.request("thread/resume", {
       threadId,
       cwd: this.projectRoot,
-      baseInstructions: this.instructions,
+      baseInstructions: await this.editorInstructions(),
     });
     return result.thread;
   }
@@ -374,7 +381,7 @@ export class CodexService extends EventEmitter {
       threadId,
       lastTurnId,
       cwd: this.projectRoot,
-      baseInstructions: this.instructions,
+      baseInstructions: await this.editorInstructions(),
       threadSource: WEAVE_THREAD_SOURCE,
     });
     await this.client.request("thread/name/set", {
@@ -419,7 +426,7 @@ export class CodexService extends EventEmitter {
     const request = this.client.request("thread/resume", {
       threadId,
       cwd: this.projectRoot,
-      baseInstructions: this.instructions,
+      baseInstructions: await this.editorInstructions(),
     }).then(() => this.client.request("turn/start", {
       threadId,
       clientUserMessageId,

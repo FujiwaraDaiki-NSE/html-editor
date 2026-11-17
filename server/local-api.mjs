@@ -61,12 +61,11 @@ import {
 } from "./project.mjs";
 import {
   createSkill,
+  setEditorSkillEnabled,
   createProjectSkillSnapshot,
   deleteSkill,
-  demoteSkill,
   discardProjectSkillSnapshot,
   listSkills,
-  promoteSkill,
   restoreProjectSkillSnapshot,
   updateSkill,
   uploadSkill,
@@ -419,7 +418,7 @@ function workflowFromPayload(payload) {
   return {
     scope: envelope.modificationScope,
     execution: envelope.executionMode,
-    allowSkillChanges: envelope.executionMode === "apply" && envelope.allowSkillChanges === true,
+    allowSkillChanges: false,
   };
 }
 
@@ -779,24 +778,14 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && url.pathname === "/api/skills/upload") {
       return sendJson(request, response, 201, await runSkillMutation((root) => uploadSkill(root, payload)));
     }
-    if (request.method === "POST" && ["/api/skills/promote", "/api/skills/demote"].includes(url.pathname)) {
-      return sendJson(request, response, 200, await runSkillMutation((root) => url.pathname.endsWith("/promote") ? promoteSkill(root, payload.name) : demoteSkill(root, payload.name)));
-    }
-    const scopedSkillAction = url.pathname.match(/^\/api\/skills\/(project|common)\/([^/]+)\/(promote|demote)$/);
-    if (request.method === "POST" && scopedSkillAction) {
-      const [, sourceScope, encodedName, action] = scopedSkillAction;
-      const name = decodeSkillName(encodedName);
-      if ((action === "promote" && sourceScope !== "project") || (action === "demote" && sourceScope !== "common")) throw Object.assign(new Error("Skill action does not match its scope."), { code: "WEAVE_SKILL_INVALID" });
-      return sendJson(request, response, 200, await runSkillMutation((root) => action === "promote"
-        ? promoteSkill(root, name)
-        : demoteSkill(root, name)));
-    }
-    const scopedSkill = url.pathname.match(/^\/api\/skills\/(project|common)\/([^/]+)$/);
+    const scopedSkill = url.pathname.match(/^\/api\/skills\/(editor)\/([^/]+)$/);
     if (scopedSkill) {
       const [, scope, encodedName] = scopedSkill;
       const name = decodeSkillName(encodedName);
       if (request.method === "PATCH") {
-        return sendJson(request, response, 200, await runSkillMutation((root) => updateSkill(root, { ...payload, scope, currentName: name })));
+        return sendJson(request, response, 200, await runSkillMutation((root) => Object.hasOwn(payload, "enabled")
+          ? setEditorSkillEnabled(root, name, payload.enabled)
+          : updateSkill(root, { ...payload, scope, currentName: name })));
       }
       if (request.method === "DELETE") {
         return sendJson(request, response, 200, await runSkillMutation((root) => deleteSkill(root, scope, name)));

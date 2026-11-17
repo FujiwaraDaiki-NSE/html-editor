@@ -39,8 +39,8 @@ type ReferenceShelfEntry = ReferenceAttachment & { hash?: string; addedAt?: stri
 type FolderBrowser = { path: string; parent: string | null; breadcrumbs: Array<{ name: string; path: string }>; folders: Array<{ name: string; path: string }>; folderCount: number; fileCount: number };
 
 type SlideNav = "filmstrip" | "rail";
-type SkillScope = "project" | "common";
-type SkillEntry = { name: string; description: string; body: string; content: string; frontmatter: string | null; scope: SkillScope; location: SkillScope; path: string; filePath: string; valid: boolean; error: string | null };
+type SkillScope = "editor";
+type SkillEntry = { name: string; description: string; body: string; content: string; frontmatter: string | null; scope: SkillScope; location: SkillScope; path: string; filePath: string; enabled: boolean; valid: boolean; error: string | null };
 type SkillDraft = { scope: SkillScope; name: string; description: string; body: string; frontmatter: string };
 type SkillDialog = { mode: "create" | "edit"; source: SkillEntry | null };
 type SkillStatus = { state: "idle" | "busy" | "success" | "error"; message: string };
@@ -447,10 +447,10 @@ export default function Home() {
   const [threadMenuOpen, setThreadMenuOpen] = useState(false);
   const [activityView, setActivityView] = useState<ActivityView>("agent");
   const [skills, setSkills] = useState<SkillEntry[]>([]);
-  const [skillScope, setSkillScope] = useState<SkillScope>("project");
+  const skillScope: SkillScope = "editor";
   const [skillSearch, setSkillSearch] = useState("");
   const [skillDialog, setSkillDialog] = useState<SkillDialog | null>(null);
-  const [skillDraft, setSkillDraft] = useState<SkillDraft>({ scope: "project", name: "", description: "", body: "", frontmatter: "" });
+  const [skillDraft, setSkillDraft] = useState<SkillDraft>({ scope: "editor", name: "", description: "", body: "", frontmatter: "" });
   const [skillStatus, setSkillStatus] = useState<SkillStatus>({ state: "idle", message: "" });
   const [skillBusyKey, setSkillBusyKey] = useState<string | null>(null);
   const agentModel = useSyncExternalStore(agentModelStore.subscribe, agentModelStore.read, agentModelStore.serverRead);
@@ -526,7 +526,6 @@ export default function Home() {
   const [previewHighlightSlideId, setPreviewHighlightSlideId] = useState<string | null>(null);
   const [changeScope, setChangeScope] = useState<ChangeScope>("current-slide");
   const [executionMode, setExecutionMode] = useState<ExecutionMode>("apply");
-  const [allowSkillChanges, setAllowSkillChanges] = useState(false);
   const [draftSync, setDraftSync] = useState<DraftSyncState>("synced");
   const [agentProjectReady, setAgentProjectReady] = useState(true);
   const [sourceBuffer, setSourceBuffer] = useState("");
@@ -990,7 +989,6 @@ export default function Home() {
       elementId: changeScope === "element" ? selectedId : null,
     },
     executionMode,
-    allowSkillChanges,
     selected: selectedId ? {
       id: selectedId,
       kind: sel?.kind ?? "",
@@ -1077,13 +1075,6 @@ export default function Home() {
     if (codexState.activeTurnId) return { kind: "running", label: "別タスクで実行中…" };
     return null;
   })();
-  const catalogSkills = useMemo(() => codexState.catalog.skills.flatMap((entry: any) => entry?.skills ?? [entry]).filter(Boolean), [codexState.catalog.skills]);
-  const catalogSkillFor = (skill: SkillEntry) => {
-    const pathMatch = catalogSkills.find((entry: any) => typeof entry.path === "string" && entry.path === skill.filePath);
-    if (pathMatch) return pathMatch;
-    const nameMatches = catalogSkills.filter((entry: any) => entry.name === skill.name && (typeof entry.path !== "string" || !entry.path.trim()));
-    return nameMatches.length === 1 ? nameMatches[0] : undefined;
-  };
   const visibleSkills = useMemo(() => skills.filter((skill) => skill.scope === skillScope && (!skillSearch.trim() || `${skill.name} ${skill.description}`.toLowerCase().includes(skillSearch.trim().toLowerCase()))), [skillScope, skillSearch, skills]);
   const activityLabel = activityView === "history" ? "バージョン履歴" : activityView === "shortcuts" ? "ショートカット" : activityView === "skills" ? "スキル" : activityView === "settings" ? "設定" : "Agent";
 
@@ -2888,7 +2879,6 @@ export default function Home() {
         setTurnSubmission(IDLE_TURN_SUBMISSION);
       } else setTurnSubmission({ phase: "accepted", threadId: result.thread.id, turnId: result.turn.id });
       setActiveVariation(result.branch);
-      setAllowSkillChanges(false);
       dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
     } catch (error) {
       if (!accepted) setTurnSubmission(IDLE_TURN_SUBMISSION);
@@ -3048,7 +3038,6 @@ export default function Home() {
         setAnnouncement("Agentへの指示を送信しました");
       }
       setPromptDraft("");
-      if (!steering) setAllowSkillChanges(false);
       setReferenceAttachments([]);
       setIncludeRegionAnnotations(true);
     } catch (error) {
@@ -3176,27 +3165,6 @@ export default function Home() {
     }
   };
 
-  const updateSkill = async (skill: any, enabled: boolean) => {
-    const path = typeof skill?.path === "string" ? skill.path : null;
-    const name = typeof skill?.name === "string" ? skill.name : null;
-    if (path === null && name === null) {
-      setSkillStatus({ state: "error", message: "This catalog entry cannot be configured." });
-      return;
-    }
-    setSkillBusyKey(`catalog:${path ?? name}`);
-    setSkillStatus({ state: "busy", message: "Updating Codex skill…" });
-    try {
-      const response = await fetch(`${apiBase}/codex/skill/config`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path, name, enabled }) });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "スキルを更新できませんでした。");
-      setSkillStatus({ state: "success", message: "Codexでのスキル設定を更新しました。" });
-    } catch (error) {
-      setSkillStatus({ state: "error", message: error instanceof Error ? error.message : String(error) });
-    } finally {
-      setSkillBusyKey(null);
-    }
-  };
-
   const setSkillMutationStateFromResponse = (result: any) => {
     if (!Array.isArray(result?.skills)) throw new Error("スキルの応答が不正です。");
     if (!result?.project || typeof result.project.clean !== "boolean") throw new Error("スキルの応答にプロジェクト状態がありません。");
@@ -3257,11 +3225,6 @@ export default function Home() {
   const deleteManagedSkill = async (skill: SkillEntry) => {
     if (!window.confirm(`スキル「${skill.name}」を削除しますか？`)) return;
     await runSkillMutation(`${skill.scope}:${skill.name}`, () => fetch(`${apiBase}/skills/${skill.scope}/${encodeURIComponent(skill.name)}`, { method: "DELETE" }), "スキルを削除しました。");
-  };
-
-  const moveManagedSkill = async (skill: SkillEntry) => {
-    const action = skill.scope === "project" ? "promote" : "demote";
-    await runSkillMutation(`${skill.scope}:${skill.name}`, () => fetch(`${apiBase}/skills/${action}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: skill.name }) }), skill.scope === "project" ? "共通スキルに格上げしました。" : "プロジェクト固有へ格下げしました。");
   };
 
   const uploadManagedSkill = async (file: File) => {
@@ -3472,32 +3435,28 @@ export default function Home() {
     <section className="activity-panel skills-panel" aria-label="スキルライブラリ">
       <header className="activity-panel-heading"><span>スキル</span><small>{skills.length}件</small><button className="panel-close" aria-label="スキルを閉じる" onClick={() => setLeftPanelOpen(false)}>×</button></header>
       <div className="activity-panel-body skills-sidebar">
-        <div className="skills-intro"><strong>再利用できる指示</strong><p>Codexが使うプロジェクト固有・共通スキルを管理します。</p></div>
+        <div className="skills-intro"><strong>再利用できる指示</strong><p>html-editorのすべての資料で使う制作ルールを管理します。有効な指示は次のAgent依頼から参照されます。</p></div>
         <div className="skills-actions">
           <button className="sidebar-primary-action" type="button" onClick={openNewSkillDialog} disabled={skillBusyKey !== null || agentRunning}>新しいスキル</button>
           <input ref={skillInputRef} className="sr-only" type="file" accept="SKILL.md,.md,text/markdown" onChange={(event) => { const file = event.target.files?.[0]; if (file) void uploadManagedSkill(file); }} />
           <button className="skills-upload-button" type="button" onClick={() => skillInputRef.current?.click()} disabled={skillBusyKey !== null || agentRunning}>SKILL.mdをアップロード</button>
         </div>
         {agentRunning && <p className="activity-warning">Agentの処理が完了してからスキルを変更してください。</p>}
-        <div className="skills-tabs" role="tablist" aria-label="スキルの適用範囲">
-          {(["project", "common"] as SkillScope[]).map((scope) => <button key={scope} type="button" role="tab" aria-selected={skillScope === scope} className={skillScope === scope ? "active" : ""} onClick={() => { setSkillScope(scope); setSkillDraft((current) => ({ ...current, scope })); }}>{scope === "project" ? "プロジェクト固有" : "共通"}<small>{skills.filter((skill) => skill.scope === scope).length}</small></button>)}
-        </div>
+        <p className="skills-intro">適用範囲：html-editor共通 · すべての資料</p>
         <label className="skills-search"><span className="sr-only">スキルを絞り込む</span><input type="search" value={skillSearch} onChange={(event) => setSkillSearch(event.target.value)} placeholder="スキルを検索" aria-label="スキルを絞り込む" /></label>
         {skillStatus.state !== "idle" && <div className={`skill-status ${skillStatus.state}`} role={skillStatus.state === "error" ? "alert" : "status"} aria-live="polite" aria-busy={skillStatus.state === "busy"}>{skillStatus.message}</div>}
         <div className="skill-card-list">
           {visibleSkills.map((skill) => {
-            const catalogSkill = catalogSkillFor(skill);
-            const supportsToggle = skill.valid && typeof catalogSkill?.enabled === "boolean";
             const key = `${skill.scope}:${skill.name}`;
             return <article className="skill-card" key={key} aria-busy={skillBusyKey === key}>
-              <div className="skill-card-head"><div><strong>{skill.name}</strong><span className={`skill-scope-badge ${skill.scope}`}>{skill.scope === "project" ? "固有" : "共通"}</span>{!skill.valid && <span className="skill-invalid-badge">要修復</span>}</div><button type="button" aria-label={`${skill.name}を編集`} onClick={() => openEditSkillDialog(skill)} disabled={skillBusyKey !== null || agentRunning}>{skill.valid ? "編集" : "修復"}</button></div>
+              <div className="skill-card-head"><div><strong>{skill.name}</strong><span className={`skill-scope-badge ${skill.scope}`}>html-editor共通</span>{!skill.valid && <span className="skill-invalid-badge">要修復</span>}</div><button type="button" aria-label={`${skill.name}を編集`} onClick={() => openEditSkillDialog(skill)} disabled={skillBusyKey !== null || agentRunning}>{skill.valid ? "編集" : "修復"}</button></div>
               <p>{skill.valid ? skill.description : skill.error}</p>
               <code title={skill.path}>{skill.path}</code>
-              {supportsToggle && <label className="skill-enable-toggle"><span>Codexで有効</span><input type="checkbox" checked={catalogSkill.enabled} onChange={(event) => void updateSkill(catalogSkill, event.target.checked)} disabled={skillBusyKey !== null || agentRunning} /></label>}
-              <footer><button type="button" onClick={() => void moveManagedSkill(skill)} disabled={!skill.valid || skillBusyKey !== null || agentRunning}>{skill.scope === "project" ? "共通に格上げ" : "プロジェクト固有へ格下げ"}</button><button type="button" className="danger" onClick={() => void deleteManagedSkill(skill)} disabled={skillBusyKey !== null || agentRunning}>削除</button></footer>
+              {skill.valid && <label className="skill-enable-toggle"><span>すべての資料で有効</span><input type="checkbox" checked={skill.enabled} onChange={(event) => void runSkillMutation(key, () => fetch(`${apiBase}/skills/editor/${encodeURIComponent(skill.name)}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ enabled: event.target.checked }) }), "適用設定を更新しました。次のAgent依頼から反映されます。")} disabled={skillBusyKey !== null || agentRunning} /></label>}
+              <footer><button type="button" className="danger" onClick={() => void deleteManagedSkill(skill)} disabled={skillBusyKey !== null || agentRunning}>削除</button></footer>
             </article>;
           })}
-          {visibleSkills.length === 0 && <p className="skills-empty">{skillSearch.trim() ? "条件に一致するスキルはありません。" : skillScope === "project" ? "プロジェクト固有のスキルはまだありません。" : "共通スキルはまだありません。"}</p>}
+          {visibleSkills.length === 0 && <p className="skills-empty">{skillSearch.trim() ? "条件に一致するスキルはありません。" : "共通スキルはまだありません。新しいスキルを作成するか、SKILL.mdをアップロードしてください。"}</p>}
         </div>
       </div>
     </section>
@@ -3741,8 +3700,7 @@ export default function Home() {
               </>}
               <div className="agent-boundary-controls" role="group" aria-label="Agentの変更範囲と実行方法">
                 <label><span>変更範囲</span><select value={changeScope} onChange={(event) => setChangeScope(event.target.value as ChangeScope)}><option value="element" disabled={!selectedId}>この要素だけ</option><option value="current-slide">現在のスライド</option><option value="selected-slides">選択したスライド</option><option value="deck">デッキ全体</option></select></label>
-                <label><span>実行</span><select value={executionMode} onChange={(event) => { const mode = event.target.value as ExecutionMode; setExecutionMode(mode); if (mode !== "apply") setAllowSkillChanges(false); }}><option value="apply">直接反映</option><option value="propose">提案だけ作成</option><option value="plan">先に計画を提示</option></select></label>
-                <label className="agent-skill-permission"><input type="checkbox" checked={allowSkillChanges} disabled={executionMode !== "apply"} onChange={(event) => setAllowSkillChanges(event.target.checked)} /><span>この1回だけプロジェクトスキルの変更を許可</span></label>
+                <label><span>実行</span><select value={executionMode} onChange={(event) => { const mode = event.target.value as ExecutionMode; setExecutionMode(mode); }}><option value="apply">直接反映</option><option value="propose">提案だけ作成</option><option value="plan">先に計画を提示</option></select></label>
                 <p>Agentは{changeScope === "element" ? `「${blockLabels[sel?.kind ?? ""] ?? "選択要素"}」だけ` : changeScope === "current-slide" ? `スライド${activeSlide}だけ` : changeScope === "selected-slides" ? `選択した${selectedSlideIds.size || 1}枚のスライド` : "デッキ全体"}を変更できます。</p>
               </div>
               <div className="context-chip" role="group" aria-label="参照対象">
@@ -4274,7 +4232,7 @@ export default function Home() {
           }}>
             <header><strong id="skill-dialog-title">{skillDialog.mode === "create" ? "新しいスキル" : `${skillDialog.source?.name ?? "スキル"}を編集`}</strong><button type="button" aria-label="スキル編集を閉じる" onClick={() => { if (skillBusyKey === null) setSkillDialog(null); }}>×</button></header>
             <div className="skill-dialog-body">
-              <label className="skill-dialog-field"><span>適用範囲</span><select value={skillDraft.scope} disabled={skillDialog.mode === "edit" || skillBusyKey !== null || agentRunning} onChange={(event) => setSkillDraft((current) => ({ ...current, scope: event.target.value as SkillScope }))}><option value="project">プロジェクト固有 · このデッキ</option><option value="common">共通 · すべてのプロジェクト</option></select></label>
+              <p className="skill-dialog-help">適用範囲：html-editor共通 · 変更はすべての資料に反映されます。</p>
               <label className="skill-dialog-field"><span>名前</span><input autoFocus className="skill-name-input" value={skillDraft.name} required pattern="[a-z0-9]+(-[a-z0-9]+)*" maxLength={63} disabled={skillBusyKey !== null || agentRunning} onChange={(event) => setSkillDraft((current) => ({ ...current, name: event.target.value }))} /><small className="skill-dialog-help">英小文字のkebab-case、63文字以内。</small></label>
               <label className="skill-dialog-field"><span>説明</span><input value={skillDraft.description} required maxLength={20000} disabled={skillBusyKey !== null || agentRunning} onChange={(event) => setSkillDraft((current) => ({ ...current, description: event.target.value }))} /></label>
               <label className="skill-dialog-field"><span>指示内容</span><textarea value={skillDraft.body} required maxLength={900000} disabled={skillBusyKey !== null || agentRunning} onChange={(event) => setSkillDraft((current) => ({ ...current, body: event.target.value }))} /></label>

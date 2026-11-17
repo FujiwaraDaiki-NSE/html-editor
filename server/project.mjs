@@ -195,11 +195,9 @@ Make focused changes that answer the user. Read-only git (log, show, diff) is fi
 history; never commit, checkout, or otherwise change the repository — Weave formats and commits the turn.
 If no file change is needed, respond with a concise explanation.
 
-When the human asks you to remember something or to turn instructions into a skill (including
-“覚えて” or “スキル化”), create or update the requested project skill at
-.codex/skills/<lowercase-kebab-name>/SKILL.md. Keep the file's YAML frontmatter name and
-description required, and put the instructions in its body. These embedded-agent-created skills
-belong to the current project; do not save them in the common user skill directory.
+Reusable instructions are managed in the html-editor Skills GUI and apply to all decks.
+Do not create project-local skills or change user-wide Codex skills. When asked to remember
+instructions, explain the proposed reusable instruction for the human to save in the Skills GUI.
 
 Files under references/ are materials brought in by a human through chat. Open and read the paths
 provided in the envelope's attachments yourself. pptx, docx, and xlsx files are zip archives, so

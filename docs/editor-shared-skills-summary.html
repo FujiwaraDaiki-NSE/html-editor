@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="ja"><meta charset="utf-8"><title>html-editor共通スキル</title>
+<style>body{max-width:900px;margin:3rem auto;padding:0 1.5rem;font:16px/1.8 system-ui;color:#172033}h1,h2{line-height:1.4}code{background:#eef2f6;padding:.15em .4em}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ccd5df;padding:.7em;text-align:left}</style>
+<h1>html-editor共通スキル</h1>
+<p>資料ごとのスキルとCodex共通スキルの管理を廃止し、html-editor内の全資料で使う指示を一か所で管理する。</p>
+<h2>GUI</h2><p>「スキル」から新規作成、編集、修復、SKILL.mdアップロード、検索、有効・無効の切り替え、削除ができる。適用範囲は常に「html-editor共通」。有効な指示は次のAgent依頼から参照される。実行中の変更はサーバーでも拒否する。</p>
+<h2>保存と実行</h2><table><tr><th>項目</th><th>仕様</th></tr><tr><td>保存先</td><td>既定はインストール先の .weave/skills。WEAVE_SKILLS_ROOTで明示的に変更可能。</td></tr><tr><td>独立性</td><td>HOMEやCODEX_HOMEを参照してスキルを書き込まない。すべての資料から同じ保存先を使う。</td></tr><tr><td>適用</td><td>Thread作成・再開・分岐・ターン開始時、有効で正常なスキルの名前・説明・本文・参照先を基本指示へ追加する。条件に合うスキルを適用する。</td></tr><tr><td>無効状態</td><td>各スキルの .disabled ファイルで保持する。Codex共通の有効設定は変更しない。</td></tr></table>
+<h2>旧データ</h2><p>旧プロジェクトの .codex/skills とCodex共通の skills は削除・移動しない。旧データは新GUIの一覧には含まれない。必要なSKILL.mdを新GUIでアップロードする。同名のスキルは上書きせず競合として表示する。補助ファイルを含むスキルはフォルダー一式を新保存先へ手動コピーする必要がある。旧プロジェクトの復旧処理は既存データ保護のため維持する。</p>
+<h2>境界</h2><p>この変更はeditorの管理対象と追加指示を独立させる。Codexそのものが自動検出するユーザー設定・スキルの全読み込みを隔離する変更ではない。共通スキルの編集はGUIから行い、埋め込みAgentにはプロジェクト用スキルを作らせない。</p>
+</html>
