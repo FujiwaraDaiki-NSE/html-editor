@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="ja"><meta charset="utf-8"><title>スライドスキルの責務整理</title>
+<style>body{max-width:900px;margin:3rem auto;padding:0 1.5rem;font:16px/1.8 system-ui;color:#172033}table{border-collapse:collapse}td,th{border:1px solid #ccd3dd;padding:.5em;text-align:left}code,pre{background:#eef2f6}pre{padding:1em;overflow:auto}</style>
+<h1>スライドスキルの責務整理</h1>
+<p>共通の制作基準を標準スキル slide-authoring に集約する。technical-report-slides は技術報告の判断、author-slide-preferences は作成者の好みを担当する。ルートチャットと編集エージェントは同じ管理中の実体を読む。</p>
+<table><tr><th>対象</th><th>役割</th></tr><tr><td>slide-authoring</td><td>意味・事実、表現選択、配置、画像、修正、表示確認</td></tr><tr><td>technical-report-slides</td><td>仕組み、方法・検証、結果に必要な条件と解釈</td></tr><tr><td>author-slide-preferences</td><td>P03の説明図優先、P05の枠・線、既存の学習済み項目</td></tr></table>
+<p>P01・P02・P04の有効な判断は共通基準へ移し、旧IDと根拠の対応を残す。すべての資料で共通基準を読み、技術報告・業務改善報告では残り2つを追加する。編集範囲・保存・更新権限はハーネスに従う。</p>
+<h2>既存環境の移行</h2>
+<p>起動時には新しい標準スキルの欠落だけを補い、既存の標準スキルや参照資料を上書きしない。既存本文の整理は明示的な保守コマンドで実行する。アプリを停止し、保存先の絶対パスを指定する。</p>
+<pre>node scripts/consolidate-slide-skills.mjs --apply \
+  --application-root /absolute/path/to/application-skills \
+  --editor-root /absolute/path/to/editor-skills</pre>
+<p>既知の旧本文だけを対象にし、既定の説明文は新しい責務に合わせて更新する。独自編集があれば上書きせずエラーを返す。アプリ共通の本文と根拠の追記は単一の履歴コミットで保存する。既存のフロントマター・独自の説明、学習済みブロック、根拠・候補・学習設定は保持する。過去のコミットは引き続き到達可能である。失敗時に別の本文で代用しない。</p>
+<p>追加スキル側に旧 slide-authoring がある場合は、旧文書を references/before-consolidation.md に保存してから、重複する規則を持たない互換参照へ変更する。既存の参照ファイルは残す。標準スキル更新後に追加側の変更が失敗した場合も、再実行できる。保守作業中は学習・GUI編集を行わない。再開後の初回依頼でAGENTS.mdが再生成され、更新された読み込み指示が使われる。</p>
+<p>稼働環境を自動更新する仕組みではない。新規環境は整理済みの3スキルを初期登録する。既存環境ではコード更新と保守コマンドを同じメンテナンスで行う。</p>
+<h2>確認</h2>
+<p>旧本文からの移行、未知の独自編集の拒否、学習済み・候補・設定・メタデータの保持、履歴の到達性、再実行、共有パスを使う新規・既存プロジェクトをテストする。スキルの整理だけで生成スライドの品質向上を検証済みとは扱わない。</p>
+</html>
