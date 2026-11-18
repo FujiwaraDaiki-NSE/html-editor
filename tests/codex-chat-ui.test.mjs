@@ -64,6 +64,15 @@ test("Agent production tasks separate messages, work logs, and blocking requests
   assert.match(requestCard, /resolutionRetryable/);
 });
 
+test("only Agent conversation text renders Markdown with GFM and external links", async () => {
+  const itemCard = await readFile(new URL("../app/codex/components/ItemCard.tsx", import.meta.url), "utf8");
+  assert.match(itemCard, /import ReactMarkdown from "react-markdown"/);
+  assert.match(itemCard, /import remarkGfm from "remark-gfm"/);
+  assert.match(itemCard, /item\.text && \(item\.type === "agentMessage" \? \([\s\S]*?<ReactMarkdown remarkPlugins=\{\[remarkGfm\]\}[\s\S]*?\{item\.text\}<\/ReactMarkdown>[\s\S]*?: <p className="codex-item-text">\{item\.text\}<\/p>/);
+  assert.match(itemCard, /<a href=\{href\} target="_blank" rel="noreferrer noopener">/);
+  assert.doesNotMatch(itemCard, /rehypeRaw|rehype-raw|dangerouslySetInnerHTML/);
+});
+
 test("turn submission distinguishes acceptance from progress and survives conversation switches", () => {
   const accepted = { phase: "accepted", threadId: "thread-1", turnId: "turn-1" };
   const submitting = { phase: "submitting", threadId: "thread-1", turnId: null };
