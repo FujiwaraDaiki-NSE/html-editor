@@ -1,3 +1,4 @@
+import { captureSkillProposal, listSkillProposals, resetSkillProposal, resolveSkillProposal } from "./skill-proposals.mjs";
 import { createServer } from "node:http";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -63,19 +64,18 @@ import {
 } from "./project.mjs";
 import {
   createSkill,
+  setEditorSkillEnabled,
   createProjectSkillSnapshot,
   deleteSkill,
-  demoteSkill,
   discardProjectSkillSnapshot,
   listSkills,
-  promoteSkill,
   restoreProjectSkillSnapshot,
   updateSkill,
   uploadSkill,
 } from "./skills.mjs";
 import { initializeApplicationSkills, listApplicationSkills, updateApplicationSkill, getApplicationSkillHistory, getApplicationSkillVersion, restoreApplicationSkill } from "./application-skills.mjs";
 import { initializeSlidePreferenceLearning, getLearningState, setLearningEnabled, slidePreferenceLearning } from "./slide-preference-learning.mjs";
-import { CodexService } from "./codex/service.mjs";
+import { AgentService } from "./agent-service.mjs";
 import { annotationPromptRules, canSendTurn } from "../shared/annotation.mjs";
 import { contextPromptRules, editorEnvelope, isReferencePath } from "../shared/context.mjs";
 import { createEditorChangeSet, htmlChangeWithinElement, mergeEditorDecks, validateWorkflowRequest } from "../shared/editor-workflow.mjs";
@@ -90,7 +90,7 @@ await initializeApplicationSkills();
 await initializeSlidePreferenceLearning();
 await initializeCurrentProject();
 const webPort = parseConfiguredPort(process.env.WEAVE_WEB_PORT);
-const codex = new CodexService({ projectRoot: projectRoot(), workspaceRoot: workspacesRoot, instructions: agentInstructions, chatInstructions, slidePreferenceLearning });
+const codex = new AgentService({ projectRoot: projectRoot(), workspaceRoot: workspacesRoot, instructions: agentInstructions, chatInstructions, slidePreferenceLearning });
 let codexProjectRoot = projectRoot();
 // Pending work is keyed by thread but every entry carries its immutable project
 // root. This allows project switching while another project's turn is settling.
@@ -110,7 +110,7 @@ const completedSaves = new Map();
 const recentAgentMerges = new Map();
 let projectSwitchQueue = Promise.resolve();
 let projectLifecycleBusy = false;
-const migrationNotice = "Legacy .weave/chat.json history was removed. Conversations now use Codex app-server Threads only.";
+const migrationNotice = "Conversations use independent Codex app-server or Claude Code sessions.";
 
 function pendingTurn(value) {
   let resolveFinalization;
@@ -241,6 +241,7 @@ async function statePayload() {
       editing: activePending !== undefined || startingRoots.has(projectRoot()),
     },
     skills: await allSkills(projectRoot()),
+    skillProposals: await listSkillProposals(projectRoot()),
     agentPreview: activePending ? {
       threadId: activePendingEntry[0],
       turnId: activePending.turnId,
@@ -305,7 +306,7 @@ async function runSkillMutation(operation) {
     const root = projectRoot();
     const skill = await operation(root);
     await refreshSkillCatalog();
-    return { skill, skills: await allSkills(root), project: projectState().project };
+    return { skill, skills: await allSkills(root), skillProposals: await listSkillProposals(root), project: projectState().project };
   });
 }
 
@@ -433,7 +434,7 @@ function workflowFromPayload(payload) {
   return {
     scope: envelope.modificationScope,
     execution: envelope.executionMode,
-    allowSkillChanges: envelope.executionMode === "apply" && envelope.allowSkillChanges === true,
+    allowSkillChanges: false,
   };
 }
 
@@ -483,6 +484,7 @@ async function startEditorTurn(payload, { variation = false, parentThreadId = nu
   let agentFileSnapshot = null;
   try {
     await clearRecoveryTask(root);
+    await resetSkillProposal(root);
     if (variation) {
       branch = createVariationBranch();
       await setVariationState(branch, "pending", projectRoot());
@@ -513,6 +515,7 @@ Do not commit; Weave will commit after this turn.${await serializeEditorContext(
     const result = await codex.startTurn({
       threadId: thread.id,
       prompt: context,
+      userPrompt: prompt,
       clientUserMessageId: payload.clientUserMessageId,
       model: payload.model,
       effort: payload.effort,
@@ -619,6 +622,9 @@ codex.on("notification", (message) => {
         }
         if (pending.queuedMilestone) commitIfChanged(`Milestone: ${pending.queuedMilestone}`, pending.root);
       }, pending.root);
+      let skillProposalError = null;
+      try { await captureSkillProposal(pending.root, { threadId, turnId: pending.turnId }); }
+      catch (error) { skillProposalError = error.message; }
       pending.previewSnapshot = await readProject(pending.root);
       pending.humanDraft = pending.previewSnapshot;
       recentAgentMerges.set(pending.root, { base: pending.baseDeck, agent: pending.previewSnapshot, expiresAt: Date.now() + 10_000 });
@@ -627,6 +633,7 @@ codex.on("notification", (message) => {
       pending.outcome = { success: true, result: { projectRoot: pending.root, title: pending.previewSnapshot.title, slideCount: pending.previewSnapshot.slides.length, execution: pending.workflow.execution, changeCount: pending.changeSet.changes.length, conflictCount: pending.conflicts.length } };
       codex.events.publish("weave/project", {
         status: "updated",
+        skillProposalError,
         projectRoot: pending.root,
         threadId,
         turnId: pending.turnId,
@@ -713,6 +720,8 @@ const server = createServer(async (request, response) => {
       return response.end();
     }
     const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
+    // Provider-neutral editor routes retain compatibility with existing clients.
+    if (url.pathname.startsWith("/api/agent/")) url.pathname = url.pathname.replace("/api/agent/", "/api/codex/");
     const requestProjectRoot = projectRoot();
     const routeMethod = routeMethodDecision(url.pathname, request.method);
     if (!routeMethod.allowed) {
@@ -852,12 +861,14 @@ const server = createServer(async (request, response) => {
       return sendJson(request, response, 200, { projects: await listProjects() });
     }
 
-    if (request.method === "PATCH" && url.pathname === "/api/skills/learning") {
-      return sendJson(request, response, 200, await setLearningEnabled({ enabled: payload.enabled, expectedRevision: payload.expectedRevision }));
+    if (activeProjectTurn() && request.method !== "GET" && /^\/api\/(?:skills|skill-proposals)(?:\/|$)/.test(url.pathname)) {
+      return sendJson(request, response, 409, { error: "Finish the running Agent turn before changing skills.", code: "WEAVE_TURN_RUNNING" });
     }
 
-    if (activeProjectTurn() && request.method !== "GET" && /^\/api\/skills(?:\/|$)/.test(url.pathname)) {
-      return sendJson(request, response, 409, { error: "Finish the running Agent turn before changing skills.", code: "WEAVE_TURN_RUNNING" });
+    const skillReview = url.pathname.match(/^\/api\/skill-proposals\/([a-f0-9-]+)\/(accept|dismiss)$/);
+    if (request.method === "POST" && skillReview) {
+      const result = await runSkillMutation((root) => resolveSkillProposal(root, skillReview[1], skillReview[2]));
+      return sendJson(request, response, 200, result);
     }
 
     const applicationSkillMutation = url.pathname.match(/^\/api\/skills\/application\/([^/]+)(?:\/(restore))?$/);
@@ -878,24 +889,14 @@ const server = createServer(async (request, response) => {
     if (request.method === "POST" && url.pathname === "/api/skills/upload") {
       return sendJson(request, response, 201, await runSkillMutation((root) => uploadSkill(root, payload)));
     }
-    if (request.method === "POST" && ["/api/skills/promote", "/api/skills/demote"].includes(url.pathname)) {
-      return sendJson(request, response, 200, await runSkillMutation((root) => url.pathname.endsWith("/promote") ? promoteSkill(root, payload.name) : demoteSkill(root, payload.name)));
-    }
-    const scopedSkillAction = url.pathname.match(/^\/api\/skills\/(project|common)\/([^/]+)\/(promote|demote)$/);
-    if (request.method === "POST" && scopedSkillAction) {
-      const [, sourceScope, encodedName, action] = scopedSkillAction;
-      const name = decodeSkillName(encodedName);
-      if ((action === "promote" && sourceScope !== "project") || (action === "demote" && sourceScope !== "common")) throw Object.assign(new Error("Skill action does not match its scope."), { code: "WEAVE_SKILL_INVALID" });
-      return sendJson(request, response, 200, await runSkillMutation((root) => action === "promote"
-        ? promoteSkill(root, name)
-        : demoteSkill(root, name)));
-    }
-    const scopedSkill = url.pathname.match(/^\/api\/skills\/(project|common)\/([^/]+)$/);
+    const scopedSkill = url.pathname.match(/^\/api\/skills\/(editor)\/([^/]+)$/);
     if (scopedSkill) {
       const [, scope, encodedName] = scopedSkill;
       const name = decodeSkillName(encodedName);
       if (request.method === "PATCH") {
-        return sendJson(request, response, 200, await runSkillMutation((root) => updateSkill(root, { ...payload, scope, currentName: name })));
+        return sendJson(request, response, 200, await runSkillMutation((root) => Object.hasOwn(payload, "enabled")
+          ? setEditorSkillEnabled(root, name, payload.enabled)
+          : updateSkill(root, { ...payload, scope, currentName: name })));
       }
       if (request.method === "DELETE") {
         return sendJson(request, response, 200, await runSkillMutation((root) => deleteSkill(root, scope, name)));
@@ -1063,6 +1064,46 @@ const server = createServer(async (request, response) => {
     }
     if (url.pathname === "/api/codex/thread/action") {
       return sendJson(request, response, 200, await codex.threadAction(payload.action, payload.params ?? {}));
+    }
+    if (url.pathname === "/api/codex/turn/start" && typeof payload.threadId === "string" && payload.threadId.startsWith("claude:")) {
+      if (agentStartBlocked()) return sendJson(request, response, 409, { error: "Another Agent task is running. Editing remains available and Agent will reconnect to this project when it finishes." });
+      const prompt = requireTurnPrompt(payload);
+      const workflow = workflowFromPayload(payload);
+      const root = projectRoot();
+      startingRoots.add(root);
+      let agentFileSnapshot = null;
+      let projectSkillSnapshot = null;
+      let recoverySnapshot = null;
+      let pending = null;
+      try {
+        await clearRecoveryTask(root);
+        await resetSkillProposal(root);
+        const deck = payload.deck ? await writeProject(payload.deck, null, root) : await readProject(root);
+        const preTurnCss = await readDeckCss(root);
+        agentFileSnapshot = await createAgentFileSnapshot(root);
+        projectSkillSnapshot = await createProjectSkillSnapshot(root);
+        recoverySnapshot = await createRecoverySnapshot({ baseRevision: getRevision(root), deck, css: preTurnCss, agentFileSnapshot }, root);
+        pending = pendingTurn({ prompt, branch: null, variation: false, workflow, root, preTurnDeck: deck, baseDeck: deck, baseRevision: recoverySnapshot.baseRevision, preTurnCss, projectSkillSnapshot, recoverySnapshot, agentFileSnapshot, deckTitle: deck.title });
+        pending.threadId = payload.threadId;
+        pendingTurns.set(payload.threadId, pending);
+        startingRoots.delete(root);
+        const result = await codex.startTurn({ ...payload, userPrompt: prompt, prompt: `${prompt}${await serializeEditorContext(payload, root)}` });
+        startProjectPreview(pending, payload.threadId, result.turn.id);
+        await updateRecoverySnapshot(recoverySnapshot, { workflow, status: "running", threadId: payload.threadId, turnId: result.turn.id }, root);
+        return sendJson(request, response, 202, result);
+      } catch (error) {
+        if (pending) finishPendingTurn(payload.threadId, pending);
+        if (agentFileSnapshot) {
+          await restoreAgentFileSnapshot(agentFileSnapshot, root);
+          await discardAgentFileSnapshot(agentFileSnapshot, root);
+        }
+        if (projectSkillSnapshot) await restoreProjectSkillSnapshot(root, projectSkillSnapshot);
+        await discardProjectSkillSnapshot(projectSkillSnapshot);
+        if (recoverySnapshot) await discardRecoverySnapshot(recoverySnapshot, root);
+        throw error;
+      } finally {
+        startingRoots.delete(root);
+      }
     }
     if (url.pathname === "/api/codex/turn/start") {
       if (agentStartBlocked()) return sendJson(request, response, 409, { error: "Another Agent task is running. Editing remains available and Agent will reconnect to this project when it finishes." });

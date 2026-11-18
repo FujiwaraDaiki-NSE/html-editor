@@ -8,7 +8,7 @@
 
 ## 起動
 
-Node.js 22.13以降と、ログイン済みのCodex CLIが必要です。
+Node.js 22.13以降と、利用する接続先のCLI（Codex CLIまたはClaude Code）が必要です。
 
 ```bash
 npm install
@@ -26,6 +26,26 @@ WEAVE_WEB_HOST=172.30.128.50 WEAVE_WEB_PORT=3444 npm run dev
 外部PCでは `http://172.30.128.50:3444`、起動したPCでは `http://localhost:3444` を開きます。LANインターフェースを指定した場合も、この2つのアドレスだけで待ち受けます。ローカルAPIは別ポートへ公開せず、Vite経由で利用します。
 
 `npm run dev`は画面、ローカルAPI、Codex app-serverをまとめて起動します。OpenAIの資格情報をアプリ内へコピーせず、Codex CLIの既存ログインを利用します。
+
+### Claude Codeを使う
+
+editorを起動するホストの同じユーザーで、Claude Codeにログインしてください。動作確認済みのバージョンは2.1.322です。`--restricted`と`--permission-prompts`に対応したCLIが必要です。
+
+```bash
+claude auth login
+claude auth status
+npm run dev
+```
+
+Agent入力欄のモデルメニューで **Claude Opus 5.5 / Claude Sonnet 5.5 / Claude Haiku 5.5** などバージョン付きのモデル を選びます。初回はモデルを明示的に選択してください。Claude選択時は `editor → ローカルAPI → claude -p → Claude` の経路で実行し、Codex app-serverを経由しません。Codexが未接続でもClaudeを利用できます。バージョン付きの選択では `claude-opus-5-5` などの正式なモデルIDをそのままClaude Codeへ渡します。Opusは5.5 / 5 / 4.8 / 4.7 / 4.6、Sonnetは5.5 / 5 / 4.6、Haikuは5.5を掲載しています。「最新版」と表示する従来のエイリアスも残します。バージョン指定時にCLIが異なるモデルを選んだ場合は失敗として扱い、別モデルへの自動フォールバックは行いません。実際のモデル利用権限はClaude Codeのアカウントに従います。
+
+Claude Codeの既存ログインをそのまま使うため、editorへのAPIキー入力は不要です。接続失敗時は「設定 → Claude Code → 接続を再確認」で再確認できます。認証状態は接続確認時点の値で、実行時の認証期限切れなどはその依頼の失敗として表示します。
+
+Claudeではプロジェクト内のRead / Edit / Write / Glob / Grepを利用します。restrictedモードでファイル操作の範囲を制限し、シェル実行とMCPサーバーの自動接続は許可しません。既存の編集範囲検証・プレビュー・変更レビュー・同時編集の保全処理は共通です。シェルコマンドによる資料変換などが必要な依頼はCodexを選んでください。
+
+会話の続きはClaude CodeのセッションIDを指定して再開します。editor用の会話履歴はリポジトリの `.weave/claude/` にプロジェクト別に保存し、Git管理の対象にしません。Claude Code自体のセッション保存先はCLIの通常設定に従います。実行中にeditorが終了した依頼は成功として扱わず、自動再送もしません。
+
+CodexとClaudeの間でモデルを切り替えると、新しい会話を開始します。会話履歴は接続先ごとに保持します。Claudeでは実行中の追加指示、会話分岐、内部ゴール、editorからの手動圧縮操作に対応していません。停止後または完了後に次の依頼を送れます。Claudeの承認方式はプロジェクト内のファイル編集許可で固定し、Codexの承認設定とは独立しています。
 
 ### Dockerで常駐起動（Linux）
 
@@ -59,6 +79,15 @@ docker compose stop
 ```
 
 画面は `http://127.0.0.1:3444`、ローカルAPIは `127.0.0.1:4317` を使います。Linuxのhostネットワークで起動します。再起動ポリシーは `unless-stopped` です。Docker起動時やプロセス異常終了時に自動起動し、明示的に停止した場合は停止状態を維持します。
+
+DockerでもClaudeを使う場合は、ホストでログインを済ませ、`.env` に `WEAVE_CLAUDE_BIN` としてネイティブ版Claude Code実行ファイルの絶対パスを指定してください。`command -v claude` で確認できます。npmのJavaScriptランチャーではなく、Linux用ネイティブ実行ファイルを使います。`.claude/` と `.claude.json` がホストに存在する必要があります。次の追加設定で実行ファイルと既存ログイン・セッションをコンテナへ共有します。
+
+```bash
+docker compose -f compose.yaml -f compose.claude.yaml up -d --build
+docker compose -f compose.yaml -f compose.claude.yaml exec web claude auth status
+```
+
+CLIを更新した場合はコンテナを再作成して共有先の実行ファイルを更新してください。
 
 ## 現在触れる機能
 
@@ -116,3 +145,15 @@ npm test
 参照資料の「＋ ホームのフォルダーを登録」から、Dockerホストのホーム配下を選択できます。パスだけを登録するため、容量・ファイル数の登録上限はありません。Agentは登録済みの実パスから必要な資料を読み取り、元ファイルの更新もそのまま参照します。登録を解除しても元フォルダーは削除しません。隠しフォルダーとホーム内を参照するリンクも選択できます。
 
 別のPCのフォルダーは「PCのフォルダーをアップロード」から選択します。この操作ではサブフォルダーを保持してコピーするため、最大2,000ファイル・合計500 MBの転送上限があり、隠しファイルは対象外です。過去にコピーしたサーバーフォルダーの更新機能も維持しています。
+
+### html-editor共通スキル
+
+「スキル」画面で、全資料に共通する制作指示を作成・編集・アップロードし、有効・無効を切り替えられます。有効な指示は次のAgent依頼から参照されます。資料ごとの適用範囲や格上げ・格下げ操作はありません。
+
+保存先はhtml-editorの `.weave/skills/` です。`WEAVE_SKILLS_ROOT` を指定すると保存先を変更できます。Codex共通の `$CODEX_HOME/skills/` は変更しません。旧スキルのファイルは保持されます。再利用するものは「SKILL.mdをアップロード」から登録してください。
+
+開発者向けの仕様は [html-editor共通スキルのsummary](docs/editor-shared-skills-summary.html) を参照してください。
+
+Agentは修正のやり取りから再利用できる指示を見つけると、「今回の指示を、ほかの資料にも活かしますか？」と提案します。元の指示・適用理由・保存する全文を確認し、「全資料の共通スキルに保存」を選ぶと新規作成または既存スキルの更新を行います。「今回は保存しない」を選んでも資料の修正は保持されます。未回答の提案は再読み込み後もスキル画面から確認できます。既存スキルが提案後に変更されていた場合は上書きを拒否します。
+
+資料制作の知見をまとめた共通スキルの配布原稿は [slide-authoring](skills/slide-authoring/SKILL.md) です。内容の意味・情報の関係・図表と実画面・統一感・画像・事実の扱い・表示確認を扱います。[出典と適用範囲](skills/slide-authoring/references/sources.md)、[開発者向けsummary](docs/slide-authoring-skill-summary.html) を参照してください。別環境へ導入する場合は「SKILL.mdをアップロード」で登録できます。GUIで編集する実体と配布原稿は自動同期しません。
