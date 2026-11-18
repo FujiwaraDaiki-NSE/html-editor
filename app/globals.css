@@ -623,6 +623,10 @@ button.project-card { cursor: pointer; }
 .skill-card-head button:disabled, .skill-card footer button:disabled { cursor: not-allowed; opacity: .45; }
 .skill-card p { margin: 7px 0; color: var(--muted); font-size: var(--ui-label); line-height: 1.4; overflow-wrap: anywhere; }
 .skill-card code { display: block; overflow: hidden; color: var(--soft); font: var(--ui-meta)/1.3 var(--font-geist-mono), monospace; text-overflow: ellipsis; white-space: nowrap; }
+.skill-content-details { margin-top: 8px; }
+.skill-content-details summary { width: fit-content; padding: 5px 8px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--panel-3); color: var(--text); font-size: var(--ui-label); cursor: pointer; }
+.skill-content-details summary:focus-visible, .skill-content-details pre:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.skill-content-details pre { max-height: 360px; margin: 8px 0 0; padding: 10px; overflow: auto; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--text); font: var(--ui-label)/1.6 var(--font-geist-mono), monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .skill-scope-badge { padding: 2px 5px; border-radius: 999px; color: var(--muted); background: var(--panel-3); font-size: 9px; }
 .skill-scope-badge.editor { color: #a9a1e8; }
 .skill-invalid-badge { padding: 2px 5px; border-radius: 999px; color: #f08b83; background: color-mix(in srgb, var(--danger) 12%, var(--panel-3)); font-size: 9px; }

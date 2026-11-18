@@ -3490,6 +3490,10 @@ export default function Home() {
               <div className="skill-card-head"><div><strong>{skill.name}</strong><span className={`skill-scope-badge ${skill.scope}`}>html-editor共通</span>{!skill.valid && <span className="skill-invalid-badge">要修復</span>}</div><button type="button" aria-label={`${skill.name}を編集`} onClick={() => openEditSkillDialog(skill)} disabled={skillBusyKey !== null || agentRunning}>{skill.valid ? "編集" : "修復"}</button></div>
               <p>{skill.valid ? skill.description : skill.error}</p>
               <code title={skill.path}>{skill.path}</code>
+              <details className="skill-content-details">
+                <summary aria-label={`${skill.name}の詳細を確認`}>詳細を確認</summary>
+                <pre tabIndex={0} aria-label={`${skill.name}の内容`}>{skill.content}</pre>
+              </details>
               {skill.valid && <label className="skill-enable-toggle"><span>すべての資料で有効</span><input type="checkbox" checked={skill.enabled} onChange={(event) => void runSkillMutation(key, () => fetch(`${apiBase}/skills/editor/${encodeURIComponent(skill.name)}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ enabled: event.target.checked }) }), "適用設定を更新しました。次のAgent依頼から反映されます。")} disabled={skillBusyKey !== null || agentRunning} /></label>}
               <footer><button type="button" className="danger" onClick={() => void deleteManagedSkill(skill)} disabled={skillBusyKey !== null || agentRunning}>削除</button></footer>
             </article>;
