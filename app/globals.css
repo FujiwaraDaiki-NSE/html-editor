@@ -1804,9 +1804,9 @@ button.project-card { cursor: pointer; }
 .proposal-description { padding: 10px 0; display: grid; gap: 6px; }
 .proposal-description p { margin: 0; }
 .proposal-description small { color: var(--muted); }
-.proposal-frame { width: 100%; overflow: hidden; position: relative; background: var(--panel-2); }
-.proposal-frame iframe { display: block; border: 0; transform-origin: top left; }
-.canvas-area:has(> .proposal-workspace[data-open="true"]) > :not(.proposal-workspace) { display: none; }
+.proposal-frame { display: block; width: 100%; overflow: hidden; position: relative; background: var(--panel-2); }
+.proposal-frame iframe { position: absolute; inset: 0; display: block; border: 0; transform-origin: top left; }
+.canvas-workspace:has(> .proposal-workspace[data-open="true"]) > .canvas-area { display: none; }
 .proposal-workspace .variation-compare { position: static; }
 .proposal-workspace .variation-compare-grid { align-items: start; }
 .proposal-workspace button { cursor: pointer; }
@@ -1825,7 +1825,7 @@ button.project-card { cursor: pointer; }
 .proposal-toolbar .proposal-draft-button { border-color: var(--line-strong); }
 .proposal-choices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .proposal-choices + .proposal-choices { margin-top: 12px; }
-.proposal-choice { min-width: 0; min-height: 122px; display: flex; flex-direction: column; align-items: stretch; gap: 8px; padding: 12px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--panel); color: var(--text); font: inherit; text-align: left; transition: border-color 120ms, background 120ms; }
+.proposal-choice { min-width: 0; min-height: 122px; display: flex; flex-direction: column; align-items: stretch; gap: 6px; padding: 10px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--panel); color: var(--text); font: inherit; text-align: left; transition: border-color 120ms, background 120ms; }
 .proposal-choice:hover:not(:disabled) { border-color: var(--muted); background: var(--panel-3); }
 .proposal-choice.is-selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 5%, var(--panel)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent); }
 .proposal-choice:disabled { cursor: wait; color: var(--muted); }
@@ -1844,3 +1844,11 @@ button.project-card { cursor: pointer; }
 @container proposal-panel (max-width: 520px) { .proposal-choices { grid-template-columns: 1fr; gap: 8px; } .proposal-choice { min-height: 100px; } }
 @media (prefers-reduced-motion: reduce) { .proposal-choice { transition: none; } }
 .proposal-description .editor-tab-actions button:disabled { opacity: .45; cursor: not-allowed; }
+
+/* Keep proposal chrome out of the canvas sizing/centering grid. */
+.canvas-workspace > .proposal-workspace { max-height: 48%; min-height: 0; overflow: auto; overscroll-behavior: contain; overflow-anchor: none; border-bottom: 1px solid var(--line); }
+.canvas-workspace > .proposal-workspace[data-open="true"] { flex: 1 1 0; max-height: none; }
+.proposal-choice-thumbnail { display: block; position: relative; flex: 0 0 auto; align-self: center; width: min(100%, 160px); aspect-ratio: 16 / 9; overflow: hidden; border: 1px solid var(--line); border-radius: 5px; background: #0c0e11; pointer-events: none; }
+.proposal-choice-thumbnail iframe { pointer-events: none; }
+.proposal-thumbnail-placeholder { display: grid; place-items: center; width: 100%; height: 100%; color: var(--muted); font-size: 11px; }
+.proposal-thumbnail-label { position: absolute; bottom: 5px; left: 5px; padding: 2px 5px; border-radius: 3px; color: #fff; background: rgb(0 0 0 / .72); font-size: 10px; }

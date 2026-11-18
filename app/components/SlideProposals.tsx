@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { composeSlideHtml } from "../../shared/slide-slots.mjs";
 import { rewriteAssetUrls } from "../../shared/asset-path.mjs";
 import { designWidth, designHeight } from "../../shared/slide-design.mjs";
@@ -77,16 +77,18 @@ const statusLabels: Record<string, string> = {
   cancelling: "停止中",
   completed: "結果を保存中",
 };
-function SlideFrame({
+const SlideFrame = memo(function SlideFrame({
   preview,
   slideId,
   apiBase,
+  thumbnail = false,
 }: {
   preview: Preview;
   slideId: string;
   apiBase: string;
+  thumbnail?: boolean;
 }) {
-  const frame = useRef<HTMLDivElement>(null);
+  const frame = useRef<HTMLSpanElement>(null);
   const [scale, setScale] = useState(0.5);
   useEffect(() => {
     const node = frame.current;
@@ -128,14 +130,17 @@ function SlideFrame({
     );
   const src = `<!doctype html><html><head><style>${preview.css}</style><style>html,body{margin:0;width:${designWidth}px;height:${designHeight}px;overflow:hidden}body>.weave-slide{width:${designWidth}px;height:${designHeight}px}</style></head><body>${rewriteAssetUrls(content, `${apiBase}/proposals/${preview.groupId}/${preview.candidateId}`)}</body></html>`;
   return (
-    <div
+    <span
       className="proposal-frame"
       ref={frame}
+      aria-hidden={thumbnail || undefined}
+      inert={thumbnail || undefined}
       style={{ aspectRatio: `${designWidth}/${designHeight}` }}
     >
       <iframe
         sandbox=""
-        title={`${preview.candidateId.toUpperCase()}案のスライド`}
+        title={`${preview.candidateId.toUpperCase()}案の${thumbnail ? "サムネイル" : "スライド"}`}
+        tabIndex={thumbnail ? -1 : undefined}
         srcDoc={src}
         style={{
           width: designWidth,
@@ -143,9 +148,9 @@ function SlideFrame({
           transform: `scale(${scale})`,
         }}
       />
-    </div>
+    </span>
   );
-}
+});
 export function SlideProposals({
   groups,
   slideId,
@@ -194,11 +199,7 @@ export function SlideProposals({
       selected.previewRevision;
   const requested = visible.flatMap((g) =>
     g.candidates
-      .filter(
-        (c) =>
-          c.available.view &&
-          (compare || (g.id === group?.id && c.id === selected?.id)),
-      )
+      .filter((c) => c.available.view)
       .map((c) => ({ group: g, candidate: c })),
   );
   const requestKeys = requested
@@ -223,7 +224,7 @@ export function SlideProposals({
         });
     }
     return () => controller.abort();
-    // Keys change only when the server publishes a new candidate revision or the user changes the view.
+    // Fetch all visible cards; refresh only when the server publishes a new candidate revision.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requestKeys, apiBase]);
   if (!relevant.length) return null;
@@ -341,6 +342,30 @@ export function SlideProposals({
                   </span>
                   {active && (
                     <span className="proposal-choice-selected">表示中</span>
+                  )}
+                </span>
+                <span className="proposal-choice-thumbnail">
+                  {previews[key(g, c)] ? (
+                    <SlideFrame
+                      preview={previews[key(g, c)]}
+                      slideId={slideId}
+                      apiBase={apiBase}
+                      thumbnail
+                    />
+                  ) : (
+                    <span className="proposal-thumbnail-placeholder">
+                      {c.available.view
+                        ? "プレビューを読み込み中…"
+                        : "プレビューを準備中…"}
+                    </span>
+                  )}
+                  {previews[key(g, c)]?.phase === "baseline" && (
+                    <span className="proposal-thumbnail-label">
+                      元のスライド
+                    </span>
+                  )}
+                  {previews[key(g, c)]?.phase === "previous" && (
+                    <span className="proposal-thumbnail-label">更新前の案</span>
                   )}
                 </span>
                 <span className="proposal-choice-title">{c.title}</span>
