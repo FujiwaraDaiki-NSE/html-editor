@@ -422,3 +422,26 @@ test("proposal adoption is offered per slide without the bulk adoption button", 
   );
   assert.doesNotMatch(source, /未採用の対象すべてに採用/);
 });
+
+test("proposal descriptions are shown in an accessible overlay outside the action bar flow", async () => {
+  const source = await readFile(
+    new URL("../app/components/SlideProposals.tsx", import.meta.url),
+    "utf8",
+  );
+  const css = await readFile(
+    new URL("../app/globals.css", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /<button[\s\S]*?aria-expanded=\{descriptionOpen\}[\s\S]*?aria-controls=\{descriptionId\}[\s\S]*?>\s*説明\s*<\/button>/,
+  );
+  assert.match(
+    source,
+    /id=\{descriptionId\}\s*className="proposal-description-popover"\s*hidden=\{!descriptionOpen\}[\s\S]*?selected.description !== null && <p>\{selected.description\}<\/p>/,
+  );
+  assert.equal(source.match(/<p>\{selected.description\}<\/p>/g)?.length, 1);
+  assert.match(css, /\.proposal-description-popover \{ position: absolute;/);
+  assert.match(source, /event.key === "Escape"/);
+  assert.match(source, /setDescriptionOpen\(false\);\s*setSelection\(/);
+});
