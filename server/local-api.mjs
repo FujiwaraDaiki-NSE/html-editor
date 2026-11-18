@@ -686,7 +686,7 @@ codex.on("notification", (message) => {
         if (!scopeCheck.ok) throw Object.assign(new Error("Agent result exceeded the selected modification scope."), { code: "WEAVE_SCOPE_VIOLATION", diagnostics: scopeCheck.violations });
         const currentDraft = pending.humanDraft ?? pending.baseDeck;
         const applyResult = pending.workflow.execution === "apply";
-        const merged = applyResult ? mergeEditorDecks({ base: pending.baseDeck, agent: agentDeck, current: currentDraft, scope: pending.workflow.scope.kind }) : { deck: currentDraft, conflicts: [], ok: true };
+        const merged = applyResult ? await mergeEditorDecks({ base: pending.baseDeck, agent: agentDeck, current: currentDraft, scope: pending.workflow.scope.kind }) : { deck: currentDraft, conflicts: [], ok: true };
         await restoreAgentManagedFiles(pending, { preserveSkills: pending.workflow.allowSkillChanges });
         await writeProjectUnlocked(merged.deck, null, pending.root);
         if (!pending.workflow.allowSkillChanges) await restoreProjectSkillSnapshot(pending.root, pending.projectSkillSnapshot);
@@ -1110,7 +1110,7 @@ const server = createServer(async (request, response) => {
       let mergedAgent = false;
       if (recent) {
         if (recent.expiresAt >= Date.now()) {
-          const merged = mergeEditorDecks({ base: recent.base, agent: recent.agent, current: payload.deck });
+          const merged = await mergeEditorDecks({ base: recent.base, agent: recent.agent, current: payload.deck });
           nextDraft = merged.deck;
           conflicts = merged.conflicts;
           mergedAgent = true;

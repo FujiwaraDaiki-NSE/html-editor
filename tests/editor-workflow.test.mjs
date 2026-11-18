@@ -46,13 +46,13 @@ test("HTML element scope rejects changes outside the selected boundary", () => {
   assert.equal(htmlChangeWithinElement(before, before.replace("Body", "Other"), "title"), false);
 });
 
-test("three-way merge combines independent user and Agent fields", () => {
+test("three-way merge combines independent user and Agent fields", async () => {
   const base = deck();
   const agent = deck();
   agent.slides[0].elements[1].style = "muted";
   const current = deck("User title");
   current.slides[0].elements[1].text = "User body";
-  const merged = mergeEditorDecks({ base, agent, current });
+  const merged = await mergeEditorDecks({ base, agent, current });
   assert.equal(merged.ok, true);
   assert.deepEqual(merged.deck.slides[0].elements, [
     { id: "title", text: "User title", style: "large" },
@@ -61,8 +61,8 @@ test("three-way merge combines independent user and Agent fields", () => {
   assert.notStrictEqual(merged.deck, current);
 });
 
-test("three-way conflicts are local and preserve the current draft", () => {
-  const result = mergeEditorDecks({ base: deck(), agent: deck("Agent title"), current: deck("User title") });
+test("three-way conflicts are local and preserve the current draft", async () => {
+  const result = await mergeEditorDecks({ base: deck(), agent: deck("Agent title"), current: deck("User title") });
   assert.equal(result.ok, false);
   assert.equal(result.deck.slides[0].elements[0].text, "User title");
   assert.equal(result.conflicts.length, 1);
@@ -157,4 +157,34 @@ test("a single record can be applied in either direction", () => {
   const change = createEditorChangeSet(before, after, "Rename").changes[0];
   assert.equal(applyEditorChange(before, change, "redo").slides[0].elements[0].text, "New title");
   assert.equal(applyEditorChange(after, change, "undo").slides[0].elements[0].text, "Old");
+});
+
+
+test("three-way merge ignores review markers and their Prettier wrapping in existing decks", async () => {
+  const { formatSlideHtml } = await import("../shared/html-format.mjs");
+  const source = '<main data-weave-slide-source data-weave-id="slide" data-weave-template="default" data-weave-layout="content"><p data-weave-id="body" class="a-long-class-name-that-forces-attribute-wrapping">Original</p></main>';
+  const marked = source.replace('<p ', '<p data-agent-changed="true" data-quality-severity="warning" data-quality-label="Review" ');
+  const makeDeck = html => ({ slides: [{ id: "s1", html }] });
+  const base = makeDeck(await formatSlideHtml(marked));
+  const current = makeDeck(await formatSlideHtml(source));
+  const agent = makeDeck(await formatSlideHtml(marked.replace("Original", "Agent edit")));
+  const result = await mergeEditorDecks({ base, agent, current });
+  assert.deepEqual(result.conflicts, []);
+  assert.equal(result.deck.slides[0].html, await formatSlideHtml(source.replace("Original", "Agent edit")));
+  const savedCurrent = await mergeEditorDecks({ base: current, agent: current, current: base });
+  assert.equal(savedCurrent.deck.slides[0].html, current.slides[0].html);
+  assert.match(base.slides[0].html, /data-agent-changed/);
+});
+
+test("review marker normalization preserves conflicts on real edits to the same HTML", async () => {
+  const { formatSlideHtml } = await import("../shared/html-format.mjs");
+  const source = '<p data-weave-id="body">Original</p>';
+  const makeDeck = html => ({ slides: [{ id: "s1", html }] });
+  const base = makeDeck(await formatSlideHtml(source.replace('<p ', '<p data-agent-changed="true" ')));
+  const agent = makeDeck(await formatSlideHtml(source.replace("Original", "Agent edit")));
+  const current = makeDeck(await formatSlideHtml(source.replace("Original", "Human edit")));
+  const result = await mergeEditorDecks({ base, agent, current });
+  assert.equal(result.ok, false);
+  assert.equal(result.conflicts.length, 1);
+  assert.equal(result.deck.slides[0].html, current.slides[0].html);
 });

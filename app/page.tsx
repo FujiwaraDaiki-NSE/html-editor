@@ -354,10 +354,13 @@ const cloneMatches = (root: HTMLElement, selector: string): HTMLElement[] => [
 
 const serializeEditorNode = (node: HTMLElement): string => {
   const clone = node.cloneNode(true) as HTMLElement;
-  cloneMatches(clone, "[contenteditable], [data-editing], [draggable]").forEach((item) => {
+  cloneMatches(clone, "[contenteditable], [data-editing], [draggable], [data-agent-changed], [data-quality-severity], [data-quality-label]").forEach((item) => {
     item.removeAttribute("contenteditable");
     item.removeAttribute("data-editing");
     item.removeAttribute("draggable");
+    item.removeAttribute("data-agent-changed");
+    item.removeAttribute("data-quality-severity");
+    item.removeAttribute("data-quality-label");
   });
   cloneMatches(clone, ".weave-selected, .weave-dragging, .weave-drop-before, .weave-drop-after, .weave-drop-horizontal").forEach((item) => {
     item.classList.remove("weave-selected", "weave-dragging", "weave-drop-before", "weave-drop-after", "weave-drop-horizontal");
@@ -719,52 +722,6 @@ export default function Home() {
       && owner.threadId === uiActiveThreadRef.current;
   }, []);
 
-  const changeExecutionMode = useCallback(async (value: string, human: boolean) => {
-    if (value !== "apply" && value !== "compare") throw new Error("実行方法が不正です。");
-    if (executionModeBusyRef.current) throw new Error("実行方法を確定しています。完了してから変更してください。");
-    executionModeBusyRef.current = true;
-    setExecutionModeBusy(true);
-    try {
-      const threadId = uiActiveThreadRef.current;
-      if (threadId) {
-        const session = uiSessionRef.current;
-        const endpoint = human ? "execution-mode/confirm" : "execution-mode";
-        const response = await fetch(`${apiBase}/agent/${endpoint}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId, executionMode: value, uiSession: { sessionId: session.sessionId, token: session.token } }) });
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.error);
-        if (human) executionModeSelectedThreadsRef.current.add(threadId);
-      } else if (human) {
-        executionModeSelectedBeforeThreadRef.current = true;
-      }
-      setExecutionMode(value);
-      setApiError(null);
-    } finally {
-      executionModeBusyRef.current = false;
-      setExecutionModeBusy(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    const bridge = installUiBridge({
-      root: appRootRef.current,
-      isRequestCurrent: isUiRequestCurrent,
-      selectControl: async (element, value) => {
-        if (element.dataset.uiId !== "execution-mode") return false;
-        await changeExecutionMode(value, false);
-        return true;
-      },
-      onStatus: (status) => {
-        setUiOperation(status);
-        if (status.message) setAnnouncement(status.message);
-      },
-    });
-    uiBridgeRef.current = bridge;
-    return () => {
-      bridge?.dispose();
-      uiBridgeRef.current = null;
-    };
-  }, [isUiRequestCurrent, changeExecutionMode]);
-
   const syncUiSession = useCallback(async (threadId: string, allowReclaim = false) => {
     if (uiSessionLeaseRef.current.threadId !== threadId) uiSessionLeaseRef.current = { threadId, replaced: false };
     if (uiSessionLeaseRef.current.replaced && !allowReclaim) throw new Error("別のブラウザがこの会話のUI操作を引き継いだため、画面操作を再開できません。画面上で依頼を実行すると再接続します。");
@@ -844,6 +801,52 @@ export default function Home() {
     }
     return session;
   }, [enqueueUiSessionSync]);
+
+  const changeExecutionMode = useCallback(async (value: string, human: boolean) => {
+    if (value !== "apply" && value !== "compare") throw new Error("実行方法が不正です。");
+    if (executionModeBusyRef.current) throw new Error("実行方法を確定しています。完了してから変更してください。");
+    executionModeBusyRef.current = true;
+    setExecutionModeBusy(true);
+    try {
+      const threadId = uiActiveThreadRef.current;
+      if (threadId) {
+        const session = human ? await ensureUiSessionForThread(threadId) : uiSessionRef.current;
+        const endpoint = human ? "execution-mode/confirm" : "execution-mode";
+        const response = await fetch(`${apiBase}/agent/${endpoint}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId, executionMode: value, uiSession: { sessionId: session.sessionId, token: session.token } }) });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error);
+        if (human) executionModeSelectedThreadsRef.current.add(threadId);
+      } else if (human) {
+        executionModeSelectedBeforeThreadRef.current = true;
+      }
+      setExecutionMode(value);
+      setApiError(null);
+    } finally {
+      executionModeBusyRef.current = false;
+      setExecutionModeBusy(false);
+    }
+  }, [ensureUiSessionForThread]);
+
+  useEffect(() => {
+    const bridge = installUiBridge({
+      root: appRootRef.current,
+      isRequestCurrent: isUiRequestCurrent,
+      selectControl: async (element, value) => {
+        if (element.dataset.uiId !== "execution-mode") return false;
+        await changeExecutionMode(value, false);
+        return true;
+      },
+      onStatus: (status) => {
+        setUiOperation(status);
+        if (status.message) setAnnouncement(status.message);
+      },
+    });
+    uiBridgeRef.current = bridge;
+    return () => {
+      bridge?.dispose();
+      uiBridgeRef.current = null;
+    };
+  }, [isUiRequestCurrent, changeExecutionMode]);
 
   useEffect(() => {
     const threadId = codexState.activeThreadId;
@@ -1630,7 +1633,7 @@ export default function Home() {
                 const serverConflicts = Array.isArray(envelope.payload?.conflicts) ? envelope.payload.conflicts : [];
                 let reviewConflicts = serverConflicts;
                 if (!unchanged && envelope.payload?.baseline) {
-                  const localMerge = mergeEditorDecks({ base: envelope.payload.baseline, agent: state.deck, current: { title: deckTitleRef.current, defaultTemplateId: defaultTemplateIdRef.current, slides: slidesRef.current } });
+                  const localMerge = await mergeEditorDecks({ base: envelope.payload.baseline, agent: state.deck, current: { title: deckTitleRef.current, defaultTemplateId: defaultTemplateIdRef.current, slides: slidesRef.current } });
                   setDeckTitle(localMerge.deck.title);
                   setDefaultTemplateId(localMerge.deck.defaultTemplateId);
                   setSlidesSynced(localMerge.deck.slides.map(slideFromHtml));
@@ -3267,7 +3270,7 @@ export default function Home() {
     if (root !== activeProjectRootRef.current) return;
     if (generation === editGenerationRef.current) applyServerState(result as ServerState, true, true);
     else {
-      const merged = mergeEditorDecks({ base: baseline, agent: result.deck, current: deckPayload(), scope: group.scope.kind });
+      const merged = await mergeEditorDecks({ base: baseline, agent: result.deck, current: deckPayload(), scope: group.scope.kind });
       applyServerState({ ...result, deck: merged.deck } as ServerState, true, true); setMergeConflicts(merged.conflicts); markDirty();
     }
     setProposalTarget(null); setApiError(null); reinject(); setAnnouncement("選択した案を採用しました");
