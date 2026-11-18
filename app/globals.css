@@ -1230,6 +1230,28 @@ button.project-card { cursor: pointer; }
 .codex-item-userMessage.message .message-label { color: var(--accent); }
 .codex-item.message .message-content > p, .codex-item.message .codex-item-text { color: var(--text); font-size: 13px; line-height: 1.65; }
 .codex-item-agentMessage.message .message-content > p, .codex-item-agentMessage.message .codex-item-text { font-size: 13px; line-height: 1.7; }
+.chat-markdown { min-width: 0; overflow-wrap: anywhere; }
+.chat-markdown :is(h1, h2, h3, h4, h5, h6) { margin: 12px 0 5px; color: var(--text); font-size: 14px; font-weight: 600; line-height: 1.5; }
+.chat-markdown h1 { font-size: 16px; }
+.chat-markdown h2 { font-size: 15px; }
+.chat-markdown p { margin: 6px 0; white-space: normal; }
+.chat-markdown :is(ul, ol) { margin: 6px 0; padding-left: 20px; }
+.chat-markdown ul { list-style: disc; }
+.chat-markdown ol { list-style: decimal; }
+.chat-markdown li { margin: 2px 0; }
+.chat-markdown code { padding: 1px 4px; border-radius: 3px; background: var(--panel-3); color: var(--text); font-family: var(--font-geist-mono), monospace; font-size: 12px; }
+.codex-item .chat-markdown pre { max-width: 100%; margin: 8px 0; padding: 8px; overflow-x: auto; white-space: pre; overflow-wrap: normal; }
+.chat-markdown pre code { padding: 0; background: transparent; font-size: inherit; }
+.chat-markdown blockquote { margin: 8px 0; padding: 0 10px; border-left: 3px solid var(--line-strong); color: var(--muted); }
+.chat-markdown table { display: block; max-width: 100%; margin: 8px 0; overflow-x: auto; border-collapse: collapse; font-size: 12px; }
+.chat-markdown :is(th, td) { padding: 4px 7px; border: 1px solid var(--line); text-align: left; }
+.chat-markdown th { background: var(--panel-3); font-weight: 600; }
+.chat-markdown hr { margin: 12px 0; border: 0; border-top: 1px solid var(--line); }
+.chat-markdown a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.chat-markdown strong { font-weight: 600; }
+.chat-markdown em { font-style: italic; }
+.chat-markdown > :first-child { margin-top: 0; }
+.chat-markdown > :last-child { margin-bottom: 0; }
 .work-details { margin: 2px 0 11px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: color-mix(in srgb, var(--panel-2) 82%, transparent); color: var(--muted); }
 .work-details > summary { min-height: 22px; }
 .work-details > summary span:first-child { color: var(--muted); }
