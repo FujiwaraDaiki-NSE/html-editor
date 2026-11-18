@@ -250,3 +250,34 @@ test("duplicated projects do not share mutable candidate workspaces with the sou
   assert.deepEqual(await store.read(duplicatedRoot), []);
   assert.equal((await store.read(root)).length, 1);
 });
+
+test("a reviewed candidate is viewable while the other two subagents are still working", async (t) => {
+  const { store, root, group } = await setup(t);
+  const peers = ["b", "c"].map((id) => ({
+    id: `${group.id}-${id}`,
+    status: "running",
+    activity: id === "b" ? "ファイルを編集中" : "実装方法を検討中",
+    startedAt: 100,
+    workerStartedAt: 120,
+    approvedVersion: null,
+    version: 1,
+  }));
+  tasks.push(...peers);
+  await store.attach(root, group.id, "b", peers[0].id);
+  await store.attach(root, group.id, "c", peers[1].id);
+  await complete(store, root, group, "a");
+  const snapshot = (await store.snapshot(root, tasks))[0];
+  assert.deepEqual(
+    snapshot.candidates.map((candidate) => candidate.available.view),
+    [true, false, false],
+  );
+  assert.deepEqual(
+    snapshot.candidates.map((candidate) => candidate.status),
+    ["ready", "running", "running"],
+  );
+  assert.equal(snapshot.candidates[1].activity, "ファイルを編集中");
+  assert.equal(snapshot.candidates[2].activity, "実装方法を検討中");
+  assert.equal(snapshot.candidates[1].workerStartedAt, 120);
+  assert.ok((await store.preview(root, group.id, "a", 1)).deck);
+  assert.equal(snapshot.candidates[0].available.adopt, true);
+});

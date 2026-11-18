@@ -1794,3 +1794,4 @@ button.project-card { cursor: pointer; }
 .proposal-workspace .variation-tabs button small { display: block; font-size: 11px; color: var(--muted); }
 .proposal-workspace .variation-compare-grid article > p { margin: 8px 0; font-size: var(--ui-label); line-height: 1.5; }
 .proposal-workspace .variation-compare-grid article > button { padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--panel-3); color: var(--text); }
+.proposal-progress { margin: 0 0 6px; font-size: var(--ui-label); color: var(--muted); }

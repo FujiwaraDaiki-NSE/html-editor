@@ -462,9 +462,8 @@ function activeProjectTurn() {
   return startingRoots.has(root) || [...pendingTurns.values()].some((turn) => turn.root === root);
 }
 
-function agentStartBlocked() {
-  return projectLifecycleBusy || startingRoots.size > 0 || pendingTurns.size > 0 || codexProjectRoot !== projectRoot()
-    ;
+function agentStartBlocked(root = projectRoot()) {
+  return projectLifecycleBusy || startingRoots.has(root) || [...pendingTurns.values()].some(turn => turn.root === root) || codexProjectRoot !== projectRoot();
 }
 
 async function runProjectLifecycle(operation, { allowPending = false } = {}) {
@@ -519,7 +518,7 @@ async function serializeEditorContext(payload, root) {
 }
 
 async function startEditorTurn(payload, { variation = false, parentThreadId = null, root = projectRoot(), proposalOwnerRoot = null } = {}) {
-  if (agentStartBlocked(parentThreadId)) throw new Error("Another Agent task is running. Editing remains available and Agent will reconnect to this project when it finishes.");
+  if (agentStartBlocked(root)) throw new Error("Another Agent task is running. Editing remains available and Agent will reconnect to this project when it finishes.");
   const prompt = requireTurnPrompt(payload);
   const workflow = workflowFromPayload(payload);
   startingRoots.add(root);
