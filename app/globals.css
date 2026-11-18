@@ -1235,6 +1235,7 @@ button.project-card { cursor: pointer; }
 .chat-markdown h1 { font-size: 16px; }
 .chat-markdown h2 { font-size: 15px; }
 .chat-markdown p { margin: 6px 0; white-space: normal; }
+.codex-item-userMessage .chat-markdown :is(p, li) { white-space: pre-wrap; }
 .chat-markdown :is(ul, ol) { margin: 6px 0; padding-left: 20px; }
 .chat-markdown ul { list-style: disc; }
 .chat-markdown ol { list-style: decimal; }
