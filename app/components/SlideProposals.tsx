@@ -81,12 +81,10 @@ const SlideFrame = memo(function SlideFrame({
   preview,
   slideId,
   apiBase,
-  thumbnail = false,
 }: {
   preview: Preview;
   slideId: string;
   apiBase: string;
-  thumbnail?: boolean;
 }) {
   const frame = useRef<HTMLSpanElement>(null);
   const [scale, setScale] = useState(0.5);
@@ -133,14 +131,11 @@ const SlideFrame = memo(function SlideFrame({
     <span
       className="proposal-frame"
       ref={frame}
-      aria-hidden={thumbnail || undefined}
-      inert={thumbnail || undefined}
       style={{ aspectRatio: `${designWidth}/${designHeight}` }}
     >
       <iframe
         sandbox=""
-        title={`${preview.candidateId.toUpperCase()}案の${thumbnail ? "サムネイル" : "スライド"}`}
-        tabIndex={thumbnail ? -1 : undefined}
+        title={`${preview.candidateId.toUpperCase()}案のスライド`}
         srcDoc={src}
         style={{
           width: designWidth,
@@ -199,7 +194,11 @@ export function SlideProposals({
       selected.previewRevision;
   const requested = visible.flatMap((g) =>
     g.candidates
-      .filter((c) => c.available.view)
+      .filter(
+        (c) =>
+          c.available.view &&
+          (compare || (g.id === group?.id && c.id === selected?.id)),
+      )
       .map((c) => ({ group: g, candidate: c })),
   );
   const requestKeys = requested
@@ -224,7 +223,7 @@ export function SlideProposals({
         });
     }
     return () => controller.abort();
-    // Fetch all visible cards; refresh only when the server publishes a new candidate revision.
+    // Fetch the opened or compared candidates and refresh when their revisions change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requestKeys, apiBase]);
   if (!relevant.length) return null;
@@ -342,30 +341,6 @@ export function SlideProposals({
                   </span>
                   {active && (
                     <span className="proposal-choice-selected">表示中</span>
-                  )}
-                </span>
-                <span className="proposal-choice-thumbnail">
-                  {previews[key(g, c)] ? (
-                    <SlideFrame
-                      preview={previews[key(g, c)]}
-                      slideId={slideId}
-                      apiBase={apiBase}
-                      thumbnail
-                    />
-                  ) : (
-                    <span className="proposal-thumbnail-placeholder">
-                      {c.available.view
-                        ? "プレビューを読み込み中…"
-                        : "プレビューを準備中…"}
-                    </span>
-                  )}
-                  {previews[key(g, c)]?.phase === "baseline" && (
-                    <span className="proposal-thumbnail-label">
-                      元のスライド
-                    </span>
-                  )}
-                  {previews[key(g, c)]?.phase === "previous" && (
-                    <span className="proposal-thumbnail-label">更新前の案</span>
                   )}
                 </span>
                 <span className="proposal-choice-title">{c.title}</span>

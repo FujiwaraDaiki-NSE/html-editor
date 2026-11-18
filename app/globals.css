@@ -1848,7 +1848,3 @@ button.project-card { cursor: pointer; }
 /* Keep proposal chrome out of the canvas sizing/centering grid. */
 .canvas-workspace > .proposal-workspace { max-height: 48%; min-height: 0; overflow: auto; overscroll-behavior: contain; overflow-anchor: none; border-bottom: 1px solid var(--line); }
 .canvas-workspace > .proposal-workspace[data-open="true"] { flex: 1 1 0; max-height: none; }
-.proposal-choice-thumbnail { display: block; position: relative; flex: 0 0 auto; align-self: center; width: min(100%, 160px); aspect-ratio: 16 / 9; overflow: hidden; border: 1px solid var(--line); border-radius: 5px; background: #0c0e11; pointer-events: none; }
-.proposal-choice-thumbnail iframe { pointer-events: none; }
-.proposal-thumbnail-placeholder { display: grid; place-items: center; width: 100%; height: 100%; color: var(--muted); font-size: 11px; }
-.proposal-thumbnail-label { position: absolute; bottom: 5px; left: 5px; padding: 2px 5px; border-radius: 3px; color: #fff; background: rgb(0 0 0 / .72); font-size: 10px; }
