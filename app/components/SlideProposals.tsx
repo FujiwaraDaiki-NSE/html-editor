@@ -325,13 +325,6 @@ export function SlideProposals({
                       aria-hidden="true"
                     />
                     <span>{c.id.toUpperCase()}</span>
-                    {active && (
-                      <span className="proposal-choice-title">
-                        {c.title}
-                        {c.status !== "ready" &&
-                          ` · ${statusLabels[c.status] ?? c.status}`}
-                      </span>
-                    )}
                   </button>
                 );
               })}
@@ -391,6 +384,11 @@ export function SlideProposals({
         previewContainer &&
         createPortal(
           <>
+            <div className="proposal-name-label">
+              {selected.id.toUpperCase()}案 {selected.title}
+              {selected.status !== "ready" &&
+                ` · ${statusLabels[selected.status] ?? selected.status}`}
+            </div>
             <div className="proposal-preview">
               {previews[key(group, selected)] ? (
                 <SlideFrame
@@ -468,6 +466,9 @@ export function SlideProposals({
                 className="proposal-description-popover"
                 hidden={!descriptionOpen}
               >
+                <strong className="proposal-description-name">
+                  {selected.id.toUpperCase()}案 {selected.title}
+                </strong>
                 {selected.description !== null && <p>{selected.description}</p>}
                 <small>
                   {selected.stale

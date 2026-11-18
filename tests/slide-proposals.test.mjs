@@ -464,8 +464,18 @@ test("selecting one proposal keeps the compact strip and canvas mounted", async 
   assert.match(css, /\.proposal-preview-container \{ position: absolute; inset: 0;/);
   assert.match(css, /\.proposal-preview \{ position: absolute; inset: 0;/);
   assert.match(source, /className="proposal-tabs"/);
+  assert.match(source, /className=\{`proposal-state-dot \$\{c.status\}`\}\s*aria-hidden="true"/);
+  assert.match(css, /\.proposal-state-dot \{ flex: 0 0 10px; width: 10px; height: 10px;/);
+  assert.match(css, /\.proposal-state-dot:is\(\.preparing, \.queued, \.running, \.reviewing, \.applying, \.completed, \.cancelling\) \{ border:/);
+  assert.match(css, /\.proposal-state-dot:is\(\.failed, \.cancelled\) \{ background-color: var\(--danger\);/);
+  assert.match(css, /@media \(prefers-reduced-motion: no-preference\) \{ \.proposal-state-dot:is\([^)]*\) \{ animation: proposal-state-spin/);
+
   assert.doesNotMatch(source, /proposal-choice-selected|proposal-progress/);
   assert.match(css, /\.proposal-workspace\[data-open="false"\] \{[^}]*height: 36px;/);
-  assert.match(css, /@container proposal-panel \(max-width: 360px\) \{ \.proposal-choice-title \{ display: none;/);
+  assert.doesNotMatch(source, /proposal-choice-title/);
+  assert.match(css, /\.proposal-toolbar \.proposal-choice \{[^}]*flex: 0 0 36px;/);
+  assert.match(source, /className="proposal-name-label"/);
+  assert.match(source, /className="proposal-description-name"/);
+  assert.match(css, /\.proposal-name-label \{ position: absolute;[^}]*pointer-events: none;/);
 
 });
