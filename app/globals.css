@@ -1828,17 +1828,23 @@ button.project-card { cursor: pointer; }
 
 .proposal-workspace .variation-compare-grid article > p { margin: 8px 0; font-size: var(--ui-label); line-height: 1.5; }
 .proposal-workspace .variation-compare-grid article > button { padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--panel-3); color: var(--text); }
-/* Fixed-width segments retain their geometry when the selection changes. */
-.proposal-toolbar { display: flex; align-items: center; gap: 6px; height: 28px; min-width: 0; margin-bottom: 8px; }
-.proposal-tabs { display: flex; flex: 0 0 auto; align-items: center; min-width: 0; height: 28px; padding: 1px; border: 1px solid var(--line-strong); border-radius: 5px; background: color-mix(in srgb, var(--bg) 65%, var(--panel)); }
+/* Candidate segments share the remaining width regardless of selection. */
+.proposal-toolbar { display: flex; align-items: center; gap: 6px; height: 48px; min-width: 0; margin-bottom: 8px; }
+.proposal-tabs { display: flex; flex: 1 1 0; align-items: center; min-width: 0; height: 48px; padding: 1px; border: 1px solid var(--line-strong); border-radius: 5px; background: color-mix(in srgb, var(--bg) 65%, var(--panel)); }
 .proposal-toolbar button { flex: 0 0 auto; height: 24px; min-height: 0; padding: 0 7px; border: 0; border-radius: 3px; background: transparent; color: var(--muted); font: inherit; font-size: 11px; white-space: nowrap; }
 .proposal-toolbar button:hover:not(:disabled):not(.is-selected) { background: var(--panel-3); color: var(--text); }
 .proposal-tabs button.is-selected { color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, var(--panel-3)); font-weight: 600; box-shadow: 0 1px 3px rgb(0 0 0 / .18); }
+.proposal-tabs button { height: 44px; }
 .proposal-toolbar .proposal-draft-button { flex: 0 0 62px; width: 62px; }
 .proposal-toolbar-actions { display: flex; flex: 0 0 auto; margin-left: auto; align-items: center; gap: 0; }
 .proposal-toolbar-actions button.is-selected { color: var(--accent); }
-.proposal-choices { display: flex; flex: 0 0 auto; }
-.proposal-toolbar .proposal-choice { display: flex; align-items: center; gap: 4px; justify-content: center; flex: 0 0 36px; width: 36px; min-width: 36px; }
+.proposal-choices { display: flex; flex: 1 1 0; min-width: 0; }
+.proposal-toolbar .proposal-choice { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: 18px 15px; align-content: center; align-items: center; column-gap: 6px; row-gap: 1px; flex: 1 1 0; min-width: 0; padding: 3px 6px; text-align: left; }
+.proposal-choice-badge { grid-row: 1 / 3; padding: 3px; border-radius: 3px; background: var(--panel-3); font-size: 11px; }
+.proposal-choice-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 600; line-height: 18px; }
+.proposal-choice-status { display: flex; align-items: center; gap: 3px; min-width: 0; color: var(--muted); font-size: 11px; font-weight: 400; line-height: 15px; }
+.proposal-choice-status-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@container proposal-panel (max-width: 420px) { .proposal-choice-status-text { display: none; } }
 .proposal-choice:disabled { cursor: wait; }
 .proposal-toolbar button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .proposal-state-dot { flex: 0 0 10px; width: 10px; height: 10px; padding: 2px; border-radius: 50%; background: var(--muted); background-clip: content-box; }
@@ -1851,15 +1857,14 @@ button.project-card { cursor: pointer; }
 .proposal-live-status { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; padding: 9px 11px; border-radius: 5px; background: var(--panel-3); color: var(--muted); font-size: var(--ui-label); }
 .proposal-live-status strong { color: var(--text); }
 @media (prefers-reduced-motion: no-preference) { .proposal-tabs button { transition: background-color 120ms, color 120ms; } }
-.proposal-name-label { position: absolute; bottom: calc(100% + 8px); left: 50%; transform: translateX(-50%); width: max-content; max-width: 100%; padding: 3px 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 1px solid var(--line-strong); border-radius: 6px; background: color-mix(in srgb, var(--panel) 70%, transparent); backdrop-filter: blur(6px); color: var(--muted); font-size: 12px; line-height: 1.5; pointer-events: none; }
 .proposal-description-name { display: block; margin-bottom: 6px; overflow-wrap: anywhere; }
 
 /* Proposal chrome never participates in canvas sizing or centering. */
 .canvas-workspace { position: relative; }
 .canvas-workspace > .proposal-workspace { min-height: 0; max-height: 48%; padding: 8px; overflow: auto; overscroll-behavior: contain; overflow-anchor: none; border-bottom: 1px solid var(--line); container: proposal-panel / inline-size; }
 .canvas-workspace > .proposal-workspace[data-open="true"] { flex: 1 1 0; max-height: none; }
-.proposal-workspace[data-open="true"] .proposal-tabs { display: grid; grid-template-columns: auto auto; height: auto; }
+.proposal-workspace[data-open="true"] .proposal-tabs { display: grid; grid-template-columns: 62px minmax(0, 1fr); height: auto; }
 .proposal-workspace[data-open="true"] .proposal-choices { grid-column: 2; }
 .proposal-workspace[data-open="true"] .proposal-toolbar { height: auto; }
-.canvas-workspace > .proposal-workspace[data-open="false"] { position: absolute; inset: 0 0 auto; height: 36px; max-height: 36px; padding: 3px 8px 4px; overflow: hidden; }
+.canvas-workspace > .proposal-workspace[data-open="false"] { position: absolute; inset: 0 0 auto; height: 56px; max-height: 56px; padding: 3px 8px 4px; overflow: hidden; }
 .proposal-workspace[data-open="false"] .proposal-toolbar { margin-bottom: 0; }
