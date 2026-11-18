@@ -5,7 +5,7 @@
 <p>モデル選択にClaude Codeを追加し、Codex app-serverを経由せずに既存ログインでHTMLスライドを編集する。</p>
 <h2>実行経路と責務</h2>
 <table><tr><th>対象</th><th>責務</th></tr><tr><td>app/page.tsx</td><td>明示的なモデル選択、接続先別の送信可否、実行中の停止、対応しない会話操作の無効化。</td></tr><tr><td>server/agent-service.mjs</td><td>モデルと会話IDに対応する実行先へ振り分ける。Claudeの依頼をCodexへ転送しない。接続状態とモデル一覧を統合する。</td></tr><tr><td>server/claude/service.mjs</td><td>claude -pを起動し、NDJSONの本文・ツール結果・最終結果を共通のeditorイベントへ変換する。ネイティブセッションIDとeditor用履歴を保持する。</td></tr><tr><td>server/local-api.mjs</td><td>接続先共通で実行前スナップショット、プレビュー、編集範囲の検証、同時編集のマージ、復旧を行う。/api/agent/を提供し、既存の/api/codex/も維持する。</td></tr></table>
-<h2>認証と操作範囲</h2>
+<h2>バージョンを指定したモデル選択</h2><p>Opus 5.5などのバージョン名をメニューに表示し、正式ID（例: claude-opus-5-5）を--modelへそのまま渡す。会話履歴にも同じIDを保存し、再開時に保持する。従来のエイリアスは「最新版」と明示する。バージョン指定時は起動イベントのモデルIDを照合し、CLIが異なるモデルを選んだ場合は失敗として扱う。fallbackModelを空配列、switchModelsOnFlagをfalseとして、CLIのモデル切り替えを無効にする。モデル一覧は2026年11月18日の公式カタログで確認した固定リストであり、アカウントの利用権限は実行時に判定される。</p><h2>認証と操作範囲</h2>
 <p>Claude Codeのログインをそのまま利用する。資格情報の読み取り・複製やAPIキー入力は追加しない。Read / Edit / Write / Glob / Grepをrestrictedモードで利用し、シェル実行とMCP接続は提供しない。共通editorスキルは実行時の追加指示へ渡す。</p>
 <h2>状態と履歴</h2>
 <p>起動受付と完了を分け、正常終了コード・success結果・権限拒否がないことを確認してから完了にする。停止時はプロセスグループへSIGTERMを送り、終了しなければSIGKILLを送る。プロセス終了前に完了を通知しない。異常終了、結果の欠落、JSON破損、権限拒否、履歴保存失敗は失敗として扱う。</p>
@@ -14,5 +14,5 @@
 <p>新規会話、会話再開、一覧・検索、名前変更、アーカイブ、editor履歴削除、モデル選択、実行停止に対応する。editor履歴の削除はClaude Code側のセッションを消去しない。実行中の追加指示、会話分岐、内部ゴール、手動圧縮は未対応。既存Codex側の操作は維持する。</p>
 <h2>確認</h2>
 <p>実Claude Code 2.1.322で一時HTMLの編集を確認。editor画面からClaude Sonnetを選択し、スライドの見出し変更と変更レビューへの反映を確認。自動テストではストリーミング重複防止、セッション再開、停止、権限拒否、異常終了、プロジェクトの履歴分離、Codex未接続時の実行を検証する。</p>
-<p>参照: <a href="https://code.claude.com/docs/en/headless">Claude Codeプログラム実行</a>、<a href="https://code.claude.com/docs/en/cli-reference">CLIリファレンス</a>。</p>
+<p>参照: <a href="https://code.claude.com/docs/en/headless">Claude Codeプログラム実行</a>、<a href="https://code.claude.com/docs/en/cli-reference">CLIリファレンス</a>、<a href="https://platform.claude.com/docs/en/models/overview">公式モデル一覧</a>。</p>
 </html>

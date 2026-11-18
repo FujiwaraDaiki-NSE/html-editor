@@ -4,7 +4,7 @@ let input = "";
 for await (const chunk of process.stdin) input += chunk;
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 const sessionId = args[args.indexOf(args.includes("--resume") ? "--resume" : "--session-id") + 1];
-send({ type: "system", subtype: "init", session_id: sessionId });
+send({ type: "system", subtype: "init", session_id: sessionId, model: input === "MISMATCH" ? "claude-sonnet-5-5" : args[args.indexOf("--model") + 1] });
 if (input === "WAIT") { setInterval(() => {}, 1000); }
 else if (input === "BAD_JSON") { process.stdout.write("broken\n"); }
 else if (input === "EXIT") { process.exitCode = 1; }

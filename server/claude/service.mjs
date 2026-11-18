@@ -8,10 +8,27 @@ import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 
 const exec = promisify(execFile);
-export const CLAUDE_MODELS = ["opus", "sonnet", "haiku"].map((model) => ({
-  id: `claude:${model}`, provider: "claude", displayName: `Claude ${model[0].toUpperCase()}${model.slice(1)}`,
-  supportedReasoningEfforts: model === "haiku" ? [] : ["low", "medium", "high"].map((reasoningEffort) => ({ reasoningEffort })),
-  defaultReasoningEffort: model === "haiku" ? null : "high",
+// Versioned IDs are pinned to the official Anthropic model catalog (2026-11-18).
+// Keep aliases for existing conversations, clearly separate from versioned choices.
+export const CLAUDE_MODELS = [
+  ...[
+    ["opus", "5.5"], ["opus", "5"], ["opus", "4.8"], ["opus", "4.7"], ["opus", "4.6"],
+    ["sonnet", "5.5"], ["sonnet", "5"], ["sonnet", "4.6"], ["haiku", "5.5"],
+  ].map(([family, version]) => ({
+    model: `claude-${family}-${version.replaceAll(".", "-")}`,
+    displayName: `Claude ${family[0].toUpperCase()}${family.slice(1)} ${version}`,
+    supportsEffort: true,
+    defaultReasoningEffort: (family === "opus" || family === "haiku") && version === "5.5" ? "medium" : "high",
+    version,
+  })),
+  ...["opus", "sonnet", "haiku"].map((family) => ({
+    model: family, displayName: `Claude ${family[0].toUpperCase()}${family.slice(1)}（最新版）`,
+    supportsEffort: family !== "haiku", defaultReasoningEffort: family === "haiku" ? null : "high", version: null,
+  })),
+].map(({ model, displayName, supportsEffort, defaultReasoningEffort, version }) => ({
+  id: `claude:${model}`, provider: "claude", displayName, version,
+  supportedReasoningEfforts: supportsEffort ? ["low", "medium", "high"].map((reasoningEffort) => ({ reasoningEffort })) : [],
+  defaultReasoningEffort,
 }));
 
 // Claude Code owns authentication and its native session. Weave only stores the
@@ -147,7 +164,7 @@ export class ClaudeService extends EventEmitter {
     try { instructions = await this.instructions(); }
     catch (error) { this.activeTurns.delete(threadId); throw error; }
     const args = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
-      "--model", model.slice(7), "--restricted", "--permission-mode", "acceptEdits", "--permission-prompts", "none",
+      "--model", model.slice(7), "--settings", JSON.stringify({ fallbackModel: [], switchModelsOnFlag: false }), "--restricted", "--permission-mode", "acceptEdits", "--permission-prompts", "none",
       "--tools", "Read,Edit,Write,Glob,Grep", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
       "--append-system-prompt", instructions,
       thread.sessionStarted ? "--resume" : "--session-id", thread.sessionId];
@@ -187,6 +204,7 @@ export class ClaudeService extends EventEmitter {
         const message = JSON.parse(line);
         if (message.type === "system" && message.subtype === "init") {
           if (message.session_id !== thread.sessionId) throw new Error("Claude session ID did not match the requested session.");
+          if (descriptor.version !== null && message.model !== model.slice(7)) throw new Error(`Claude Code selected ${message.model}, but this request requires ${model.slice(7)}.`);
           thread.sessionStarted = true;
           saveQueue = saveQueue.then(() => this.persist(thread)).catch((error) => { processError = error.message; });
         }

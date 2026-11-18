@@ -153,3 +153,39 @@ test("a rejected concurrent request cannot clear the reservation of a starting r
   assert.equal((await done).status, "completed");
   assert.equal(calls.length, 1);
 });
+
+test("versioned choices pass exact model IDs and retain them when a conversation resumes", async (t) => {
+  const { CLAUDE_MODELS } = await import("../server/claude/service.mjs");
+  const { service, calls, options } = await setup(t);
+  const versioned = CLAUDE_MODELS.filter((model) => model.version !== null);
+  assert.deepEqual(versioned.map((model) => model.displayName), [
+    "Claude Opus 5.5", "Claude Opus 5", "Claude Opus 4.8", "Claude Opus 4.7", "Claude Opus 4.6",
+    "Claude Sonnet 5.5", "Claude Sonnet 5", "Claude Sonnet 4.6", "Claude Haiku 5.5",
+  ]);
+  for (const model of versioned) {
+    const thread = await service.startThread({ model: model.id });
+    const done = completed(service);
+    await service.startTurn({ ...payload(thread.id, "test"), model: model.id });
+    assert.equal((await done).status, "completed");
+    const args = calls.at(-1).args;
+    assert.equal(args[args.indexOf("--model") + 1], model.id.slice(7));
+    assert.deepEqual(JSON.parse(args[args.indexOf("--settings") + 1]), { fallbackModel: [], switchModelsOnFlag: false });
+    const restarted = new ClaudeService(options);
+    const resumed = await restarted.resumeThread(thread.id);
+    assert.equal(resumed.model, model.id);
+    assert.equal(resumed.effort, "low");
+  }
+  assert.equal(new Set(CLAUDE_MODELS.map((model) => model.id)).size, CLAUDE_MODELS.length);
+  assert.equal(CLAUDE_MODELS.find((model) => model.id === "claude:opus").displayName, "Claude Opus（最新版）");
+});
+
+test("a pinned version rejects a different runtime model rather than silently using it", async (t) => {
+  const { service } = await setup(t);
+  const thread = await service.startThread({ model: "claude:claude-opus-5-5" });
+  const done = completed(service);
+  await service.startTurn({ ...payload(thread.id, "MISMATCH"), model: "claude:claude-opus-5-5" });
+  const turn = await done;
+  assert.equal(turn.status, "failed");
+  assert.match(turn.error.message, /requires claude-opus-5-5/);
+  assert.equal((await service.readThread(thread.id)).model, "claude:claude-opus-5-5");
+});

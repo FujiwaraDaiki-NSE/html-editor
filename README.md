@@ -33,7 +33,7 @@ claude auth status
 npm run dev
 ```
 
-Agent入力欄のモデルメニューで **Claude Opus / Claude Sonnet / Claude Haiku** を選びます。初回はモデルを明示的に選択してください。Claude選択時は `editor → ローカルAPI → claude -p → Claude` の経路で実行し、Codex app-serverを経由しません。Codexが未接続でもClaudeを利用できます。モデル名にはClaude Codeの公式エイリアスを使い、別モデルへの自動フォールバックは行いません。実際のモデル利用権限はClaude Codeのアカウントに従います。
+Agent入力欄のモデルメニューで **Claude Opus 5.5 / Claude Sonnet 5.5 / Claude Haiku 5.5** などバージョン付きのモデル を選びます。初回はモデルを明示的に選択してください。Claude選択時は `editor → ローカルAPI → claude -p → Claude` の経路で実行し、Codex app-serverを経由しません。Codexが未接続でもClaudeを利用できます。バージョン付きの選択では `claude-opus-5-5` などの正式なモデルIDをそのままClaude Codeへ渡します。Opusは5.5 / 5 / 4.8 / 4.7 / 4.6、Sonnetは5.5 / 5 / 4.6、Haikuは5.5を掲載しています。「最新版」と表示する従来のエイリアスも残します。バージョン指定時にCLIが異なるモデルを選んだ場合は失敗として扱い、別モデルへの自動フォールバックは行いません。実際のモデル利用権限はClaude Codeのアカウントに従います。
 
 Claude Codeの既存ログインをそのまま使うため、editorへのAPIキー入力は不要です。接続失敗時は「設定 → Claude Code → 接続を再確認」で再確認できます。認証状態は接続確認時点の値で、実行時の認証期限切れなどはその依頼の失敗として表示します。
 
