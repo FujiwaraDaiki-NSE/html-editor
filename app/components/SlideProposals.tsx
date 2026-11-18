@@ -1,5 +1,5 @@
 "use client";
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useEffect, useId, useRef, useState } from "react";
 import { composeSlideHtml } from "../../shared/slide-slots.mjs";
 import { rewriteAssetUrls } from "../../shared/asset-path.mjs";
 import { designWidth, designHeight } from "../../shared/slide-design.mjs";
@@ -170,6 +170,16 @@ export function SlideProposals({
     groupId: string;
     candidateId: string;
   } | null>(null);
+  const [descriptionOpen, setDescriptionOpen] = useState(false);
+  const descriptionId = useId();
+  useEffect(() => {
+    if (!descriptionOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setDescriptionOpen(false);
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [descriptionOpen]);
   const [compare, setCompare] = useState(false);
   const [history, setHistory] = useState(false);
   const [previews, setPreviews] = useState<Record<string, Preview>>({});
@@ -241,12 +251,14 @@ export function SlideProposals({
       )
     )
       return;
+    setDescriptionOpen(false);
     setSelection({ groupId: g.id, candidateId: c.id });
     setCompare(false);
     setError(null);
   };
   const live = () => {
     if (!onTarget(null)) return;
+    setDescriptionOpen(false);
     setSelection(null);
     setCompare(false);
   };
@@ -299,6 +311,7 @@ export function SlideProposals({
               onClick={() => {
                 if (onTarget(null)) {
                   setCompare((v) => !v);
+                  setDescriptionOpen(false);
                   setSelection(null);
                 }
               }}
@@ -378,7 +391,7 @@ export function SlideProposals({
       {error && <p role="alert">{error}</p>}
       {selected && group && (
         <>
-          <div className="proposal-description">
+          <div className="proposal-selected-details">
             {!reviewedPreviewVisible && (
               <div className="proposal-live-status" role="status">
                 <strong>
@@ -396,41 +409,63 @@ export function SlideProposals({
               </div>
             )}
             {selected.error && <p role="alert">{selected.error}</p>}
-            <strong>
-              {selected.id.toUpperCase()}案：{selected.title}
-            </strong>
-            <p>{selected.description}</p>
-            <small>
-              {selected.stale
-                ? "提案作成後に資料が更新されています。採用時に最新の編集と照合します。"
-                : "編集中の資料は変更されていません。"}
-              {group.selections[slideId] ? " このスライドは採用済みです。" : ""}
-            </small>
-            <div className="editor-tab-actions">
-              <button
-                className="use-direction"
-                data-ui-agent-exclude="true"
-                disabled={
-                  busy ||
-                  !syncReady ||
-                  !selected.available.adopt ||
-                  !reviewedPreviewVisible ||
-                  !!group.selections[slideId]
-                }
-                onClick={() =>
-                  void perform(() => onAdopt(group, selected, [slideId]))
-                }
+            <div className="proposal-description">
+              <strong
+                className="proposal-description-title"
+                title={`${selected.id.toUpperCase()}案：${selected.title}`}
               >
-                このスライドに採用
-              </button>
-              <button
-                className="archive-direction"
-                data-ui-agent-exclude="true"
-                disabled={busy || !selected.available.dismiss}
-                onClick={() => void perform(() => onDismiss(group))}
+                {selected.id.toUpperCase()}案：{selected.title}
+              </strong>
+              <div className="editor-tab-actions">
+                <button
+                  type="button"
+                  className="proposal-description-toggle"
+                  aria-expanded={descriptionOpen}
+                  aria-controls={descriptionId}
+                  onClick={() => setDescriptionOpen((open) => !open)}
+                >
+                  説明
+                </button>
+                <button
+                  className="use-direction"
+                  data-ui-agent-exclude="true"
+                  disabled={
+                    busy ||
+                    !syncReady ||
+                    !selected.available.adopt ||
+                    !reviewedPreviewVisible ||
+                    !!group.selections[slideId]
+                  }
+                  onClick={() =>
+                    void perform(() => onAdopt(group, selected, [slideId]))
+                  }
+                >
+                  このスライドに採用
+                </button>
+                <button
+                  className="archive-direction"
+                  data-ui-agent-exclude="true"
+                  disabled={busy || !selected.available.dismiss}
+                  onClick={() => void perform(() => onDismiss(group))}
+                >
+                  提案を終了
+                </button>
+              </div>
+              <div
+                id={descriptionId}
+                className="proposal-description-popover"
+                hidden={!descriptionOpen}
               >
-                提案を終了
-              </button>
+                {selected.description !== null && <p>{selected.description}</p>}
+                <small>
+                  {selected.stale
+                    ? "提案作成後に資料が更新されています。採用時に最新の編集と照合します。"
+                    : "編集中の資料は変更されていません。"}
+                  {group.selections[slideId]
+                    ? " このスライドは採用済みです。"
+                    : ""}
+                </small>
+              </div>
             </div>
             {!syncReady && (
               <small>編集中の内容を同期してから採用できます。</small>

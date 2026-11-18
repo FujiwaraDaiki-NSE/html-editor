@@ -1802,7 +1802,19 @@ button.project-card { cursor: pointer; }
 .agent-task-card summary { cursor: pointer; padding: 5px 0; }
 
 .proposal-workspace { flex: 0 0 auto; width: 100%; padding: 8px 12px; position: relative; z-index: 3; background: var(--panel-2); }
-.proposal-description { padding: 10px 0; display: grid; gap: 6px; }
+.proposal-selected-details { display: grid; gap: 8px; margin-top: 14px; padding: 14px 0; border-top: 1px solid var(--line); }
+.proposal-description { position: relative; display: flex; align-items: center; gap: 8px; height: var(--ui-primary-control); min-width: 0; }
+.proposal-description-title { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.proposal-description .editor-tab-actions { flex: 0 0 auto; flex-wrap: nowrap; height: 100%; white-space: nowrap; }
+.proposal-description-toggle { height: 26px; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--panel-3); color: var(--text); font-size: var(--ui-label); }
+.proposal-description-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.proposal-description-popover { position: absolute; top: calc(100% + 8px); right: 0; z-index: 1; width: min(420px, 100%); max-height: 240px; overflow: auto; padding: 12px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel); color: var(--text); font-size: var(--ui-label); line-height: 1.5; overflow-wrap: anywhere; }
+.proposal-description-popover small { display: block; margin-top: 6px; }
+.proposal-selected-details > :is(p, small), .proposal-selected-details > .proposal-live-status { min-width: 0; margin: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.proposal-selected-details > .proposal-live-status { flex-wrap: nowrap; }
+.proposal-selected-details > .proposal-live-status strong { flex-shrink: 0; }
+.proposal-selected-details > .proposal-live-status span { overflow: hidden; text-overflow: ellipsis; }
+.proposal-selected-details > small { color: var(--muted); }
 .proposal-description p { margin: 0; }
 .proposal-description small { color: var(--muted); }
 .proposal-frame { display: block; width: 100%; overflow: hidden; position: relative; background: var(--panel-2); }
@@ -1839,7 +1851,6 @@ button.project-card { cursor: pointer; }
 .proposal-choice-status { display: flex; align-items: baseline; gap: 6px; margin-top: auto; color: var(--muted); font-size: var(--ui-label); line-height: 1.5; overflow-wrap: anywhere; }
 .proposal-state-dot { flex: 0 0 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
 .proposal-state-dot.ready { background: var(--accent); }
-.proposal-description { margin-top: 14px; padding: 14px 0; border-top: 1px solid var(--line); gap: 8px; }
 .proposal-live-status { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; padding: 9px 11px; border-radius: 5px; background: var(--panel-3); color: var(--muted); font-size: var(--ui-label); }
 .proposal-live-status strong { color: var(--text); }
 @container proposal-panel (max-width: 520px) { .proposal-choices { grid-template-columns: 1fr; gap: 8px; } .proposal-choice { min-height: 100px; } }
