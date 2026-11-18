@@ -11,7 +11,6 @@ export type ProposalTarget = {
   slideId: string;
 };
 export type ProposalCandidate = {
-  targetSlideIds: string[];
   id: string;
   title: string;
   description: string | null;
@@ -423,30 +422,6 @@ export function SlideProposals({
                 }
               >
                 このスライドに採用
-              </button>
-              <button
-                className="use-direction"
-                data-ui-agent-exclude="true"
-                disabled={
-                  busy ||
-                  !syncReady ||
-                  !selected.available.adopt ||
-                  !reviewedPreviewVisible ||
-                  selected.targetSlideIds.every((id) => group.selections[id])
-                }
-                onClick={() =>
-                  void perform(() =>
-                    onAdopt(
-                      group,
-                      selected,
-                      selected.targetSlideIds.filter(
-                        (id) => !group.selections[id],
-                      ),
-                    ),
-                  )
-                }
-              >
-                未採用の対象すべてに採用
               </button>
               <button
                 className="archive-direction"
