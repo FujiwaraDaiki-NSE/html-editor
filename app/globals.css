@@ -1777,3 +1777,20 @@ button.project-card { cursor: pointer; }
 .agent-task-card button { padding: 5px 8px; margin: 4px 6px 4px 0; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--text); background: var(--panel-3); cursor: pointer; }
 .agent-task-card pre { max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .agent-task-card summary { cursor: pointer; padding: 5px 0; }
+
+.proposal-workspace { flex: 0 0 auto; width: 100%; padding: 8px 12px; position: relative; z-index: 3; background: var(--panel-2); }
+.proposal-workspace .variation-tabs { flex-wrap: wrap; }
+.proposal-workspace .variation-tabs button { max-width: 260px; white-space: normal; }
+.proposal-description { padding: 10px 0; display: grid; gap: 6px; }
+.proposal-description p { margin: 0; }
+.proposal-description small { color: var(--muted); }
+.proposal-frame { width: 100%; overflow: hidden; position: relative; background: var(--panel-2); }
+.proposal-frame iframe { display: block; border: 0; transform-origin: top left; }
+.canvas-area:has(> .proposal-workspace[data-open="true"]) > :not(.proposal-workspace) { display: none; }
+.proposal-workspace .variation-compare { position: static; }
+.proposal-workspace .variation-compare-grid { align-items: start; }
+.proposal-workspace button { cursor: pointer; }
+
+.proposal-workspace .variation-tabs button small { display: block; font-size: 11px; color: var(--muted); }
+.proposal-workspace .variation-compare-grid article > p { margin: 8px 0; font-size: var(--ui-label); line-height: 1.5; }
+.proposal-workspace .variation-compare-grid article > button { padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--panel-3); color: var(--text); }

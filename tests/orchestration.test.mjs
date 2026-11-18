@@ -52,17 +52,11 @@ test('additional Codex messages are steered without blocking delegated work', as
   assert.equal(result.message.status, 'delivered'); assert.equal(steered.length, 1); assert.equal(chats.length, 1);
 });
 
-test('confirm mode never starts a worker before human approval; changed proposals need another decision', async t => {
-  const { manager } = await setup(t); await manager.receive(input('one', 'confirm'));
-  const { taskId } = await manager.create('parent', args); const task = manager.task('parent', taskId);
-  assert.equal(task.status, 'awaiting_approval'); assert.equal(manager.running, null);
-  await manager.receive(input('two', 'confirm'));
-  await assert.rejects(manager.approve('parent', taskId, 1), /changed/);
-  await assert.rejects(manager.approve('parent', taskId, 2), /changed/);
-  await manager.control('parent', { taskId, version: 2, action: 'continue', instruction: 'Edit the title according to both instructions.' });
-  await manager.approve('parent', taskId, 2); await until(() => task.status === 'reviewing');
-  assert.equal(task.attempt, 1);
-  await manager.review('parent', { taskId, version: 2, decision: 'reject', reason: 'Keep the current title.' });
+test('compare mode starts immediately without human editing permission, but still requires review', async t => {
+  const { manager, applied } = await setup(t); await manager.receive(input('one', 'compare'));
+  const { taskId } = await manager.create('parent', { ...args, proposal: { groupId: 'group', candidateId: 'a' } }); const task = manager.task('parent', taskId);
+  await until(() => task.status === 'reviewing'); assert.equal(task.attempt, 1); assert.deepEqual(applied, []);
+  await manager.review('parent', { taskId, version: 1, decision: 'reject', reason: 'Candidate needs a clearer hierarchy.' });
   await until(() => task.status === 'cancelled');
 });
 
@@ -149,4 +143,17 @@ test('learning evidence includes only reviewed applied work and actual human mes
   assert.deepEqual(context.originalMessages, [{ id: 'one', prompt: 'Instruction one' }]);
   assert.deepEqual(context.successfulEdits.map(edit => edit.callId), ['reviewed']);
   assert.deepEqual(context.successfulEdits[0].messageIds, ['one']);
+});
+
+test('unattached proposal tasks cannot start when another worker finishes', async t => {
+  const { manager } = await setup(t); await manager.receive(input('one'));
+  const first = await manager.create('parent', args); const next = await manager.create('parent', { ...args, deferStart: true });
+  const a = manager.task('parent', first.taskId); const b = manager.task('parent', next.taskId);
+  await until(() => a.status === 'reviewing');
+  await manager.review('parent', { taskId: a.id, version: 1, decision: 'reject', reason: 'Finish without adopting.' });
+  await until(() => manager.running === null);
+  assert.equal(b.status, 'preparing'); assert.equal(b.attempt, 0);
+  await manager.activate([b.id]); await until(() => b.status === 'reviewing');
+  await manager.review('parent', { taskId: b.id, version: 1, decision: 'reject', reason: 'Finish this test.' });
+  await until(() => b.status === 'cancelled');
 });

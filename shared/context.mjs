@@ -58,7 +58,12 @@ export function editorEnvelope(input) {
     }
   }
   const executionMode = String(input.executionMode ?? "");
-  if (["apply", "confirm", "propose", "plan"].includes(executionMode)) envelope.executionMode = executionMode;
+  if (["apply", "compare", "confirm", "propose", "plan"].includes(executionMode)) envelope.executionMode = executionMode;
+  if (input.proposalTarget !== undefined && input.proposalTarget !== null) {
+    const target = input.proposalTarget;
+    if (typeof target.groupId !== "string" || !/^[a-f0-9-]{36}$/.test(target.groupId) || !["a", "b", "c"].includes(target.candidateId) || !Number.isSafeInteger(target.version) || target.version < 1) throw new Error("Invalid proposal target.");
+    envelope.proposalTarget = { groupId: target.groupId, candidateId: target.candidateId, version: target.version };
+  }
   if (input.allowSkillChanges === true) envelope.allowSkillChanges = true;
   if (input.selected && typeof input.selected === "object" && !Array.isArray(input.selected)) {
     const selected = {
@@ -108,7 +113,7 @@ export function editorEnvelope(input) {
 export const contextPromptRules = `The envelope carries only what the agent cannot observe; read slide HTML, CSS, templates, and history from project files.
 slide is the slide id, whose content is in slides/<slide>.html.
 modificationScope is a hard write boundary, separate from reference context. element permits only elementId on the listed slide; current-slide and selected-slides permit only the listed slideIds; deck permits the complete deck.
-executionMode controls delivery: apply delegates editing and requires orchestrator review; confirm requires a human-approved proposal before delegating edits. Requests for advice or plans are answered without editing. Legacy propose/plan requests never authorize writes.
+executionMode controls delivery: apply creates one result and applies after review; compare creates exactly three isolated candidates per target slide and only a human adoption applies them. Editing permission is already granted; never wait for permission to create or revise candidates. proposalTarget identifies the specific candidate to revise instead of the live deck. Requests for advice or plans are answered without editing. Legacy propose/plan requests never authorize writes.
 allowSkillChanges is an explicit permission. Project skills must remain unchanged unless it is true and executionMode is apply.
 Never widen modificationScope because annotations, attachments, or other references are present. If the request requires a wider scope, stop and ask for explicit permission.
 Those files hold the editor canvas as of the start of this turn, so read them rather than asking for the markup.

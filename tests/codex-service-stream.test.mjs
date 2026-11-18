@@ -632,7 +632,7 @@ test('orchestrator tool capability survives restart and older chat coordinators 
   const migrated = await service.ensureChatThread('new', { cwd: '/workspace', model: 'gpt-test' });
   assert.equal(migrated.migrated, true);
   const marked = client.calls.filter(call => call.method === 'thread/name/set').at(-1).params.name;
-  assert.match(marked, /weave-orchestration-v1/);
+  assert.match(marked, /weave-orchestration-v2/);
   const request = client.request.bind(client);
   client.request = async (method, params) => method === 'thread/read' && params.threadId === 'created'
     ? { thread: { id: 'created', name: marked, cwd: '/workspace', threadSource: 'weave', turns: [] } }

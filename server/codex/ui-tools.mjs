@@ -87,6 +87,7 @@ const uiToolSchemas = {
     additionalProperties: false,
     properties: {
       prompt: { type: "string", minLength: 1, maxLength: 50_000 },
+      directions: { type: "array", minItems: 3, maxItems: 3, description: "Required for executionMode compare: three coherent, distinct directions across all target slides. title and description are concise Japanese text for the user; instruction is the implementation brief.", items: { type: "object", additionalProperties: false, properties: { title: { type: "string", minLength: 1, maxLength: 80 }, description: { type: "string", minLength: 1, maxLength: 400 }, instruction: { type: "string", minLength: 1, maxLength: 10000 } }, required: ["title", "description", "instruction"] } },
       variation: { type: "boolean", description: "Create a separate variation branch for an alternative direction." },
       scope: {
         type: "object",
@@ -178,7 +179,7 @@ export function uiDynamicTools({ purpose, learning = false } = {}) {
 export function validateEditSlidesArguments(rawArguments) {
   if (!isRecord(rawArguments)) throw bridgeError("edit_slides arguments must be an object.");
   const args = rawArguments;
-  if (Object.keys(args).some((key) => !["prompt", "scope", "execution", "allowSkillChanges", "variation"].includes(key))) {
+  if (Object.keys(args).some((key) => !["prompt", "scope", "execution", "allowSkillChanges", "variation", "directions"].includes(key))) {
     throw bridgeError("edit_slides arguments contain an unsupported field.");
   }
   if (typeof args.prompt !== "string" || args.prompt.length === 0 || args.prompt.length > 50_000) {

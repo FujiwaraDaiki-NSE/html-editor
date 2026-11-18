@@ -21,6 +21,7 @@ import { BlockResizeOverlay, type BlockResizeSize, type BlockResizeCommit } from
 import { AnnotationOverlay } from "./components/AnnotationOverlay";
 import type { Annotation, AnnotationGestureKind, AnnotationRect, PointerCandidate, ResizeHandle } from "./components/AnnotationOverlay";
 import { useEditorDialog } from "./components/EditorDialog";
+import { SlideProposals, type ProposalGroup, type ProposalCandidate, type ProposalTarget } from "./components/SlideProposals";
 import { AgentTasks, type AgentTask, type OrchestrationSnapshot } from "./components/AgentTasks";
 import { ApplicationSkillDialog } from "./components/ApplicationSkillDialog";
 import { ApplicationSkillLearning } from "./components/ApplicationSkillLearning";
@@ -59,7 +60,7 @@ type OpenPopover = "delivery" | "threads" | "addBlock" | "layouts" | "newSlide" 
 type VariationPreview = { branch: string; label: string; css: string; deck: ServerState["deck"] };
 type ChangedTarget = { slideId: string; elementId: string };
 type ChangeScope = "element" | "current-slide" | "selected-slides" | "deck";
-type ExecutionMode = "apply" | "confirm";
+type ExecutionMode = "apply" | "compare";
 type DraftSyncState = "synced" | "saving" | "offline" | "error";
 type Density = "comfortable" | "compact";
 type SourceDiagnostic = { message: string; line: number; column: number };
@@ -84,6 +85,7 @@ function reviewChangeMatches(deck: { title: string; defaultTemplateId: string; s
 
 type ServerState = {
   orchestration: OrchestrationSnapshot;
+  proposals: ProposalGroup[];
   deck: { title: string; defaultTemplateId: string; slides: SlideDoc[] };
   css: string;
   templates: TemplateDoc[];
@@ -477,7 +479,7 @@ export default function Home() {
   const agentModel = useSyncExternalStore(agentModelStore.subscribe, agentModelStore.read, agentModelStore.serverRead);
   const selectedModel = agentModel.model;
   const reasoningEffort = agentModel.effort;
-  const [approvalPolicy, setApprovalPolicy] = useState("never");
+  const approvalPolicy = "never";
   const [apiKeyDraft, setApiKeyDraft] = useState("");
   const [mcpResult, setMcpResult] = useState("");
   const [turnSubmission, setTurnSubmission] = useState<TurnSubmissionState>(IDLE_TURN_SUBMISSION);
@@ -555,6 +557,8 @@ export default function Home() {
   const [agentCompletion, setAgentCompletion] = useState<number | null>(null);
   const [previewHighlightSlideId, setPreviewHighlightSlideId] = useState<string | null>(null);
   const [changeScope, setChangeScope] = useState<ChangeScope>("current-slide");
+  const [proposalGroups, setProposalGroups] = useState<ProposalGroup[]>([]);
+  const [proposalTarget, setProposalTarget] = useState<ProposalTarget | null>(null);
   const [orchestration, setOrchestration] = useState<OrchestrationSnapshot>({ tasks: [], messages: [] });
   const workerModel = useSyncExternalStore(workerModelStore.subscribe, workerModelStore.read, workerModelStore.serverRead);
   const [workerEffort, setWorkerEffort] = useState("medium");
@@ -1274,6 +1278,7 @@ export default function Home() {
       elementId: changeScope === "element" ? selectedId : null,
     },
     executionMode,
+    proposalTarget,
     selected: selectedId ? {
       id: selectedId,
       kind: sel?.kind ?? "",
@@ -1288,6 +1293,15 @@ export default function Home() {
   });
 
   uiEditorContextRef.current = project ? { root: project.root, contextEnvelope: contextEnvelope() } : null;
+
+  useEffect(() => {
+    if (!proposalTarget || promptDraft.trim()) return;
+    if (proposalTarget.slideId !== activeSlideId) { const timer = window.setTimeout(() => setProposalTarget(null), 0); return () => window.clearTimeout(timer); }
+    const candidate = proposalGroups.find(group => group.id === proposalTarget.groupId)?.candidates.find(candidate => candidate.id === proposalTarget.candidateId);
+    if (!candidate?.available.revise || candidate.version === proposalTarget.version) return;
+    const timer = window.setTimeout(() => setProposalTarget({ ...proposalTarget, version: candidate.version }), 0);
+    return () => window.clearTimeout(timer);
+  }, [proposalGroups, proposalTarget, promptDraft, activeSlideId]);
 
   const quality = useMemo(() => {
     let renderedSlides: string[];
@@ -1419,6 +1433,7 @@ export default function Home() {
     setProject(state.project);
     activeProjectRootRef.current = state.project.root;
     setOrchestration(state.orchestration);
+    setProposalGroups(state.proposals);
     setServerRevision(state.project.revision ?? state.project.commit);
     setActiveVariation(state.project.branch);
     dispatchCodex({ type: "connection", connection: state.codex.connection });
@@ -1496,7 +1511,18 @@ export default function Home() {
           for (const line of lines) {
             if (!line.trim()) continue;
             const envelope = JSON.parse(line);
-            if (envelope.type === "weave/orchestration") setOrchestration({ tasks: envelope.payload.tasks.filter((task: AgentTask) => task.root === activeProjectRootRef.current), messages: envelope.payload.messages.filter((message: { root: string }) => message.root === activeProjectRootRef.current) });
+            if (envelope.type === "weave/proposals" && envelope.payload.root === activeProjectRootRef.current) {
+              const root = envelope.payload.root;
+              void fetch(`${apiBase}/proposals`).then(r => r.json()).then(result => { if (activeProjectRootRef.current === root) setProposalGroups(result.proposals); }).catch(error => setApiError(String(error)));
+            }
+            if (envelope.type === "weave/orchestration") {
+              const tasks = envelope.payload.tasks.filter((task: AgentTask) => task.root === activeProjectRootRef.current);
+              setOrchestration({ tasks, messages: envelope.payload.messages.filter((message: { root: string }) => message.root === activeProjectRootRef.current) });
+              setProposalGroups(current => current.map(group => ({ ...group, candidates: group.candidates.map(candidate => {
+                const task = tasks.find((task: AgentTask) => task.id === candidate.taskId);
+                return task && candidate.status !== "ready" ? { ...candidate, status: task.status, error: task.error } : candidate;
+              }) })));
+            }
             const envelopeSequence = Number(envelope.sequence ?? 0);
             if (envelope.type === "weave/ui") {
               void handleUiToolEvent(envelope.payload);
@@ -3183,6 +3209,32 @@ export default function Home() {
     }
   };
 
+  const selectProposalTarget = (target: ProposalTarget | null) => {
+    if (promptDraft.trim() && JSON.stringify(target) !== JSON.stringify(proposalTarget)) { setApiError("入力中の指示を送信するか消去してから、対象の案を切り替えてください。"); return false; }
+    setProposalTarget(target); return true;
+  };
+  const proposalSession = async () => {
+    const response = await fetch(`${apiBase}/ui/session`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: null }) });
+    const session = await response.json(); if (!response.ok) throw new Error(session.error); return { sessionId: session.sessionId, token: session.token };
+  };
+  const adoptSlideProposal = async (group: ProposalGroup, candidate: ProposalCandidate, slideIds: string[]) => {
+    if (draftSync !== "synced") throw new Error("編集中の内容を同期してから採用してください。");
+    const generation = editGenerationRef.current; const root = activeProjectRootRef.current; const baseline = deckPayload();
+    const response = await fetch(`${apiBase}/proposals/adopt`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ groupId: group.id, candidateId: candidate.id, version: candidate.version, slideIds, expectedRevision: serverRevision, uiSession: await proposalSession() }) });
+    const result = await response.json(); if (!response.ok) throw new Error(result.error);
+    if (root !== activeProjectRootRef.current) return;
+    if (generation === editGenerationRef.current) applyServerState(result as ServerState, true, true);
+    else {
+      const merged = mergeEditorDecks({ base: baseline, agent: result.deck, current: deckPayload(), scope: group.scope.kind });
+      applyServerState({ ...result, deck: merged.deck } as ServerState, true, true); setMergeConflicts(merged.conflicts); markDirty();
+    }
+    setProposalTarget(null); setApiError(null); reinject(); setAnnouncement("選択した案を採用しました");
+  };
+  const dismissSlideProposal = async (group: ProposalGroup) => {
+    const response = await fetch(`${apiBase}/proposals/dismiss`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ groupId: group.id, uiSession: await proposalSession() }) });
+    const result = await response.json(); if (!response.ok) throw new Error(result.error); setProposalGroups(result.proposals); setProposalTarget(null);
+  };
+
   const checkoutVariation = async (branch: string) => {
     try {
       const response = await fetch(`${apiBase}/variations/checkout`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ branch }) });
@@ -3372,7 +3424,8 @@ export default function Home() {
     if (!(canSendTurn(value, turnAnnotations) || referenceAttachments.length > 0) || !canSubmitAgentMessage) return;
     if (slide && boxes) setAnnotations((current) => refreshSlideAnnotations(current, slide.id, boxes));
     const requestDeck = deckPayload();
-    const requestEnvelope = contextEnvelope(turnAnnotations, overflowing, referenceAttachments);
+    if (proposalTarget && proposalTarget.slideId !== activeSlideId) { setApiError("入力中の指示の対象スライドに戻るか、入力を消して案を切り替えてください。"); return; }
+    const requestEnvelope = { ...contextEnvelope(turnAnnotations, overflowing, referenceAttachments), executionMode: request?.variation === true ? "compare" : executionMode };
     turnInFlightRef.current = true;
     setTurnSubmission({ phase: "submitting", threadId: codexState.activeThreadId, turnId: null });
     shouldAutoScrollRef.current = true;
@@ -3946,7 +3999,7 @@ export default function Home() {
         <nav className="more-navigation" aria-label="その他の機能"><button onClick={() => showActivity("history")}>履歴・保存</button><button onClick={(event) => togglePopover("quality", event.currentTarget)}>品質チェック</button><button onClick={() => showActivity("skills")}>スキル</button><button onClick={() => showActivity("shortcuts")}>ヘルプとショートカット</button></nav>
         <section><h3>表示</h3><label><span>カラーモード</span><select value={theme} onChange={(event) => setTheme(event.target.value as "dark" | "light")}><option value="dark">ダーク</option><option value="light">ライト</option></select></label><label><span>表示密度</span><select value={density} onChange={(event) => densityStore.write(event.target.value as Density)}><option value="comfortable">通常</option><option value="compact">コンパクト</option></select></label><p>スライド一覧は左、チャットを常に表示するコンテキストパネルは右にあります。タブでデザインや変更レビューへ切り替えられます。</p></section>
         <section><h3>Agent</h3>
-          {claudeSelected ? <p>Claude Codeの既存ログインを使用します。Claudeは会話とレビューを担当し、編集は選択したCodexモデルへ委任します。</p> : <label><span>承認方法</span><select value={approvalPolicy} onChange={(event) => setApprovalPolicy(event.target.value)}><option value="never">確認しない</option><option value="on-request">必要なとき確認</option><option value="untrusted">未確認コマンドのみ</option></select></label>}
+          {claudeSelected ? <p>Claude Codeの既存ログインを使用します。Claudeは会話とレビューを担当し、編集は選択したCodexモデルへ委任します。</p> : <p>編集権限は常に付与します。選択した変更範囲で実装し、オーケストレータがレビューします。</p>}
           {codexState.catalog.modelProvider && <pre className="settings-output">{JSON.stringify(codexState.catalog.modelProvider, null, 2)}</pre>}
         </section>
         <section><h3>Claude Code</h3><p>{codexState.catalog.providers?.claude?.connection.error ?? (codexState.catalog.providers?.claude?.ready ? "既存ログインで接続済み" : "接続を確認中…")}</p><button data-ui-agent-exclude="true" onClick={() => { void fetch(`${apiBase}/agent/catalog/refresh`, { method: "POST" }).catch((error) => setApiError(error.message)); }}>接続を再確認</button></section>
@@ -4180,7 +4233,7 @@ export default function Home() {
                 <label><span>変更範囲</span><select value={changeScope} onChange={(event) => setChangeScope(event.target.value as ChangeScope)}><option value="element" disabled={!selectedId}>この要素だけ</option><option value="current-slide">現在のスライド</option><option value="selected-slides">選択したスライド</option><option value="deck">デッキ全体</option></select></label>
                 <label><span>実装担当（Codex）</span><select aria-label="実装担当のモデル" value={workerModel} onChange={event => workerModelStore.write(event.target.value)}><option value="">モデルを選択</option>{codexState.catalog.models.filter((model: any) => model.provider === "codex").map((model: any) => <option key={model.id} value={model.id}>{model.displayName ?? model.id}</option>)}</select></label>
                 <label><span>実装の推論レベル</span><select aria-label="実装担当の推論レベル" value={workerEffort} onChange={event => setWorkerEffort(event.target.value)}>{((codexState.catalog.models.find((model: any) => model.id === workerModel) as any)?.supportedReasoningEfforts ?? []).map((option: any) => <option key={option.reasoningEffort} value={option.reasoningEffort}>{option.reasoningEffort}</option>)}</select></label>
-                <label><span>実行</span><select value={executionMode} onChange={(event) => { const mode = event.target.value as ExecutionMode; setExecutionMode(mode); }}><option value="apply">編集を任せる</option><option value="confirm">確認してから編集</option></select></label>
+                <label><span>実行</span><select value={executionMode} onChange={(event) => { const mode = event.target.value as ExecutionMode; setExecutionMode(mode); }}><option value="apply">編集をまかせる</option><option value="compare">3案から選ぶ</option></select></label>
                 <p>Agentは{changeScope === "element" ? `「${blockLabels[sel?.kind ?? ""] ?? "選択要素"}」だけ` : changeScope === "current-slide" ? `スライド${activeSlide}だけ` : changeScope === "selected-slides" ? `選択した${selectedSlideIds.size || 1}枚のスライド` : "デッキ全体"}を変更できます。</p>
               </div>
               <div className="context-chip" role="group" aria-label="参照対象">
@@ -4207,6 +4260,7 @@ export default function Home() {
                   <button type="button" aria-label={`${attachment.name}を添付から外す`} onClick={() => setReferenceAttachments((current) => current.filter((item) => item.path !== attachment.path))}>×</button>
                 </div>)}
               </div>}
+              {proposalTarget && <div className="context-target-chip">修正対象：{proposalTarget.candidateId.toUpperCase()}案 · {proposalTarget.slideId} <button type="button" onClick={() => { if (promptDraft.trim()) { setApiError("入力を送信するか消去してから対象を変更してください。"); return; } setProposalTarget(null); }}>通常編集に戻す</button></div>}
               <textarea ref={promptRef} value={promptDraft} onChange={onPromptChange} onCompositionStart={() => { compositionRef.current = true; }} onCompositionEnd={onPromptCompositionEnd} onKeyDown={onPromptKeyDown} placeholder={agentReady ? conversationWorking ? "追加の指示・質問を送れます…" : "プロジェクト作成、スライド編集、画面の操作を依頼…" : "Codexへの接続を待っています…"} aria-label="Agentへのメッセージ" aria-busy={turnBusy} maxLength={20000} disabled={!agentReady} />
               <div className="chat-actions">
                 <input ref={referenceInputRef} className="sr-only" type="file" multiple onChange={(event) => { if (event.target.files) void uploadReferences(event.target.files); }} />
@@ -4267,6 +4321,7 @@ export default function Home() {
 
           <div className="canvas-workspace">
           <div className="canvas-area">
+            {activeSlideId && <SlideProposals key={`${project?.root}:${activeSlideId}`} groups={proposalGroups} slideId={activeSlideId} apiBase={apiBase} syncReady={draftSync === "synced" && !historyBusy} onTarget={selectProposalTarget} onAdopt={adoptSlideProposal} onDismiss={dismissSlideProposal} />}
             {showVariationPrompt && (
               <div className="variation-prompt">
                 <div><span>新しい探索セッション</span><button aria-label="探索セッションの作成を閉じる" onClick={() => setShowVariationPrompt(false)}>×</button></div>
