@@ -125,10 +125,10 @@ export class Orchestration {
     if (!["never", "on-request", "untrusted"].includes(c.approvalPolicy)) throw new Error("The implementation approval policy is required.");
     if (c.workerModel.startsWith('claude:')) throw new Error('The implementation agent must use Codex.');
   }
-  async create(threadId, args) {
+  async create(threadId, args, originTurnId) {
     const c = this.context(threadId);
     this.assertWorker(threadId);
-    const task = { id: randomUUID(), threadId, root: c.root, model: c.workerModel, effort: c.workerEffort, approvalPolicy: c.approvalPolicy, prompt: args.prompt, variation: args.variation === true, scope: args.scope, allowSkillChanges: args.allowSkillChanges, contextEnvelope: structuredClone(c.contextEnvelope), version: c.version, latestInstruction: this.messages.filter(message => message.threadId === threadId && !message.automatic).at(-1).text, instructionStatus: 'current', proposal: args.proposal === undefined ? null : args.proposal, status: args.deferStart === true ? 'preparing' : 'queued', createdAt: Date.now(), workerThreadId: null, workerTurnId: null, attempt: 0, activity: '開始待ち', report: null, review: null, error: null };
+    const task = { id: randomUUID(), threadId, originTurnId, root: c.root, model: c.workerModel, effort: c.workerEffort, approvalPolicy: c.approvalPolicy, prompt: args.prompt, variation: args.variation === true, scope: args.scope, allowSkillChanges: args.allowSkillChanges, contextEnvelope: structuredClone(c.contextEnvelope), version: c.version, latestInstruction: this.messages.filter(message => message.threadId === threadId && !message.automatic).at(-1).text, instructionStatus: 'current', proposal: args.proposal === undefined ? null : args.proposal, status: args.deferStart === true ? 'preparing' : 'queued', createdAt: Date.now(), workerThreadId: null, workerTurnId: null, attempt: 0, activity: '開始待ち', report: null, review: null, error: null };
     this.tasks.push(task); await this.save(); if (args.deferStart !== true) void this.run();
     return { taskId: task.id, status: task.status, message: 'Task accepted. Work runs independently. Respond to the user now; you will be notified when review is needed.' };
   }

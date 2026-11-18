@@ -322,3 +322,37 @@ test('execution selection updates the current turn before delegation, persists, 
   assert.match(api, /url.pathname === "\/api\/codex\/execution-mode\/confirm"\s*\? await orchestrator.confirmExecutionMode/);
   assert.doesNotMatch(api, /payload\.(?:human|executionModeSelected)\b/);
 });
+
+
+test('delegated tasks retain the originating chat turn in storage and snapshots', async t => {
+  const { manager, params, events } = await setup(t);
+  await manager.receive(input('origin'));
+  const { taskId } = await manager.create('parent', { ...args, deferStart: true }, 'chat-turn');
+  assert.equal(manager.task('parent', taskId).originTurnId, 'chat-turn');
+  assert.equal(manager.snapshot('/project').tasks.find(task => task.id === taskId).originTurnId, 'chat-turn');
+  assert.equal(JSON.parse(await readFile(params.path, 'utf8')).tasks.find(task => task.id === taskId).originTurnId, 'chat-turn');
+  assert.equal(events.at(-1).value.tasks.find(task => task.id === taskId).originTurnId, 'chat-turn');
+  const api = await readFile(new URL('../server/local-api.mjs', import.meta.url), 'utf8');
+  assert.match(api, /delegateEdit\(owner.threadId, args, owner.turnId\)/);
+  assert.match(api, /delegateEdit\(params.threadId, args, params.turnId\)/);
+  const creationCalls = api.match(/orchestrator.create\(threadId, .*$/gm);
+  assert.equal(creationCalls.length, 3);
+  for (const call of creationCalls) assert.match(call, /, turnId\);$/);
+});
+
+test('task cards render at their origin turn with legacy cards first and receipts last', async () => {
+  const page = await readFile(new URL('../app/page.tsx', import.meta.url), 'utf8');
+  const cards = await readFile(new URL('../app/components/AgentTasks.tsx', import.meta.url), 'utf8');
+  const legacy = page.indexOf('turnId={null} onAction={handleAgentTaskAction}');
+  const turns = page.indexOf('{visibleTurns.map((turn, turnIndex) => {');
+  const logs = page.indexOf('className="work-details"', turns);
+  const inline = page.indexOf('turnId={turn.id} onAction={handleAgentTaskAction}', turns);
+  const end = page.indexOf('</section>;', inline);
+  const receipts = page.indexOf('<OrchestratorReceipts snapshot={orchestration}');
+  assert.ok(legacy < turns && turns < logs && logs < inline && inline < end && end < receipts);
+  assert.ok(cards.includes('task.originTurnId === undefined || task.originTurnId === null : task.originTurnId === turnId'));
+  assert.ok(!cards.includes('.reverse()') && !cards.includes('.slice(-30)'));
+  assert.ok(!cards.includes('Codex担当の作業') && !cards.includes('件進行中'));
+  assert.ok(cards.includes('key={task.id}') && cards.includes("onAction(task, 'cancel')"));
+  assert.ok(page.includes('}, [codexState.items, agentRunning]);'));
+});

@@ -22,7 +22,7 @@ import { AnnotationOverlay } from "./components/AnnotationOverlay";
 import type { Annotation, AnnotationGestureKind, AnnotationRect, PointerCandidate, ResizeHandle } from "./components/AnnotationOverlay";
 import { useEditorDialog } from "./components/EditorDialog";
 import { SlideProposals, type ProposalGroup, type ProposalCandidate, type ProposalTarget } from "./components/SlideProposals";
-import { AgentTasks, type AgentTask, type OrchestrationSnapshot } from "./components/AgentTasks";
+import { AgentTasks, OrchestratorReceipts, type AgentTask, type OrchestrationSnapshot } from "./components/AgentTasks";
 import { ApplicationSkillDialog } from "./components/ApplicationSkillDialog";
 import { ApplicationSkillLearning } from "./components/ApplicationSkillLearning";
 import { isApplicationSkill, type ApplicationSkillEntry, type SkillEntry, type SkillScope } from "./components/application-skill-requests";
@@ -1390,6 +1390,7 @@ export default function Home() {
   }, [quality, projectEventDiagnostics]);
 
   const activeThread = codexState.activeThreadId ? codexState.threads[codexState.activeThreadId] : null;
+  const handleAgentTaskAction = (task: AgentTask, action: 'approve' | 'cancel') => { void fetch(`${apiBase}/agent/tasks/${action}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: task.threadId, taskId: task.id, version: task.version, uiSession: { sessionId: uiSessionRef.current.sessionId, token: uiSessionRef.current.token } }) }).then(async response => { const result = await response.json(); if (!response.ok) throw new Error(result.error); }).catch(error => setApiError(error.message)); };
   const executionModePending = orchestration.executionModeChoices.some(choice => choice.threadId === codexState.activeThreadId);
   const activeThreadName = activeThread ? displayThreadName(activeThread.name) || activeThread.preview || "新しい制作タスク" : "タスク未選択";
   const selectedModelInfo = useMemo(() => codexState.catalog.models.find((model: any) => (model.id ?? model.model) === selectedModel) as any, [codexState.catalog.models, selectedModel]);
@@ -4174,6 +4175,7 @@ export default function Home() {
             <div ref={messagesRef} className="messages" role="log" aria-live="polite" aria-relevant="additions text" aria-label="制作タスクのやり取り" aria-busy={turnBusy} onScroll={(event) => { const element = event.currentTarget; shouldAutoScrollRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48; }}>
               {(!codexState.activeThreadId || (activeThread && Array.isArray(activeThread.raw?.turns) && activeThread.turnIds.length === 0 && !orchestration.messages.some(message => message.threadId === codexState.activeThreadId))) && <p className="empty-thread"><strong>UIの操作から資料づくりまで、AIアシスタントにお任せください。</strong><br />「スライドを整えて」「3案を比べたい」「履歴を開いて」など、やりたいことをそのまま伝えるだけで始められます。</p>}
               {activeTurns.length > visibleTurns.length && <p className="trimmed-log">最新{visibleTurns.length}ターンを表示しています。</p>}
+              <AgentTasks snapshot={orchestration} threadId={codexState.activeThreadId} turnId={null} onAction={handleAgentTaskAction} />
               {visibleTurns.map((turn, turnIndex) => {
                 const turnItems = selectTurnItems(codexState, turn.id);
                 const messageItems = turnItems.filter(isConversationMessage);
@@ -4185,6 +4187,7 @@ export default function Home() {
                     <summary><span>作業ログ</span><span>{workItems.length}件</span></summary>
                     <div className="work-items" aria-label={`作業ログ ${workItems.length}件`}>{workItems.map((item) => <ItemCard key={item.id} item={item} />)}</div>
                   </details>}
+                  <AgentTasks snapshot={orchestration} threadId={codexState.activeThreadId} turnId={turn.id} onAction={handleAgentTaskAction} />
                   {activeThreadAttachments.filter((attachment) => attachment.turnId === turn.id).map((attachment) => <AnnotationAttachment
                     key={attachment.id}
                     slideLabel={attachment.slideLabel}
@@ -4198,7 +4201,7 @@ export default function Home() {
                   {(turn.status !== "completed" || turn.diff) && <footer className="turn-status"><span role="status">{turn.status}</span>{turn.diff && <details><summary>ターンの差分</summary><pre>{turn.diff}</pre></details>}</footer>}
                 </section>;
               })}
-              <AgentTasks snapshot={orchestration} threadId={codexState.activeThreadId} onAction={(task, action) => { void fetch(`${apiBase}/agent/tasks/${action}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: task.threadId, taskId: task.id, version: task.version, uiSession: { sessionId: uiSessionRef.current.sessionId, token: uiSessionRef.current.token } }) }).then(async response => { const result = await response.json(); if (!response.ok) throw new Error(result.error); }).catch(error => setApiError(error.message)); }} />
+              <OrchestratorReceipts snapshot={orchestration} threadId={codexState.activeThreadId} />
               {unmatchedAttachments.map((attachment) => <AnnotationAttachment
                 key={attachment.id}
                 slideLabel={attachment.slideLabel}

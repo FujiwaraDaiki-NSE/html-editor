@@ -1,4 +1,5 @@
 export type AgentTask = {
+  originTurnId?: string | null;
   applied?: boolean;
   startedAt?: number;
   proposal?: { groupId: string; candidateId: string } | null;
@@ -11,13 +12,14 @@ export type MessageReceipt = { id: string; threadId: string; root: string; text:
 export type OrchestrationSnapshot = { tasks: AgentTask[]; messages: MessageReceipt[]; executionModeChoices: Array<{ threadId: string; root: string }> };
 const labels: Record<string, string> = { preparing: '準備中', queued: '開始待ち', awaiting_approval: '編集前の確認待ち', running: 'Codexが作業中', reviewing: 'オーケストレータがレビュー中', applying: 'レビュー合格・反映中', cancelling: '停止処理中', completed: '反映済み', cancelled: '中止', failed: '失敗' };
 const finished = new Set(['completed', 'cancelled', 'failed']);
-export function AgentTasks({ snapshot, threadId, onAction }: { snapshot: OrchestrationSnapshot; threadId: string | null; onAction: (task: AgentTask, action: 'approve' | 'cancel') => void }) {
-  const tasks = snapshot.tasks.filter(task => task.threadId === threadId).slice(-30).reverse();
+export function OrchestratorReceipts({ snapshot, threadId }: { snapshot: OrchestrationSnapshot; threadId: string | null }) {
   const messages = snapshot.messages.filter(message => message.threadId === threadId && !message.automatic && ['queued', 'failed', 'unknown'].includes(message.status));
+  return <>{messages.map(message => <article className="orchestrator-receipt" key={message.id} role={['failed', 'unknown'].includes(message.status) ? 'alert' : 'status'}><strong>{['failed', 'unknown'].includes(message.status) ? '送信を確認してください' : '受付済み・オーケストレータへの引き渡し待ち'}</strong><p>{message.text}</p>{message.error && <p>{message.error}</p>}</article>)}</>;
+}
+export function AgentTasks({ snapshot, threadId, turnId, onAction }: { snapshot: OrchestrationSnapshot; threadId: string | null; turnId: string | null; onAction: (task: AgentTask, action: 'approve' | 'cancel') => void }) {
+  const tasks = snapshot.tasks.filter(task => task.threadId === threadId && (turnId === null ? task.originTurnId === undefined || task.originTurnId === null : task.originTurnId === turnId));
   return <>
-    {messages.map(message => <article className="orchestrator-receipt" key={message.id} role={['failed', 'unknown'].includes(message.status) ? 'alert' : 'status'}><strong>{['failed', 'unknown'].includes(message.status) ? '送信を確認してください' : '受付済み・オーケストレータへの引き渡し待ち'}</strong><p>{message.text}</p>{message.error && <p>{message.error}</p>}</article>)}
-    {tasks.length > 0 && <section className="agent-task-list" aria-label="Codex担当の作業一覧">
-      <header><strong>Codex担当の作業</strong><small>{tasks.filter(task => !finished.has(task.status)).length}件進行中</small></header>
+    {tasks.length > 0 && <section className="agent-task-list" aria-label="担当作業">
       {tasks.map(task => <article className={`agent-task-card ${task.status}`} key={task.id} aria-label={`担当作業 ${task.id.slice(0, 8)}`}>
         <header><strong>{task.status === 'completed' && task.proposal ? task.applied ? '選択したスライドへ採用済み' : '比較できます・未採用' : labels[task.status] ?? task.status}</strong><small>{task.model} · {task.attempt}回目</small></header>
         <p className="agent-task-request">{task.prompt}</p>
