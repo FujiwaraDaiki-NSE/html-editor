@@ -4,7 +4,7 @@
 
 ## 起動
 
-Node.js 22.13以降と、ログイン済みのCodex CLIが必要です。
+Node.js 22.13以降と、利用する接続先のCLI（Codex CLIまたはClaude Code）が必要です。
 
 ```bash
 npm install
@@ -22,6 +22,26 @@ WEAVE_WEB_HOST=172.30.128.50 WEAVE_WEB_PORT=3444 npm run dev
 外部PCでは `http://172.30.128.50:3444` を開きます。ローカルAPIは別ポートへ公開せず、Vite経由で利用します。
 
 `npm run dev`は画面、ローカルAPI、Codex app-serverをまとめて起動します。OpenAIの資格情報をアプリ内へコピーせず、Codex CLIの既存ログインを利用します。
+
+### Claude Codeを使う
+
+editorを起動するホストの同じユーザーで、Claude Codeにログインしてください。動作確認済みのバージョンは2.1.322です。`--restricted`と`--permission-prompts`に対応したCLIが必要です。
+
+```bash
+claude auth login
+claude auth status
+npm run dev
+```
+
+Agent入力欄のモデルメニューで **Claude Opus / Claude Sonnet / Claude Haiku** を選びます。初回はモデルを明示的に選択してください。Claude選択時は `editor → ローカルAPI → claude -p → Claude` の経路で実行し、Codex app-serverを経由しません。Codexが未接続でもClaudeを利用できます。モデル名にはClaude Codeの公式エイリアスを使い、別モデルへの自動フォールバックは行いません。実際のモデル利用権限はClaude Codeのアカウントに従います。
+
+Claude Codeの既存ログインをそのまま使うため、editorへのAPIキー入力は不要です。接続失敗時は「設定 → Claude Code → 接続を再確認」で再確認できます。認証状態は接続確認時点の値で、実行時の認証期限切れなどはその依頼の失敗として表示します。
+
+Claudeではプロジェクト内のRead / Edit / Write / Glob / Grepを利用します。restrictedモードでファイル操作の範囲を制限し、シェル実行とMCPサーバーの自動接続は許可しません。既存の編集範囲検証・プレビュー・変更レビュー・同時編集の保全処理は共通です。シェルコマンドによる資料変換などが必要な依頼はCodexを選んでください。
+
+会話の続きはClaude CodeのセッションIDを指定して再開します。editor用の会話履歴はリポジトリの `.weave/claude/` にプロジェクト別に保存し、Git管理の対象にしません。Claude Code自体のセッション保存先はCLIの通常設定に従います。実行中にeditorが終了した依頼は成功として扱わず、自動再送もしません。
+
+CodexとClaudeの間でモデルを切り替えると、新しい会話を開始します。会話履歴は接続先ごとに保持します。Claudeでは実行中の追加指示、会話分岐、内部ゴール、editorからの手動圧縮操作に対応していません。停止後または完了後に次の依頼を送れます。Claudeの承認方式はプロジェクト内のファイル編集許可で固定し、Codexの承認設定とは独立しています。
 
 ### Dockerで常駐起動（Linux）
 
@@ -50,6 +70,15 @@ docker compose stop
 ```
 
 画面は `http://127.0.0.1:3444`、ローカルAPIは `127.0.0.1:4317` を使います。Linuxのhostネットワークで起動します。再起動ポリシーは `unless-stopped` です。Docker起動時やプロセス異常終了時に自動起動し、明示的に停止した場合は停止状態を維持します。
+
+DockerでもClaudeを使う場合は、ホストでログインを済ませ、`.env` に `WEAVE_CLAUDE_BIN` としてネイティブ版Claude Code実行ファイルの絶対パスを指定してください。`command -v claude` で確認できます。npmのJavaScriptランチャーではなく、Linux用ネイティブ実行ファイルを使います。`.claude/` と `.claude.json` がホストに存在する必要があります。次の追加設定で実行ファイルと既存ログイン・セッションをコンテナへ共有します。
+
+```bash
+docker compose -f compose.yaml -f compose.claude.yaml up -d --build
+docker compose -f compose.yaml -f compose.claude.yaml exec web claude auth status
+```
+
+CLIを更新した場合はコンテナを再作成して共有先の実行ファイルを更新してください。
 
 ## 現在触れる機能
 

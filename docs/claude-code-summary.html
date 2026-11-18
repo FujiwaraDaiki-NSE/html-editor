@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Claude Code接続の実装概要</title>
+<style>body{font:16px/1.8 system-ui,sans-serif;max-width:960px;margin:48px auto;padding:0 24px;color:#202534}code{background:#edf0f5;padding:2px 6px;border-radius:4px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccd3df;padding:12px;text-align:left}h1,h2{line-height:1.4}</style>
+<h1>Claude Code接続の実装概要</h1>
+<p>モデル選択にClaude Codeを追加し、Codex app-serverを経由せずに既存ログインでHTMLスライドを編集する。</p>
+<h2>実行経路と責務</h2>
+<table><tr><th>対象</th><th>責務</th></tr><tr><td>app/page.tsx</td><td>明示的なモデル選択、接続先別の送信可否、実行中の停止、対応しない会話操作の無効化。</td></tr><tr><td>server/agent-service.mjs</td><td>モデルと会話IDに対応する実行先へ振り分ける。Claudeの依頼をCodexへ転送しない。接続状態とモデル一覧を統合する。</td></tr><tr><td>server/claude/service.mjs</td><td>claude -pを起動し、NDJSONの本文・ツール結果・最終結果を共通のeditorイベントへ変換する。ネイティブセッションIDとeditor用履歴を保持する。</td></tr><tr><td>server/local-api.mjs</td><td>接続先共通で実行前スナップショット、プレビュー、編集範囲の検証、同時編集のマージ、復旧を行う。/api/agent/を提供し、既存の/api/codex/も維持する。</td></tr></table>
+<h2>認証と操作範囲</h2>
+<p>Claude Codeのログインをそのまま利用する。資格情報の読み取り・複製やAPIキー入力は追加しない。Read / Edit / Write / Glob / Grepをrestrictedモードで利用し、シェル実行とMCP接続は提供しない。共通editorスキルは実行時の追加指示へ渡す。</p>
+<h2>状態と履歴</h2>
+<p>起動受付と完了を分け、正常終了コード・success結果・権限拒否がないことを確認してから完了にする。停止時はプロセスグループへSIGTERMを送り、終了しなければSIGKILLを送る。プロセス終了前に完了を通知しない。異常終了、結果の欠落、JSON破損、権限拒否、履歴保存失敗は失敗として扱う。</p>
+<p>会話はプロジェクト別に保存し、履歴からの再開は正確なClaudeセッションIDで行う。再起動時に結果が記録されていない依頼は失敗と表示し、自動で再送しない。内部コンテキストはClaudeへ渡す一方、ユーザーのメッセージ表示は入力本文だけを保持する。</p>
+<h2>提供する操作と制限</h2>
+<p>新規会話、会話再開、一覧・検索、名前変更、アーカイブ、editor履歴削除、モデル選択、実行停止に対応する。editor履歴の削除はClaude Code側のセッションを消去しない。実行中の追加指示、会話分岐、内部ゴール、手動圧縮は未対応。既存Codex側の操作は維持する。</p>
+<h2>確認</h2>
+<p>実Claude Code 2.1.322で一時HTMLの編集を確認。editor画面からClaude Sonnetを選択し、スライドの見出し変更と変更レビューへの反映を確認。自動テストではストリーミング重複防止、セッション再開、停止、権限拒否、異常終了、プロジェクトの履歴分離、Codex未接続時の実行を検証する。</p>
+<p>参照: <a href="https://code.claude.com/docs/en/headless">Claude Codeプログラム実行</a>、<a href="https://code.claude.com/docs/en/cli-reference">CLIリファレンス</a>。</p>
+</html>

@@ -582,6 +582,7 @@ export default function Home() {
   const annotationGestureRef = useRef<AnnotationGesture | null>(null);
   const popoverTriggerRef = useRef<HTMLButtonElement | null>(null);
   const threadMenuRef = useRef<HTMLDivElement>(null);
+  const autoOpenThreadRef = useRef(true);
   const threadDialogRef = useRef<HTMLDivElement>(null);
   const galleryRef = useRef<HTMLDivElement>(null);
   const projectSwitcherRef = useRef<HTMLButtonElement>(null);
@@ -590,7 +591,13 @@ export default function Home() {
   const templatePreviewSourceHtmlRef = useRef<string | null>(null);
   const markDirty = () => { editGenerationRef.current += 1; browserDirtyRef.current = true; setSaved(false); setDraftSync("saving"); };
 
-  const agentReady = codexState.connection.status === "connected" && agentProjectReady;
+  const selectedProvider = selectedModel.startsWith("claude:") ? "claude" : "codex";
+  const providerState = codexState.catalog.providers?.[selectedProvider];
+  const claudeSelected = selectedProvider === "claude";
+  const claudeThread = codexState.activeThreadId?.startsWith("claude:") === true;
+  const threadProviderMatches = !codexState.activeThreadId || (claudeThread ? "claude" : "codex") === selectedProvider;
+  const modelAvailable = codexState.catalog.models.some((model: any) => model.id === selectedModel && model.available === true);
+  const agentReady = codexState.connection.status === "connected" && providerState?.ready === true && modelAvailable && threadProviderMatches && agentProjectReady;
   const agentRunning = selectThreadRunning(codexState, codexState.activeThreadId);
   const activeTurns = selectThreadTurns(codexState, codexState.activeThreadId);
   const visibleTurns = activeTurns.slice(-100);
@@ -600,7 +607,7 @@ export default function Home() {
   const blockingPendingRequests = [...pendingRequestGroups.active, ...pendingRequestGroups.unscoped];
   const turnPresentation = deriveTurnPresentation(turnSubmission, codexState.activeThreadId, agentRunning);
   const turnBusy = turnSubmission.phase !== "idle" || codexState.activeTurnId !== null;
-  const canSubmitAgentMessage = !turnInFlightRef.current || agentRunning;
+  const canSubmitAgentMessage = (!turnInFlightRef.current || agentRunning) && !(claudeSelected && agentRunning);
   const slideScale = manualZoom ?? fitScale;
   const zoomMode = manualZoom === null ? "fit" : "manual";
   const activeSlideId = slides[activeSlide - 1]?.id;
@@ -1042,19 +1049,19 @@ export default function Home() {
   const activeThread = codexState.activeThreadId ? codexState.threads[codexState.activeThreadId] : null;
   const activeThreadName = activeThread ? displayThreadName(activeThread.name) || activeThread.preview || "新しい制作タスク" : "タスク未選択";
   const selectedModelInfo = useMemo(() => codexState.catalog.models.find((model: any) => (model.id ?? model.model) === selectedModel) as any, [codexState.catalog.models, selectedModel]);
-  /* Display-only fallback: a model that declares no supported efforts still gets the three
-     standard choices in the picker, while `applyServerState` leaves such a model's effort alone. */
-  const availableEfforts = useMemo(() => selectedModelInfo?.supportedReasoningEfforts?.map((option: any) => option.reasoningEffort) ?? ["low", "medium", "high"], [selectedModelInfo]);
-  const connectionStatus = codexState.connection.status;
-  const connectionError = codexState.connection.error;
+  const availableEfforts = useMemo(() => selectedModelInfo?.supportedReasoningEfforts?.map((option: any) => option.reasoningEffort) ?? [], [selectedModelInfo]);
+  const connectionStatus = codexState.connection.status !== "connected" ? codexState.connection.status : providerState?.connection.status ?? "connecting";
+  const connectionError = codexState.connection.error ?? providerState?.connection.error;
   const agentHeaderState = (() => {
     const connectionLabels: Record<typeof connectionStatus, string> = {
-      connecting: "Codexへ接続中…",
+      connecting: claudeSelected ? "Claude Codeへ接続中…" : "Codexへ接続中…",
       connected: "",
-      reconnecting: "Codexへ再接続中…",
+      reconnecting: claudeSelected ? "Claude Codeへ再接続中…" : "Codexへ再接続中…",
       disconnected: "接続できません",
       incompatible: "互換性を確認できません",
     };
+    if (!selectedModel || (!modelAvailable && providerState?.ready === true)) return { kind: "waiting", label: selectedModel ? "選択したモデルを利用できません。接続状態を確認してください" : "モデルを選択してください" };
+    if (!threadProviderMatches) return { kind: "waiting", label: "この会話の接続先に対応するモデルを選択してください" };
     if (connectionStatus !== "connected") {
       return {
         kind: connectionStatus,
@@ -1139,11 +1146,10 @@ export default function Home() {
       setPreviewHighlightSlideId(null);
     }
     const models = state.codex.catalog.models ?? [];
-    const firstModel = models[0] as any;
     const current = agentModelStore.read();
     const selected = models.find((model: any) => (model.id ?? model.model) === current.model) as any;
-    const nextModel = selected ? current.model : firstModel?.id ?? firstModel?.model ?? "";
-    const selectedModelForEffort = selected ?? firstModel;
+    const nextModel = current.model;
+    const selectedModelForEffort = selected;
     const supported = selectedModelForEffort?.supportedReasoningEfforts?.map((option: any) => option.reasoningEffort) ?? [];
     const nextEffort = supported.length > 0 && !supported.includes(current.effort) ? selectedModelForEffort.defaultReasoningEffort ?? supported[0] : current.effort;
     if (nextModel !== current.model || nextEffort !== current.effort) agentModelStore.write({ model: nextModel, effort: nextEffort });
@@ -1181,8 +1187,8 @@ export default function Home() {
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     const connect = async () => {
       try {
-        const response = await fetch(`${apiBase}/codex/events?after=${eventSequenceRef.current}`);
-        if (!response.ok || !response.body) throw new Error("Codexのイベント接続を利用できません。");
+        const response = await fetch(`${apiBase}/agent/events?after=${eventSequenceRef.current}`);
+        if (!response.ok || !response.body) throw new Error("Agentのイベント接続を利用できません。");
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let pending = "";
@@ -1322,13 +1328,14 @@ export default function Home() {
       void (async () => {
         try {
           const query = new URLSearchParams({ archived: String(showArchivedThreads), ...(threadSearch.trim() ? { q: threadSearch.trim() } : {}) });
-          const response = await fetch(`${apiBase}/codex/threads?${query}`);
+          const response = await fetch(`${apiBase}/agent/threads?${query}`);
           const result = await response.json();
           if (!response.ok) throw new Error(result.error ?? "制作タスク一覧を取得できませんでした。");
           if (canceled) return;
           dispatchCodex({ type: "threadsLoaded", threads: result.data ?? [], archived: showArchivedThreads });
-          if (!codexState.activeThreadId && result.data?.[0]) {
-            const read = await fetch(`${apiBase}/codex/thread/read`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: result.data[0].id }) });
+          if (autoOpenThreadRef.current && !codexState.activeThreadId && result.data?.[0]) {
+            autoOpenThreadRef.current = false;
+            const read = await fetch(`${apiBase}/agent/thread/read`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: result.data[0].id }) });
             if (read.ok && !canceled) { const value = await read.json(); dispatchCodex({ type: "threadLoaded", thread: value.thread, activate: true }); }
           }
         } catch (error) {
@@ -2875,7 +2882,7 @@ export default function Home() {
     setAgentPreview({ phase: "checking", changedSlideIds: [], sequence: 0 });
     try {
       // Variations are branch trials, so annotations stay on the canvas instead of being consumed.
-      const response = await fetch(`${apiBase}/variations/generate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt, deck: requestDeck, clientUserMessageId: createMessageId(), model: selectedModel || undefined, effort: reasoningEffort, approvalPolicy, contextEnvelope: contextEnvelope(variationAnnotations, overflowingIds(liveOverflowMeasurements())) }) });
+      const response = await fetch(`${apiBase}/variations/generate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt, deck: requestDeck, clientUserMessageId: createMessageId(), model: selectedModel, effort: reasoningEffort, approvalPolicy: claudeSelected ? null : approvalPolicy, contextEnvelope: contextEnvelope(variationAnnotations, overflowingIds(liveOverflowMeasurements())) }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "デザイン案を生成できませんでした。");
       if (response.status !== 202 || typeof result.thread?.id !== "string" || typeof result.turn?.id !== "string") throw new Error("デザイン案の受付状態を確認できませんでした。");
@@ -3001,7 +3008,7 @@ export default function Home() {
     try {
       let threadId = codexState.activeThreadId;
       if (!threadId) {
-        const startResponse = await fetch(`${apiBase}/codex/thread/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ approvalPolicy, model: selectedModel || undefined }) });
+        const startResponse = await fetch(`${apiBase}/agent/thread/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ approvalPolicy: claudeSelected ? null : approvalPolicy, model: selectedModel }) });
         const started = await startResponse.json();
         if (!startResponse.ok) throw new Error(started.error ?? "会話を開始できませんでした。");
         threadId = started.thread.id;
@@ -3016,8 +3023,8 @@ export default function Home() {
         setAgentPreview({ phase: "checking", changedSlideIds: [], sequence: 0 });
       }
       const runningTurnId = codexState.activeTurnId;
-      const endpoint = steering ? "codex/turn/steer" : "codex/turn/start";
-      const response = await fetch(`${apiBase}/${endpoint}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId, prompt: value, clientUserMessageId: createMessageId(), selectedId, deck: requestDeck, model: selectedModel || undefined, effort: reasoningEffort, approvalPolicy, contextEnvelope: requestEnvelope, attachments: referenceAttachments }) });
+      const endpoint = steering ? "agent/turn/steer" : "agent/turn/start";
+      const response = await fetch(`${apiBase}/${endpoint}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId, prompt: value, clientUserMessageId: createMessageId(), selectedId, deck: requestDeck, model: selectedModel, effort: reasoningEffort, approvalPolicy: claudeSelected ? null : approvalPolicy, contextEnvelope: requestEnvelope, attachments: referenceAttachments }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Agentへの依頼を開始できませんでした。");
       if (response.status !== 202 || (!steering && typeof result.turn?.id !== "string") || (steering && typeof result.turnId !== "string")) throw new Error("Agentへの依頼受付状態を確認できませんでした。");
@@ -3061,26 +3068,28 @@ export default function Home() {
 
   const interruptAgent = async () => {
     try {
-      const response = await fetch(`${apiBase}/codex/turn/interrupt`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: codexState.activeThreadId }) });
+      const response = await fetch(`${apiBase}/agent/turn/interrupt`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: codexState.activeThreadId }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "進行中のAgentを停止できませんでした。");
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   };
 
   const newThread = async () => {
+    autoOpenThreadRef.current = false;
     clearTurnSubmission();
     try {
-      const response = await fetch(`${apiBase}/codex/thread/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ approvalPolicy, model: selectedModel || undefined }) });
+      const response = await fetch(`${apiBase}/agent/thread/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ approvalPolicy: claudeSelected ? null : approvalPolicy, model: selectedModel }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "制作タスクを開始できませんでした。");
       dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
+      if (typeof result.thread.model === "string") { const current = agentModelStore.read(); agentModelStore.write({ model: result.thread.model, effort: typeof result.thread.effort === "string" ? result.thread.effort : current.effort }); }
       setApiError(null);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   };
 
   const openThread = async (threadId: string) => {
     try {
-      const response = await fetch(`${apiBase}/codex/thread/resume`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId }) });
+      const response = await fetch(`${apiBase}/agent/thread/resume`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "制作タスクを再開できませんでした。");
       dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
@@ -3092,7 +3101,7 @@ export default function Home() {
     const threadId = codexState.activeThreadId;
     if (!threadId) return;
     try {
-      const response = await fetch(`${apiBase}/codex/thread/action`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action, params: { threadId, ...params } }) });
+      const response = await fetch(`${apiBase}/agent/thread/action`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action, params: { threadId, ...params } }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "制作タスクを操作できませんでした。");
       if (action === "delete") dispatchCodex({ type: "activateThread", threadId: null });
@@ -3104,7 +3113,7 @@ export default function Home() {
     if (!codexState.activeThreadId) return;
     clearTurnSubmission();
     try {
-      const response = await fetch(`${apiBase}/codex/thread/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: codexState.activeThreadId }) });
+      const response = await fetch(`${apiBase}/agent/thread/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: codexState.activeThreadId }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "制作タスクを複製できませんでした。");
       dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
@@ -3115,7 +3124,7 @@ export default function Home() {
     const threadId = codexState.activeThreadId;
     if (!threadId) return;
     try {
-      const response = await fetch(`${apiBase}/codex/thread/action`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "goalGet", params: { threadId } }) });
+      const response = await fetch(`${apiBase}/agent/thread/action`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "goalGet", params: { threadId } }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "制作タスクの目標を取得できませんでした。");
       const current = result.goal?.objective ?? result.objective ?? "";
@@ -3152,7 +3161,7 @@ export default function Home() {
   };
   const resolveServerRequest = async (id: string | number, result: Record<string, unknown>): Promise<RequestResolutionOutcome> => {
     try {
-      const response = await fetch(`${apiBase}/codex/request/resolve`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, result }) });
+      const response = await fetch(`${apiBase}/agent/request/resolve`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, result }) });
       const value = await response.json();
       if (!response.ok) throw new Error(value.error ?? "Codexへ回答を送れませんでした。");
       return { result: "settled" };
@@ -3162,7 +3171,7 @@ export default function Home() {
   };
   const rejectServerRequest = async (id: string | number): Promise<RequestResolutionOutcome> => {
     try {
-      const response = await fetch(`${apiBase}/codex/request/reject`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, message: "Declined in Weave." }) });
+      const response = await fetch(`${apiBase}/agent/request/reject`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, message: "Declined in Weave." }) });
       const value = await response.json();
       if (!response.ok) throw new Error(value.error ?? "Codexへ拒否の回答を送れませんでした。");
       return { result: "settled" };
@@ -3255,7 +3264,7 @@ export default function Home() {
 
   const login = async (type: "chatgpt" | "apiKey") => {
     try {
-      const response = await fetch(`${apiBase}/codex/account/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(type === "apiKey" ? { type, apiKey: apiKeyDraft } : { type }) });
+      const response = await fetch(`${apiBase}/agent/account/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(type === "apiKey" ? { type, apiKey: apiKeyDraft } : { type }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "ログインを開始できませんでした。");
       setApiKeyDraft("");
@@ -3282,7 +3291,7 @@ export default function Home() {
         path = "tool/call";
         body = { server: server.name, tool, arguments: JSON.parse(raw), threadId: codexState.activeThreadId };
       }
-      const response = await fetch(`${apiBase}/codex/mcp/${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      const response = await fetch(`${apiBase}/agent/mcp/${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "MCPへのリクエストに失敗しました。");
       setMcpResult(JSON.stringify(result, null, 2).slice(0, 20_000));
@@ -3505,12 +3514,13 @@ export default function Home() {
         <nav className="more-navigation" aria-label="その他の機能"><button onClick={() => { setActivityView("history"); setMobileView("history"); }}>履歴とマイルストーン</button><button onClick={(event) => togglePopover("quality", event.currentTarget)}>品質チェック</button><button onClick={() => showActivity("skills")}>スキル</button><button onClick={() => showActivity("shortcuts")}>ヘルプとショートカット</button></nav>
         <section><h3>表示</h3><label><span>カラーモード</span><select value={theme} onChange={(event) => setTheme(event.target.value as "dark" | "light")}><option value="dark">ダーク</option><option value="light">ライト</option></select></label><label><span>表示密度</span><select value={density} onChange={(event) => densityStore.write(event.target.value as Density)}><option value="comfortable">通常</option><option value="compact">コンパクト</option></select></label><p>スライド一覧は左、デザイン・Agent・変更レビューは右の単一コンテキストパネルに表示します。</p></section>
         <section><h3>Agent</h3>
-          <label><span>承認方法</span><select value={approvalPolicy} onChange={(event) => setApprovalPolicy(event.target.value)}><option value="never">確認しない</option><option value="on-request">必要なとき確認</option><option value="untrusted">未確認コマンドのみ</option></select></label>
+          {claudeSelected ? <p>Claude Codeの既存ログインを使用します。プロジェクト内のファイル読み書きを許可し、コマンド実行は許可しません。</p> : <label><span>承認方法</span><select value={approvalPolicy} onChange={(event) => setApprovalPolicy(event.target.value)}><option value="never">確認しない</option><option value="on-request">必要なとき確認</option><option value="untrusted">未確認コマンドのみ</option></select></label>}
           {codexState.catalog.modelProvider && <pre className="settings-output">{JSON.stringify(codexState.catalog.modelProvider, null, 2)}</pre>}
         </section>
-        <section><h3>アカウント</h3>{codexState.catalog.account ? <div className="setting-row"><span>{String(codexState.catalog.account.type ?? "サインイン済み")}</span><button onClick={() => { void fetch(`${apiBase}/codex/account/logout`, { method: "POST" }).catch((error) => setApiError(error.message)); }}>ログアウト</button></div> : <><button onClick={() => void login("chatgpt")}>ChatGPTでサインイン</button><div className="api-key-row"><input type="password" value={apiKeyDraft} onChange={(event) => setApiKeyDraft(event.target.value)} placeholder="APIキー" /><button disabled={!apiKeyDraft} onClick={() => void login("apiKey")}>キーを使用</button></div></>}</section>
+        <section><h3>Claude Code</h3><p>{codexState.catalog.providers?.claude?.connection.error ?? (codexState.catalog.providers?.claude?.ready ? "既存ログインで接続済み" : "接続を確認中…")}</p><button onClick={() => { void fetch(`${apiBase}/agent/catalog/refresh`, { method: "POST" }).catch((error) => setApiError(error.message)); }}>接続を再確認</button></section>
+        <section><h3>Codexアカウント</h3>{codexState.catalog.account ? <div className="setting-row"><span>{String(codexState.catalog.account.type ?? "サインイン済み")}</span><button onClick={() => { void fetch(`${apiBase}/agent/account/logout`, { method: "POST" }).catch((error) => setApiError(error.message)); }}>ログアウト</button></div> : <><button onClick={() => void login("chatgpt")}>ChatGPTでサインイン</button><div className="api-key-row"><input type="password" value={apiKeyDraft} onChange={(event) => setApiKeyDraft(event.target.value)} placeholder="APIキー" /><button disabled={!apiKeyDraft} onClick={() => void login("apiKey")}>キーを使用</button></div></>}</section>
         <section><h3>フック</h3>{codexState.catalog.hooks.flatMap((entry: any) => entry.hooks ?? [entry]).map((hook: any, index: number) => <div className="setting-row" key={hook.name ?? hook.event ?? index}><span>{hook.name ?? hook.event ?? "設定済みフック"}</span><small>{hook.enabled === false ? "無効" : "有効"}</small></div>)}</section>
-        <section><h3>MCPサーバー</h3>{codexState.catalog.mcpServers.map((server: any) => <div className="setting-row" key={server.name}><span>{server.name}</span><small>{server.status ?? server.authStatus ?? "設定済み"}</small>{server.resources?.length > 0 && <button onClick={() => void invokeMcp(server, "resource")}>リソース</button>}{Object.keys(server.tools ?? {}).length > 0 && <button disabled={!codexState.activeThreadId} onClick={() => void invokeMcp(server, "tool")}>ツール</button>}<button onClick={() => { void fetch(`${apiBase}/codex/mcp/oauth`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: server.name }) }).then(async (response) => { const result = await response.json(); if (!response.ok) throw new Error(result.error); const url = result.authorizationUrl ?? result.url; if (url && window.confirm(`${server.name}のOAuth認証ページを開きますか？`)) window.open(url, "_blank", "noopener,noreferrer"); }).catch((error) => setApiError(error.message)); }}>OAuth</button></div>)}</section>
+        <section><h3>MCPサーバー</h3>{codexState.catalog.mcpServers.map((server: any) => <div className="setting-row" key={server.name}><span>{server.name}</span><small>{server.status ?? server.authStatus ?? "設定済み"}</small>{server.resources?.length > 0 && <button onClick={() => void invokeMcp(server, "resource")}>リソース</button>}{Object.keys(server.tools ?? {}).length > 0 && <button disabled={!codexState.activeThreadId} onClick={() => void invokeMcp(server, "tool")}>ツール</button>}<button onClick={() => { void fetch(`${apiBase}/agent/mcp/oauth`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: server.name }) }).then(async (response) => { const result = await response.json(); if (!response.ok) throw new Error(result.error); const url = result.authorizationUrl ?? result.url; if (url && window.confirm(`${server.name}のOAuth認証ページを開きますか？`)) window.open(url, "_blank", "noopener,noreferrer"); }).catch((error) => setApiError(error.message)); }}>OAuth</button></div>)}</section>
         {mcpResult && <pre className="settings-output">{mcpResult}</pre>}
       </div>
     </section>
@@ -3580,7 +3590,7 @@ export default function Home() {
                 <span className={`agent-state agent-state-${agentHeaderState?.kind ?? "idle"}`} role="status" aria-live="polite" aria-busy={turnBusy} data-turn-state={turnPresentation} data-status={agentHeaderState?.kind ?? "idle"}>{agentHeaderState?.label ?? ""}</span>
               </div>
               <div className="agent-heading-actions">
-                <button className="new-thread-button" onClick={() => void newThread()} aria-label="新しい制作タスク" title="新しい制作タスクを開始します">＋</button>
+                <button className="new-thread-button" onClick={() => void newThread()} disabled={!agentReady || turnBusy} aria-label="新しい制作タスク" title="新しい制作タスクを開始します">＋</button>
                 <button className="thread-menu-trigger" onClick={(event) => toggleThreadMenu(event.currentTarget)} aria-expanded={threadMenuOpen} aria-haspopup="menu" aria-label="制作タスクの操作" title="制作タスクの名前変更、別の方向、アーカイブ、削除">…</button>
                 <button className="panel-close" onClick={() => setLeftPanelOpen(false)} aria-label="Agentパネルを閉じる" title="Agentパネルを閉じます">×</button>
               </div>
@@ -3614,9 +3624,9 @@ export default function Home() {
                 <div ref={threadMenuRef} className="thread-actions-menu" role="menu" tabIndex={-1} aria-label={`${activeThreadName}の操作`} onKeyDown={onThreadMenuKeyDown}>
                   <strong>制作タスクの操作</strong>
                   <button role="menuitem" disabled={!codexState.activeThreadId} onClick={() => { const name = window.prompt("タスク名", displayThreadName(codexState.threads[codexState.activeThreadId!]?.name) ?? ""); if (name !== null) { dismissPopover(); void threadAction("name", { name }); } }}>タスク名を変更</button>
-                  <button role="menuitem" disabled={!codexState.activeThreadId} onClick={() => { dismissPopover(); void forkThread(); }}>別の方向で試す</button>
+                  <button role="menuitem" disabled={!codexState.activeThreadId || claudeThread} title={claudeThread ? "Claudeの会話分岐は未対応です" : undefined} onClick={() => { dismissPopover(); void forkThread(); }}>別の方向で試す</button>
                   <button role="menuitem" disabled={!codexState.activeThreadId} onClick={() => { dismissPopover(); void threadAction(activeThread?.archived ? "unarchive" : "archive"); }}>{activeThread?.archived ? "アーカイブから戻す" : "アーカイブ"}</button>
-                  <details className="advanced-task-actions"><summary>詳細操作</summary><button role="menuitem" disabled={!codexState.activeThreadId} onClick={() => { dismissPopover(); void manageGoal(); }}>内部ゴール</button><button role="menuitem" disabled={!codexState.activeThreadId} onClick={() => { dismissPopover(); void threadAction("compact"); }}>履歴を整理</button></details>
+                  <details className="advanced-task-actions"><summary>詳細操作</summary><button role="menuitem" disabled={!codexState.activeThreadId || claudeThread} title={claudeThread ? "Claudeは内部ゴール操作に未対応です" : undefined} onClick={() => { dismissPopover(); void manageGoal(); }}>内部ゴール</button><button role="menuitem" disabled={!codexState.activeThreadId || claudeThread} title={claudeThread ? "Claude Codeが会話の圧縮を管理します" : undefined} onClick={() => { dismissPopover(); void threadAction("compact"); }}>履歴を整理</button></details>
                   <button role="menuitem" className="danger" disabled={!codexState.activeThreadId} onClick={() => { if (window.confirm("この制作タスクを完全に削除しますか？")) { dismissPopover(); void threadAction("delete"); } }}>削除</button>
                 </div>
               </>
@@ -3758,20 +3768,20 @@ export default function Home() {
                   <button type="button" aria-label={`${attachment.name}を添付から外す`} onClick={() => setReferenceAttachments((current) => current.filter((item) => item.path !== attachment.path))}>×</button>
                 </div>)}
               </div>}
-              <textarea ref={promptRef} value={promptDraft} onChange={onPromptChange} onCompositionStart={() => { compositionRef.current = true; }} onCompositionEnd={onPromptCompositionEnd} onKeyDown={onPromptKeyDown} placeholder={agentReady ? "Agentにこのスライドの編集を依頼…" : "Codexへの接続を待っています…"} aria-label="Agentへのメッセージ" aria-busy={turnBusy} maxLength={20000} disabled={!agentReady} />
+              <textarea ref={promptRef} value={promptDraft} onChange={onPromptChange} onCompositionStart={() => { compositionRef.current = true; }} onCompositionEnd={onPromptCompositionEnd} onKeyDown={onPromptKeyDown} placeholder={!selectedModel ? "モデルを選択してください" : agentReady ? "Agentにこのスライドの編集を依頼…" : claudeSelected ? "Claude Codeへの接続を確認してください…" : "Codexへの接続を待っています…"} aria-label="Agentへのメッセージ" aria-busy={turnBusy} maxLength={20000} disabled={!agentReady} />
               <div className="chat-actions">
                 <input ref={referenceInputRef} className="sr-only" type="file" multiple onChange={(event) => { if (event.target.files) void uploadReferences(event.target.files); }} />
                 <input ref={referenceFolderInputRef} className="sr-only" type="file" aria-label="参照フォルダーを選択" multiple {...{ webkitdirectory: "" }} onChange={(event) => { if (event.target.files?.length) void uploadReferenceFolder(event.target.files); }} />
                 <button className={`attach-button${openPopover === "references" ? " active" : ""}`} type="button" onClick={(event) => togglePopover("references", event.currentTarget)} disabled={!agentReady} aria-expanded={openPopover === "references"} aria-haspopup="dialog" aria-label="参照資料" title="Agentへ渡すファイルやフォルダーを選びます">📎</button>
-                {codexState.catalog.models.length > 0 && selectedModelInfo && (
+                {codexState.catalog.models.length > 0 && (
                   <div className="agent-model-control">
-                    <button className="agent-model-button" type="button" onClick={(event) => togglePopover("agentModel", event.currentTarget)} disabled={turnBusy} aria-expanded={openPopover === "agentModel"} aria-haspopup="menu" title="Agentのモデルと推論レベルを選びます"><span className="agent-model-name">{selectedModelInfo.displayName ?? selectedModelInfo.name ?? selectedModelInfo.id ?? selectedModelInfo.model}</span><span className="agent-effort-value">{reasoningEffort}</span><b aria-hidden="true">⌄</b></button>
+                    <button className="agent-model-button" type="button" onClick={(event) => togglePopover("agentModel", event.currentTarget)} disabled={turnBusy} aria-expanded={openPopover === "agentModel"} aria-haspopup="menu" title="Agentのモデルと推論レベルを選びます"><span className="agent-model-name">{selectedModelInfo?.displayName ?? selectedModelInfo?.name ?? (selectedModel || "モデルを選択")}</span><span className="agent-effort-value">{availableEfforts.length > 0 ? reasoningEffort : ""}</span><b aria-hidden="true">⌄</b></button>
                     {openPopover === "agentModel" && (
                       <>
                         <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
                         <div className="agent-model-popover" role="menu" aria-label="Agentのモデルと推論レベル">
-                          <section role="group" aria-label="モデル"><strong>モデル</strong>{codexState.catalog.models.map((model: any) => { const modelId = model.id ?? model.model; return <button key={modelId} role="menuitemradio" aria-checked={selectedModel === modelId} className={selectedModel === modelId ? "active" : ""} disabled={turnBusy} onClick={() => { const nextEffort = model.supportedReasoningEfforts?.map((option: any) => option.reasoningEffort).includes(reasoningEffort) ? reasoningEffort : model.defaultReasoningEffort ?? model.supportedReasoningEfforts?.[0]?.reasoningEffort ?? reasoningEffort; agentModelStore.write({ model: modelId, effort: nextEffort }); dismissPopover(false); }}><span>{model.displayName ?? model.name ?? model.id ?? model.model}</span>{selectedModel === modelId && <b aria-hidden="true">✓</b>}</button>; })}</section>
-                          <section role="group" aria-label="推論レベル"><strong>推論レベル</strong>{availableEfforts.map((effort: string) => <button key={effort} role="menuitemradio" aria-checked={reasoningEffort === effort} className={reasoningEffort === effort ? "active" : ""} disabled={turnBusy} onClick={() => { agentModelStore.write({ model: selectedModel, effort }); dismissPopover(false); }}><span>{effort}</span>{reasoningEffort === effort && <b aria-hidden="true">✓</b>}</button>)}</section>
+                          <section role="group" aria-label="モデル"><strong>モデル</strong>{codexState.catalog.models.map((model: any) => { const modelId = model.id ?? model.model; return <button key={modelId} role="menuitemradio" aria-checked={selectedModel === modelId} className={selectedModel === modelId ? "active" : ""} disabled={turnBusy} onClick={() => { const nextEffort = model.supportedReasoningEfforts?.map((option: any) => option.reasoningEffort).includes(reasoningEffort) ? reasoningEffort : model.defaultReasoningEffort ?? model.supportedReasoningEfforts?.[0]?.reasoningEffort ?? reasoningEffort; if (codexState.activeThreadId && (modelId.startsWith("claude:") ? "claude" : "codex") !== (claudeThread ? "claude" : "codex") && threadProviderMatches) { autoOpenThreadRef.current = false; dispatchCodex({ type: "activateThread", threadId: null }); setAnnouncement("接続先を変更しました。次の送信で新しい会話を開始します"); } agentModelStore.write({ model: modelId, effort: nextEffort }); dismissPopover(false); }}><span>{model.displayName ?? model.name ?? model.id ?? model.model}</span>{selectedModel === modelId && <b aria-hidden="true">✓</b>}</button>; })}</section>
+                          {availableEfforts.length > 0 && <section role="group" aria-label="推論レベル"><strong>推論レベル</strong>{availableEfforts.map((effort: string) => <button key={effort} role="menuitemradio" aria-checked={reasoningEffort === effort} className={reasoningEffort === effort ? "active" : ""} disabled={turnBusy} onClick={() => { agentModelStore.write({ model: selectedModel, effort }); dismissPopover(false); }}><span>{effort}</span>{reasoningEffort === effort && <b aria-hidden="true">✓</b>}</button>)}</section>}
                         </div>
                       </>
                     )}

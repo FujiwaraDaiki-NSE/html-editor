@@ -24,7 +24,7 @@ test("Agent production tasks separate messages, work logs, and blocking requests
   assert.match(page, /phase: "accepted"/);
   assert.match(page, /turnId: result\.turn\.id/);
   assert.match(page, /turnSubmission\.phase !== "idle" \|\| codexState\.activeTurnId !== null/);
-  assert.match(page, /const canSubmitAgentMessage = !turnInFlightRef\.current \|\| agentRunning/);
+  assert.match(page, /const canSubmitAgentMessage = \(!turnInFlightRef\.current \|\| agentRunning\) && !\(claudeSelected && agentRunning\)/);
   assert.match(page, /別タスクで実行中/);
   assert.match(page, /resyncPendingRequests/);
   assert.match(page, /result: "result_unknown"/);

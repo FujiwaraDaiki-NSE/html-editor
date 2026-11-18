@@ -1,0 +1,21 @@
+# Optional Claude Code integration for the existing Linux Compose service.
+# docker compose -f compose.yaml -f compose.claude.yaml up -d --build
+services:
+  web:
+    volumes:
+      - type: bind
+        source: "${WEAVE_CLAUDE_BIN:?Set WEAVE_CLAUDE_BIN to the host Claude Code executable}"
+        target: /usr/local/bin/claude
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${WEAVE_HOST_HOME}/.claude"
+        target: "${WEAVE_HOST_HOME}/.claude"
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${WEAVE_HOST_HOME}/.claude.json"
+        target: "${WEAVE_HOST_HOME}/.claude.json"
+        bind:
+          create_host_path: false

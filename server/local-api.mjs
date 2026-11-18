@@ -71,7 +71,7 @@ import {
   updateSkill,
   uploadSkill,
 } from "./skills.mjs";
-import { CodexService } from "./codex/service.mjs";
+import { AgentService } from "./agent-service.mjs";
 import { annotationPromptRules, canSendTurn } from "../shared/annotation.mjs";
 import { contextPromptRules, editorEnvelope, isReferencePath } from "../shared/context.mjs";
 import { createEditorChangeSet, htmlChangeWithinElement, mergeEditorDecks, validateWorkflowRequest } from "../shared/editor-workflow.mjs";
@@ -83,7 +83,7 @@ import { ProjectPreviewMonitor } from "./project-preview.mjs";
 const apiPort = Number(process.env.WEAVE_API_PORT ?? 4317);
 await initializeCurrentProject();
 const webPort = parseConfiguredPort(process.env.WEAVE_WEB_PORT);
-const codex = new CodexService({ projectRoot: projectRoot(), instructions: agentInstructions });
+const codex = new AgentService({ projectRoot: projectRoot(), instructions: agentInstructions });
 let codexProjectRoot = projectRoot();
 // Pending work is keyed by thread but every entry carries its immutable project
 // root. This allows project switching while another project's turn is settling.
@@ -102,7 +102,7 @@ const completedSaves = new Map();
 const recentAgentMerges = new Map();
 let projectSwitchQueue = Promise.resolve();
 let projectLifecycleBusy = false;
-const migrationNotice = "Legacy .weave/chat.json history was removed. Conversations now use Codex app-server Threads only.";
+const migrationNotice = "Conversations use independent Codex app-server or Claude Code sessions.";
 
 function pendingTurn(value) {
   let resolveFinalization;
@@ -496,6 +496,7 @@ Do not commit; Weave will commit after this turn.${serializeEditorContext(payloa
     const result = await codex.startTurn({
       threadId: thread.id,
       prompt: context,
+      userPrompt: prompt,
       clientUserMessageId: payload.clientUserMessageId,
       model: payload.model,
       effort: payload.effort,
@@ -650,6 +651,8 @@ const server = createServer(async (request, response) => {
       return response.end();
     }
     const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
+    // Provider-neutral editor routes retain compatibility with existing clients.
+    if (url.pathname.startsWith("/api/agent/")) url.pathname = url.pathname.replace("/api/agent/", "/api/codex/");
     const requestProjectRoot = projectRoot();
     const routeMethod = routeMethodDecision(url.pathname, request.method);
     if (!routeMethod.allowed) {
@@ -977,7 +980,7 @@ const server = createServer(async (request, response) => {
         pending.threadId = payload.threadId;
         pendingTurns.set(payload.threadId, pending);
         startingRoots.delete(root);
-        const result = await codex.startTurn({ ...payload, prompt: `${prompt}${serializeEditorContext(payload)}` });
+        const result = await codex.startTurn({ ...payload, userPrompt: prompt, prompt: `${prompt}${serializeEditorContext(payload)}` });
         startProjectPreview(pending, payload.threadId, result.turn.id);
         await updateRecoverySnapshot(recoverySnapshot, { workflow, status: "running", threadId: payload.threadId, turnId: result.turn.id }, root);
         return sendJson(request, response, 202, result);
