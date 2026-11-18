@@ -9,7 +9,7 @@ export class AgentService extends EventEmitter {
   constructor(options) {
     super();
     this.codex = options.codex ?? new CodexService(options);
-    this.claude = options.claude ?? new ClaudeService({ ...options, instructions: () => this.codex.editorInstructions() });
+    this.claude = options.claude ?? new ClaudeService({ ...options, instructions: async () => options.chatInstructions });
     this.events = new CodexEventStream();
     this.router = this.codex.router;
     this.codex.events.on("event", ({ type, payload }) => {
@@ -20,6 +20,7 @@ export class AgentService extends EventEmitter {
     this.claude.on("notification", (message) => { this.events.publish("codex/notification", message); this.emit("notification", message); });
     this.claude.on("connection", () => this.publishState());
   }
+  set onOrchestrationTool(handler) { this.codex.onOrchestrationTool = handler; }
   get uiTools() { return this.codex.uiTools; }
   set onEditSlides(handler) { this.codex.onEditSlides = handler; }
   pendingRequests() { return this.codex.pendingRequests(); }
@@ -62,7 +63,7 @@ export class AgentService extends EventEmitter {
     return await service.startTurn(options);
   }
   async steerTurn(options) {
-    if (this.forThread(options.threadId) === this.claude) throw new Error("Claude Code does not accept instructions during a running turn. Stop it or wait for completion.");
+    if (this.forThread(options.threadId) === this.claude) throw new Error("Claude messages must be delivered through the orchestrator inbox.");
     return await this.codex.steerTurn(options);
   }
   async interruptTurn(id) { return await this.forThread(id).interruptTurn(id); }

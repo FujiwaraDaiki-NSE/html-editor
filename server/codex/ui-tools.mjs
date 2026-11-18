@@ -1,3 +1,4 @@
+import { orchestrationTools } from "../orchestration-tools.mjs";
 import { randomBytes, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 
@@ -86,6 +87,7 @@ const uiToolSchemas = {
     additionalProperties: false,
     properties: {
       prompt: { type: "string", minLength: 1, maxLength: 50_000 },
+      variation: { type: "boolean", description: "Create a separate variation branch for an alternative direction." },
       scope: {
         type: "object",
         additionalProperties: false,
@@ -169,14 +171,14 @@ export function uiDynamicTools({ purpose, learning = false } = {}) {
     type: "namespace",
     name: UI_TOOL_NAMESPACE,
     description: "Operate the currently attached Weave browser UI through a visible, correlated action.",
-    tools: [...BROWSER_UI_TOOL_NAMES, EDIT_SLIDES_TOOL_NAME, ...(learning ? [GET_SLIDE_LEARNING_TOOL_NAME, LEARN_SLIDE_PREFERENCE_TOOL_NAME] : [])].map(toolSpec),
+    tools: [...BROWSER_UI_TOOL_NAMES, EDIT_SLIDES_TOOL_NAME].map(toolSpec).concat(orchestrationTools.map(tool => ({ type: "function", ...tool })), (learning ? [GET_SLIDE_LEARNING_TOOL_NAME, LEARN_SLIDE_PREFERENCE_TOOL_NAME] : []).map(toolSpec)),
   }];
 }
 
 export function validateEditSlidesArguments(rawArguments) {
   if (!isRecord(rawArguments)) throw bridgeError("edit_slides arguments must be an object.");
   const args = rawArguments;
-  if (Object.keys(args).some((key) => !["prompt", "scope", "execution", "allowSkillChanges"].includes(key))) {
+  if (Object.keys(args).some((key) => !["prompt", "scope", "execution", "allowSkillChanges", "variation"].includes(key))) {
     throw bridgeError("edit_slides arguments contain an unsupported field.");
   }
   if (typeof args.prompt !== "string" || args.prompt.length === 0 || args.prompt.length > 50_000) {
@@ -191,6 +193,7 @@ export function validateEditSlidesArguments(rawArguments) {
   }
   if (typeof args.scope.elementId !== "string" && args.scope.elementId !== null) throw bridgeError("edit_slides scope.elementId must be a string or null.");
   if (!EDIT_SLIDE_EXECUTIONS.has(args.execution)) throw bridgeError("edit_slides execution is invalid.");
+  if (Object.hasOwn(args, "variation") && typeof args.variation !== "boolean") throw bridgeError("variation must be boolean.");
   if (typeof args.allowSkillChanges !== "boolean") throw bridgeError("edit_slides allowSkillChanges must be boolean.");
   return args;
 }
@@ -643,3 +646,5 @@ export class UiToolBridge extends EventEmitter {
     return canceled;
   }
 }
+
+export function claudeOrchestratorTools() { return [...BROWSER_UI_TOOL_NAMES, EDIT_SLIDES_TOOL_NAME, GET_SLIDE_LEARNING_TOOL_NAME, LEARN_SLIDE_PREFERENCE_TOOL_NAME].map(toolSpec).concat(orchestrationTools).map(({ name, description, inputSchema }) => ({ name, description, inputSchema })); }

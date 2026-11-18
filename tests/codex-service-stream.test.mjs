@@ -106,7 +106,7 @@ test("new Threads receive both app-server source and a durable name marker", asy
   assert.equal(thread.name, "Weave · New conversation");
   const startCall = client.calls.find(({ method }) => method === "thread/start");
   assert.equal(startCall.params.dynamicTools[0].name, "weave_ui");
-  assert.deepEqual(startCall.params.dynamicTools[0].tools.map(({ name }) => name), ["inspect", "click", "fill", "select", "key", "edit_slides"]);
+  assert.deepEqual(startCall.params.dynamicTools[0].tools.map(({ name }) => name), ["inspect", "click", "fill", "select", "key", "edit_slides", "tasks", "read_task_changes", "control_task", "review_edit"]);
   assert.deepEqual(client.calls.at(-1), {
     method: "thread/name/set",
     params: { threadId: "created", name: "Weave · New conversation\u2063weave-ui-v1" },
@@ -623,4 +623,23 @@ test("thread list excludes subagents even with an inherited Weave name", async (
   service.ready = true;
   assert.deepEqual((await service.listThreads()).data.map(({ id }) => id), ["parent"]);
   await assert.rejects(service.readThread("child"), /not owned/);
+});
+
+test('orchestrator tool capability survives restart and older chat coordinators migrate before use', async () => {
+  const client = new FakeClient();
+  const service = new CodexService({ projectRoot: '/workspace', workspaceRoot: '/', instructions: 'Editor', chatInstructions: 'Orchestrator', client });
+  service.ready = true; service.onOrchestrationTool = async () => ({});
+  const migrated = await service.ensureChatThread('new', { cwd: '/workspace', model: 'gpt-test' });
+  assert.equal(migrated.migrated, true);
+  const marked = client.calls.filter(call => call.method === 'thread/name/set').at(-1).params.name;
+  assert.match(marked, /weave-orchestration-v1/);
+  const request = client.request.bind(client);
+  client.request = async (method, params) => method === 'thread/read' && params.threadId === 'created'
+    ? { thread: { id: 'created', name: marked, cwd: '/workspace', threadSource: 'weave', turns: [] } }
+    : request(method, params);
+  const restarted = new CodexService({ projectRoot: '/workspace', workspaceRoot: '/', instructions: 'Editor', chatInstructions: 'Orchestrator', client });
+  restarted.ready = true; restarted.onOrchestrationTool = async () => ({});
+  const unchanged = await restarted.ensureChatThread('created', { cwd: '/workspace', model: 'gpt-test' });
+  assert.equal(unchanged.migrated, false);
+  assert.equal(unchanged.thread.name.includes('weave-orchestration'), false);
 });

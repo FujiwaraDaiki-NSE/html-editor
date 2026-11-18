@@ -50,7 +50,7 @@ test("policy gates protect commits while turn writes stay available", async () =
     readFile(new URL("../server/project.mjs", import.meta.url), "utf8"),
   ]);
   const save = localApi.slice(localApi.indexOf('url.pathname === "/api/save"'), localApi.indexOf('url.pathname === "/api/history/checkout"'));
-  const turnStart = localApi.slice(localApi.indexOf('url.pathname === "/api/codex/turn/start") {'), localApi.indexOf('url.pathname === "/api/codex/turn/steer"'));
+  const turnStart = localApi.slice(localApi.indexOf('url.pathname === "/api/codex/turn/start" ||'), localApi.indexOf('url.pathname === "/api/codex/tasks/approve"'));
   const steer = localApi.slice(localApi.indexOf('url.pathname === "/api/codex/turn/steer"'), localApi.indexOf('url.pathname === "/api/codex/turn/interrupt"'));
   const writeBody = project.slice(project.indexOf("export async function writeProject"), project.indexOf("export async function assertCommittable"));
   const atomicSave = project.slice(project.indexOf("export async function saveProject"), project.indexOf("export async function assertCommittable"));
@@ -58,9 +58,9 @@ test("policy gates protect commits while turn writes stay available", async () =
   assert.ok(atomicSave.includes("assertCommittable"));
   assert.ok(atomicSave.indexOf("assertCommittable") < atomicSave.indexOf("commitIfChanged"));
   assert.match(turnStart, /const root = projectRoot\(\)/);
-  assert.match(turnStart, /writeProject\(payload\.deck, null, root\)/);
+  assert.match(turnStart, /writeProjectUnlocked\(payload\.deck, null, root\)/);
   assert.doesNotMatch(turnStart, /clearRecoveryTask/, "a chat-only request must preserve the interrupted editor's recovery snapshot");
-  assert.doesNotMatch(steer, /writeProject/);
+  assert.match(steer, /payload.humanEdited === true/);
   assert.doesNotMatch(writeBody, /auditContentPolicy/);
 });
 
@@ -117,8 +117,9 @@ test("variation turns share prompt validation and editor annotation context", as
   const startEditorTurn = localApi.slice(localApi.indexOf("async function startEditorTurn"), localApi.indexOf("codex.client.on"));
   assert.match(startEditorTurn, /const prompt = requireTurnPrompt\(payload\)/);
   const variation = page.slice(page.indexOf("const generateVariation"), page.indexOf("const acceptVariation"));
-  assert.match(variation, /collectTurnAnnotations\(prompt/);
-  assert.match(variation, /contextEnvelope\(variationAnnotations/);
+  assert.match(variation, /sendMessage\(\{ prompt:/);
+  assert.match(variation, /variation: true/);
+  assert.match(page, /collectTurnAnnotations\(value, boxes\)/);
 });
 
 test("UI uses Thread APIs, reducer, item cards, steering, interrupt, approvals, and catalogs", async () => {
@@ -541,6 +542,6 @@ test("attachment context resolves references against the captured task project",
   const source = await readFile(new URL("../server/local-api.mjs", import.meta.url), "utf8");
   assert.match(source, /async function serializeEditorContext\(payload, root\)/);
   assert.match(source, /resolveReferenceAttachments\(envelope.attachments, root\)/);
-  assert.equal((source.match(/await serializeEditorContext\(payload, root\)/g) ?? []).length, 3);
-  assert.match(source, /await serializeEditorContext\(payload, pending.root\)/);
+  assert.equal((source.match(/await serializeEditorContext\(payload, root\)/g) ?? []).length, 2);
+  assert.match(source, /await serializeEditorContext\(payload, payload.root\)/);
 });
