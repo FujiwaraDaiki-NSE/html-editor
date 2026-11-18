@@ -45,9 +45,10 @@ export function validateDirections(directions) {
     throw new Error("3案の方向性は異なる名前にしてください。");
 }
 export class SlideProposals {
-  constructor({ workspaceRoot, publish }) {
+  constructor({ workspaceRoot, publish, livePreview = () => null }) {
     this.workspaceRoot = workspaceRoot;
     this.publish = publish;
+    this.livePreview = livePreview;
   }
   async read(root) {
     try {
@@ -119,6 +120,8 @@ export class SlideProposals {
         baseDeck,
         createdAt: Date.now(),
         state: "open",
+        prepared: false,
+        preparationError: null,
         selections: {},
         candidates: directions.map((direction, index) => ({
           id: String.fromCharCode(97 + index),
@@ -132,6 +135,8 @@ export class SlideProposals {
           result: null,
         })),
       };
+      groups.push(group);
+      await this.save(root, groups);
       // Every candidate starts from the exact same snapshot, including unsaved draft content.
       const baseline = join(
         this.workspaceRoot,
@@ -139,10 +144,16 @@ export class SlideProposals {
         group.id,
         "baseline",
       );
-      await this.copyWorkspace(root, baseline);
-      for (const candidate of group.candidates)
-        await this.copyWorkspace(baseline, this.workspace(group, candidate));
-      groups.push(group);
+      try {
+        await this.copyWorkspace(root, baseline);
+        for (const candidate of group.candidates)
+          await this.copyWorkspace(baseline, this.workspace(group, candidate));
+        group.prepared = true;
+      } catch (error) {
+        group.preparationError = error.message;
+        await this.save(root, groups);
+        throw error;
+      }
       await this.save(root, groups);
       return group;
     }, root);
@@ -205,6 +216,19 @@ export class SlideProposals {
       await this.save(root, groups);
     }, root);
   }
+  async recover(root) {
+    await runProjectExclusive(async () => {
+      const groups = await this.read(root);
+      let changed = false;
+      for (const group of groups)
+        if (group.prepared === false && !group.preparationError) {
+          group.preparationError =
+            "準備中にエディターが終了しました。自動再開はしていません。";
+          changed = true;
+        }
+      if (changed) await this.save(root, groups);
+    }, root);
+  }
   async snapshot(root, tasks) {
     const current = await readProject(root);
     return (await this.read(root)).map((group) => ({
@@ -214,6 +238,8 @@ export class SlideProposals {
       scope: group.scope,
       createdAt: group.createdAt,
       state: group.state,
+      preparationError:
+        group.preparationError === undefined ? null : group.preparationError,
       selections: group.selections,
       slideIds: group.baseDeck.slides
         .filter(
@@ -225,11 +251,16 @@ export class SlideProposals {
         const task = tasks.find((t) => t.id === candidate.taskId);
         const busy =
           task && !["completed", "failed", "cancelled"].includes(task.status);
-        const status = candidate.ready
-          ? "ready"
-          : task
-            ? task.status
-            : "queued";
+        const live = this.livePreview(candidate.taskId);
+        const status = group.preparationError
+          ? "failed"
+          : group.prepared === false
+            ? "preparing"
+            : candidate.ready
+              ? "ready"
+              : task
+                ? task.status
+                : "queued";
         const adoptable = group.state === "open" && candidate.ready && !busy;
         return {
           targetSlideIds:
@@ -251,14 +282,17 @@ export class SlideProposals {
           version: candidate.version,
           taskId: candidate.taskId,
           status,
+          previewRevision: `${candidate.version}:${candidate.taskId}:${live === null ? "baseline" : live.revision}:${candidate.ready ? "reviewed" : "draft"}`,
           activity: task ? task.activity : null,
           startedAt: task?.startedAt === undefined ? null : task.startedAt,
-          workerStartedAt: task?.workerStartedAt === undefined ? null : task.workerStartedAt,
+          workerStartedAt:
+            task?.workerStartedAt === undefined ? null : task.workerStartedAt,
           finishedAt: task?.finishedAt === undefined ? null : task.finishedAt,
-          error: candidate.error ?? task?.error ?? null,
+          error:
+            group.preparationError ?? candidate.error ?? task?.error ?? null,
           stale: JSON.stringify(current) !== JSON.stringify(group.baseDeck),
           available: {
-            view: candidate.ready,
+            view: group.prepared !== false,
             adopt: adoptable,
             revise: adoptable,
             dismiss:
@@ -277,16 +311,58 @@ export class SlideProposals {
   async preview(root, groupId, candidateId, version) {
     const group = this.group(await this.read(root), groupId);
     const candidate = this.candidate(group, candidateId);
-    if (!candidate.ready || candidate.version !== version || !candidate.result)
-      throw new Error("比較できる最新の案を選んでください。");
-    return {
-      ...candidate.result,
+    if (group.prepared === false || candidate.version !== version)
+      throw new Error("表示できる最新の案を選んでください。");
+    const live = this.livePreview(candidate.taskId);
+    const previewRevision = `${candidate.version}:${candidate.taskId}:${live === null ? "baseline" : live.revision}:${candidate.ready ? "reviewed" : "draft"}`;
+    const identity = {
       groupId,
       candidateId,
       version,
       baseDeck: group.baseDeck,
+      previewRevision,
+    };
+    if (candidate.ready && candidate.result)
+      return {
+        ...candidate.result,
+        ...identity,
+        reviewed: true,
+        phase: "reviewed",
+      };
+    if (live !== null)
+      return {
+        deck: live.deck,
+        css: live.css,
+        templates: live.templates,
+        review: null,
+        ...identity,
+        reviewed: false,
+        phase: "working",
+      };
+    if (candidate.result)
+      return {
+        ...candidate.result,
+        ...identity,
+        reviewed: false,
+        phase: "previous",
+      };
+    const baseline = join(
+      this.workspaceRoot,
+      ".proposals",
+      group.id,
+      "baseline",
+    );
+    return {
+      deck: group.baseDeck,
+      css: await readDeckCss(baseline),
+      templates: await readTemplates(baseline),
+      review: null,
+      ...identity,
+      reviewed: false,
+      phase: "baseline",
     };
   }
+
   async adopt(
     root,
     { groupId, candidateId, version, slideIds, expectedRevision },

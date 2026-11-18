@@ -1779,8 +1779,6 @@ button.project-card { cursor: pointer; }
 .agent-task-card summary { cursor: pointer; padding: 5px 0; }
 
 .proposal-workspace { flex: 0 0 auto; width: 100%; padding: 8px 12px; position: relative; z-index: 3; background: var(--panel-2); }
-.proposal-workspace .variation-tabs { flex-wrap: wrap; }
-.proposal-workspace .variation-tabs button { max-width: 260px; white-space: normal; }
 .proposal-description { padding: 10px 0; display: grid; gap: 6px; }
 .proposal-description p { margin: 0; }
 .proposal-description small { color: var(--muted); }
@@ -1791,7 +1789,36 @@ button.project-card { cursor: pointer; }
 .proposal-workspace .variation-compare-grid { align-items: start; }
 .proposal-workspace button { cursor: pointer; }
 
-.proposal-workspace .variation-tabs button small { display: block; font-size: 11px; color: var(--muted); }
 .proposal-workspace .variation-compare-grid article > p { margin: 8px 0; font-size: var(--ui-label); line-height: 1.5; }
 .proposal-workspace .variation-compare-grid article > button { padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--panel-3); color: var(--text); }
 .proposal-progress { margin: 0 0 6px; font-size: var(--ui-label); color: var(--muted); }
+/* Candidate choices are separate surfaces; navigation and utility actions stay outside. */
+.proposal-workspace { padding: 14px 16px 16px; container: proposal-panel / inline-size; }
+.proposal-toolbar, .proposal-toolbar-context, .proposal-toolbar-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.proposal-toolbar { justify-content: space-between; margin-bottom: 12px; }
+.proposal-toolbar-context { gap: 12px; }
+.proposal-toolbar .proposal-progress { margin: 0; }
+.proposal-toolbar button { min-height: 32px; padding: 6px 10px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--muted); font: inherit; font-size: var(--ui-label); }
+.proposal-toolbar button:hover, .proposal-toolbar button.is-selected { color: var(--text); background: var(--panel-3); }
+.proposal-toolbar .proposal-draft-button { border-color: var(--line-strong); }
+.proposal-choices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.proposal-choices + .proposal-choices { margin-top: 12px; }
+.proposal-choice { min-width: 0; min-height: 122px; display: flex; flex-direction: column; align-items: stretch; gap: 8px; padding: 12px; border: 1px solid var(--line-strong); border-radius: 9px; background: var(--panel); color: var(--text); font: inherit; text-align: left; transition: border-color 120ms, background 120ms; }
+.proposal-choice:hover:not(:disabled) { border-color: var(--muted); background: var(--panel-3); }
+.proposal-choice.is-selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 5%, var(--panel)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 25%, transparent); }
+.proposal-choice:disabled { cursor: wait; color: var(--muted); }
+.proposal-choice:focus-visible, .proposal-toolbar button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.proposal-choice-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.proposal-choice-letter { padding: 3px 7px; border-radius: 5px; background: var(--panel-3); color: var(--soft); font-size: var(--ui-label); font-weight: 600; }
+.proposal-choice.is-selected .proposal-choice-letter { background: color-mix(in srgb, var(--accent) 14%, var(--panel)); color: var(--accent); }
+.proposal-choice-selected { color: var(--accent); font-size: 11px; }
+.proposal-choice-title { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font-size: var(--ui-body); font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
+.proposal-choice-status { display: flex; align-items: baseline; gap: 6px; margin-top: auto; color: var(--muted); font-size: var(--ui-label); line-height: 1.5; overflow-wrap: anywhere; }
+.proposal-state-dot { flex: 0 0 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+.proposal-state-dot.ready { background: var(--accent); }
+.proposal-description { margin-top: 14px; padding: 14px 0; border-top: 1px solid var(--line); gap: 8px; }
+.proposal-live-status { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; padding: 9px 11px; border-radius: 5px; background: var(--panel-3); color: var(--muted); font-size: var(--ui-label); }
+.proposal-live-status strong { color: var(--text); }
+@container proposal-panel (max-width: 520px) { .proposal-choices { grid-template-columns: 1fr; gap: 8px; } .proposal-choice { min-height: 100px; } }
+@media (prefers-reduced-motion: reduce) { .proposal-choice { transition: none; } }
+.proposal-description .editor-tab-actions button:disabled { opacity: .45; cursor: not-allowed; }

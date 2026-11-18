@@ -1515,6 +1515,10 @@ export default function Home() {
               const root = envelope.payload.root;
               void fetch(`${apiBase}/proposals`).then(r => r.json()).then(result => { if (activeProjectRootRef.current === root) setProposalGroups(result.proposals); }).catch(error => setApiError(String(error)));
             }
+            if (envelope.type === "weave/proposal-preview" && envelope.payload.root === activeProjectRootRef.current) {
+              const preview = envelope.payload;
+              setProposalGroups(current => current.map(group => group.id === preview.groupId ? { ...group, candidates: group.candidates.map(candidate => candidate.id === preview.candidateId && candidate.taskId === preview.taskId && candidate.status !== "ready" ? { ...candidate, previewRevision: `${candidate.version}:${candidate.taskId}:${preview.revision}:draft` } : candidate) } : group));
+            }
             if (envelope.type === "weave/orchestration") {
               const tasks = envelope.payload.tasks.filter((task: AgentTask) => task.root === activeProjectRootRef.current);
               setOrchestration({ tasks, messages: envelope.payload.messages.filter((message: { root: string }) => message.root === activeProjectRootRef.current) });

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 const temporary = await mkdtemp(join(tmpdir(), "weave-slide-proposals-"));
@@ -251,7 +251,7 @@ test("duplicated projects do not share mutable candidate workspaces with the sou
   assert.equal((await store.read(root)).length, 1);
 });
 
-test("a reviewed candidate is viewable while the other two subagents are still working", async (t) => {
+test("a reviewed candidate is adoptable while the other two subagents remain preview-only", async (t) => {
   const { store, root, group } = await setup(t);
   const peers = ["b", "c"].map((id) => ({
     id: `${group.id}-${id}`,
@@ -269,7 +269,7 @@ test("a reviewed candidate is viewable while the other two subagents are still w
   const snapshot = (await store.snapshot(root, tasks))[0];
   assert.deepEqual(
     snapshot.candidates.map((candidate) => candidate.available.view),
-    [true, false, false],
+    [true, true, true],
   );
   assert.deepEqual(
     snapshot.candidates.map((candidate) => candidate.status),
@@ -280,4 +280,137 @@ test("a reviewed candidate is viewable while the other two subagents are still w
   assert.equal(snapshot.candidates[1].workerStartedAt, 120);
   assert.ok((await store.preview(root, group.id, "a", 1)).deck);
   assert.equal(snapshot.candidates[0].available.adopt, true);
+});
+
+test("proposal choices are published before workspace copying starts", async (t) => {
+  const { store, root } = await setup(t);
+  const originalCopy = store.copyWorkspace.bind(store);
+  let checked = false;
+  let newId;
+  store.copyWorkspace = async (source, destination) => {
+    if (!checked) {
+      const saved = await store.read(root);
+      const pending = saved.at(-1);
+      newId = pending.id;
+      assert.equal(pending.prepared, false);
+      assert.equal(pending.candidates.length, 3);
+      const snapshot = (await store.snapshot(root, tasks)).at(-1);
+      assert.deepEqual(
+        snapshot.candidates.map((c) => c.status),
+        ["preparing", "preparing", "preparing"],
+      );
+      assert.equal(
+        snapshot.candidates.some((c) => c.available.adopt),
+        false,
+      );
+      checked = true;
+    }
+    return originalCopy(source, destination);
+  };
+  t.after(async () => {
+    if (newId)
+      await rm(join(project.workspacesRoot, ".proposals", newId), {
+        recursive: true,
+        force: true,
+      });
+  });
+  const group = await store.create(root, {
+    threadId: "parent",
+    prompt: "Create another comparison",
+    scope: { kind: "deck", slideIds: [], elementId: null },
+    directions,
+  });
+  assert.equal(checked, true);
+  assert.equal(group.prepared, true);
+});
+
+test("working previews use stable snapshots and remain unadoptable until reviewed", async (t) => {
+  const { store, root, group, deck } = await setup(t);
+  const initial = await store.preview(root, group.id, "a", 1);
+  assert.equal(initial.phase, "baseline");
+  assert.equal(initial.reviewed, false);
+  assert.deepEqual(initial.deck, deck);
+  let live = null;
+  const reader = new SlideProposals({
+    workspaceRoot: project.workspacesRoot,
+    publish: () => {},
+    livePreview: () => live,
+  });
+  const task = {
+    id: `${group.id}-live`,
+    status: "running",
+    version: 1,
+    attempt: 1,
+    approvedVersion: null,
+    activity: "ファイルを編集中",
+  };
+  tasks.push(task);
+  await reader.attach(root, group.id, "a", task.id);
+  const changed = structuredClone(deck);
+  changed.slides[0].html = changed.slides[0].html.replace(
+    "Original",
+    "Work in progress",
+  );
+  live = {
+    deck: changed,
+    css: initial.css,
+    templates: initial.templates,
+    revision: "worker:1",
+  };
+  await writeFile(
+    join(reader.workspace(group, group.candidates[0]), "slides", "cover.html"),
+    "<partial markup",
+  );
+  const preview = await reader.preview(root, group.id, "a", 1);
+  assert.equal(preview.phase, "working");
+  assert.equal(preview.reviewed, false);
+  assert.deepEqual(preview.deck, changed);
+  const candidate = (await reader.snapshot(root, tasks))[0].candidates[0];
+  assert.equal(candidate.available.view, true);
+  assert.equal(candidate.available.adopt, false);
+  assert.equal(candidate.previewRevision, preview.previewRevision);
+  live = { ...live, revision: "worker:2" };
+  assert.notEqual(
+    (await reader.preview(root, group.id, "a", 1)).previewRevision,
+    preview.previewRevision,
+  );
+  await assert.rejects(
+    reader.adopt(
+      root,
+      {
+        groupId: group.id,
+        candidateId: "a",
+        version: 1,
+        slideIds: ["cover"],
+        expectedRevision: project.getRevision(root),
+      },
+      tasks,
+    ),
+    /レビュー/,
+  );
+  assert.deepEqual(await project.readProject(root), deck);
+});
+
+test("a restart marks interrupted preparation as failed without resuming or editing the deck", async (t) => {
+  const { store, root, deck } = await setup(t);
+  const groups = await store.read(root);
+  groups[0].prepared = false;
+  groups[0].preparationError = null;
+  await store.save(root, groups);
+  const restored = new SlideProposals({
+    workspaceRoot: project.workspacesRoot,
+    publish: () => {},
+  });
+  await restored.recover(root);
+  const group = (await restored.snapshot(root, tasks))[0];
+  assert.match(group.preparationError, /自動再開/);
+  assert.deepEqual(
+    group.candidates.map((c) => c.status),
+    ["failed", "failed", "failed"],
+  );
+  assert.equal(
+    group.candidates.some((c) => c.available.view || c.available.adopt),
+    false,
+  );
+  assert.deepEqual(await project.readProject(root), deck);
 });
