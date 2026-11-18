@@ -320,11 +320,19 @@ export function SlideProposals({
                     onClick={() => choose(g, c)}
                     title={`${c.id.toUpperCase()}案：${c.title} — ${status}`}
                   >
-                    <span
-                      className={`proposal-state-dot ${c.status}`}
-                      aria-hidden="true"
-                    />
-                    <span>{c.id.toUpperCase()}</span>
+                    <span className="proposal-choice-badge">
+                      {c.id.toUpperCase()}案
+                    </span>
+                    <span className="proposal-choice-title">{c.title}</span>
+                    <span className="proposal-choice-status">
+                      <span
+                        className={`proposal-state-dot ${c.status}`}
+                        aria-hidden="true"
+                      />
+                      <span className="proposal-choice-status-text">
+                        {status}
+                      </span>
+                    </span>
                   </button>
                 );
               })}
@@ -384,11 +392,6 @@ export function SlideProposals({
         previewContainer &&
         createPortal(
           <>
-            <div className="proposal-name-label">
-              {selected.id.toUpperCase()}案 {selected.title}
-              {selected.status !== "ready" &&
-                ` · ${statusLabels[selected.status] ?? selected.status}`}
-            </div>
             <div className="proposal-preview">
               {previews[key(group, selected)] ? (
                 <SlideFrame

@@ -471,11 +471,12 @@ test("selecting one proposal keeps the compact strip and canvas mounted", async 
   assert.match(css, /@media \(prefers-reduced-motion: no-preference\) \{ \.proposal-state-dot:is\([^)]*\) \{ animation: proposal-state-spin/);
 
   assert.doesNotMatch(source, /proposal-choice-selected|proposal-progress/);
-  assert.match(css, /\.proposal-workspace\[data-open="false"\] \{[^}]*height: 36px;/);
-  assert.doesNotMatch(source, /proposal-choice-title/);
-  assert.match(css, /\.proposal-toolbar \.proposal-choice \{[^}]*flex: 0 0 36px;/);
-  assert.match(source, /className="proposal-name-label"/);
+  assert.match(css, /\.proposal-workspace\[data-open="false"\] \{[^}]*height: 56px;/);
+  assert.match(source, /className="proposal-choice-title"/);
+  assert.match(css, /\.proposal-toolbar \.proposal-choice \{[^}]*flex: 1 1 0; min-width: 0;/);
+  assert.doesNotMatch(source, /proposal-name-label/);
   assert.match(source, /className="proposal-description-name"/);
-  assert.match(css, /\.proposal-name-label \{ position: absolute;[^}]*pointer-events: none;/);
+  assert.doesNotMatch(css, /proposal-name-label/);
+  assert.match(css, /@container proposal-panel \(max-width: 420px\) \{ \.proposal-choice-status-text \{ display: none;/);
 
 });
