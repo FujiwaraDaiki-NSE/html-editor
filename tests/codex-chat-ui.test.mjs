@@ -26,10 +26,10 @@ test("Agent production tasks separate messages, work logs, and blocking requests
   assert.match(page, /return-chat-settings/);
   assert.match(page, /activePendingServerRequests\.length > 0/);
   assert.match(page, /response\.status !== 202/);
-  assert.match(page, /phase: "accepted"/);
-  assert.match(page, /turnId: result\.turn\.id/);
+  assert.match(page, /typeof result\.message\?\.id !== "string"/);
+  assert.match(page, /messages: current\.messages\.some/);
   assert.match(page, /turnSubmission\.phase !== "idle" \|\| codexState\.activeTurnId !== null/);
-  assert.match(page, /const canSubmitAgentMessage = \(!turnInFlightRef\.current \|\| agentRunning\) && !\(claudeSelected && agentRunning\)/);
+  assert.match(page, /const canSubmitAgentMessage = turnSubmission\.phase === "idle"/);
   assert.match(page, /別タスクで実行中/);
   assert.match(page, /resyncPendingRequests/);
   assert.match(page, /result: "result_unknown"/);
@@ -38,7 +38,7 @@ test("Agent production tasks separate messages, work logs, and blocking requests
   assert.match(page, /role="status" aria-live="polite" aria-busy=\{turnBusy\}/);
   assert.match(page, /data-turn-state=\{turnPresentation\}/);
   assert.match(page, /const turnWorkLabel = codexState\.editing \? "スライドを編集中…" : "操作を進めています…"/);
-  const sendMessageStart = page.indexOf("const sendMessage = async () =>");
+  const sendMessageStart = page.indexOf("const sendMessage = async (");
   const interruptStart = page.indexOf("const interruptAgent = async () =>", sendMessageStart);
   assert.ok(sendMessageStart >= 0 && interruptStart > sendMessageStart);
   assert.doesNotMatch(page.slice(sendMessageStart, interruptStart), /setAgentPreview\(\{ phase: "checking"/);

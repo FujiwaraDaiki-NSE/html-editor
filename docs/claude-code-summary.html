@@ -2,6 +2,7 @@
 <html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Claude Code接続の実装概要</title>
 <style>body{font:16px/1.8 system-ui,sans-serif;max-width:960px;margin:48px auto;padding:0 24px;color:#202534}code{background:#edf0f5;padding:2px 6px;border-radius:4px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccd3df;padding:12px;text-align:left}h1,h2{line-height:1.4}</style>
 <h1>Claude Code接続の実装概要</h1>
+<p><strong>更新:</strong> 以下は直接編集に対応した初期実装の記録です。現在はClaudeが指示・レビューを担当し、編集をCodexへ委任します。実行中の追加指示にも対応しています。現在の構成は<a href="agent-orchestration-summary.html">オーケストレーションの実装概要</a>を参照してください。</p>
 <p>モデル選択にClaude Codeを追加し、Codex app-serverを経由せずに既存ログインでHTMLスライドを編集する。</p>
 <h2>実行経路と責務</h2>
 <table><tr><th>対象</th><th>責務</th></tr><tr><td>app/page.tsx</td><td>明示的なモデル選択、接続先別の送信可否、実行中の停止、対応しない会話操作の無効化。</td></tr><tr><td>server/agent-service.mjs</td><td>モデルと会話IDに対応する実行先へ振り分ける。Claudeの依頼をCodexへ転送しない。接続状態とモデル一覧を統合する。</td></tr><tr><td>server/claude/service.mjs</td><td>claude -pを起動し、NDJSONの本文・ツール結果・最終結果を共通のeditorイベントへ変換する。ネイティブセッションIDとeditor用履歴を保持する。</td></tr><tr><td>server/local-api.mjs</td><td>接続先共通で実行前スナップショット、プレビュー、編集範囲の検証、同時編集のマージ、復旧を行う。/api/agent/を提供し、既存の/api/codex/も維持する。</td></tr></table>

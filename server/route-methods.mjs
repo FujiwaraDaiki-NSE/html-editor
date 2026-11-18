@@ -20,7 +20,7 @@ const ROUTE_METHODS = [
   [/^\/api\/projects\/[^/]+$/, ["PATCH"]],
   [/^\/api\/projects\/[^/]+\/(?:duplicate|archive)$/, ["POST"]],
   [/^\/api\/(?:assets|references|references\/remove|references\/folder|references\/folder\/sync|save|draft|milestones|history\/checkout|history\/main|variations\/(?:checkout|generate|accept|archive|pause|resume|import))$/, ["POST"]],
-  [/^\/api\/codex\/(?:thread\/(?:start|prepare|read|resume|fork|action)|turn\/(?:start|steer|interrupt)|request\/(?:resolve|reject)|catalog\/refresh|skill\/config|account\/(?:login|logout)|mcp\/(?:oauth|resource\/read|tool\/call))$/, ["POST"]],
+  [/^\/api\/codex\/(?:tasks\/(?:approve|cancel)|tools|thread\/(?:start|prepare|read|resume|fork|action)|turn\/(?:start|steer|interrupt)|request\/(?:resolve|reject)|catalog\/refresh|skill\/config|account\/(?:login|logout)|mcp\/(?:oauth|resource\/read|tool\/call))$/, ["POST"]],
 ];
 
 export function routeMethodDecision(pathname, method) {

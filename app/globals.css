@@ -1766,3 +1766,14 @@ button.project-card { cursor: pointer; }
 .selection-toolbar .block-move-handle:active { cursor: grabbing; }
 .selection-toolbar { width: max-content; max-width: min(620px, calc(100% - 16px)); }
 .selection-toolbar button { flex-shrink: 0; }
+
+.agent-task-list { display: grid; gap: 8px; margin: 12px 0; }
+.agent-task-list > header, .agent-task-card > header { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px; }
+.agent-task-list small, .agent-task-card small { color: var(--muted); }
+.agent-task-card, .orchestrator-receipt { padding: 10px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel-2); font-size: var(--ui-label); overflow-wrap: anywhere; }
+.agent-task-card.reviewing { border-color: var(--accent); }
+.agent-task-card p, .orchestrator-receipt p { margin: 6px 0; line-height: 1.5; }
+.agent-task-card .agent-task-request { font-weight: 600; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+.agent-task-card button { padding: 5px 8px; margin: 4px 6px 4px 0; border: 1px solid var(--line-strong); border-radius: 4px; color: var(--text); background: var(--panel-3); cursor: pointer; }
+.agent-task-card pre { max-height: 240px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-task-card summary { cursor: pointer; padding: 5px 0; }

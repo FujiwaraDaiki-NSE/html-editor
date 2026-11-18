@@ -1,3 +1,4 @@
+import { orchestrationTools } from "../orchestration-tools.mjs";
 import { skillProposalInstructions } from "../skill-proposals.mjs";
 import { listSkills } from "../skills.mjs";
 import { EventEmitter } from "node:events";
@@ -17,6 +18,7 @@ const WEAVE_NAME_PREFIX = "Weave · ";
 // Dynamic tools are attached at thread/start and are not exposed by the
 // persisted thread/read shape. Keep a zero-width marker in the durable title
 // so a service restart can distinguish a tool-capable chat from a legacy one.
+const CHAT_ORCHESTRATION_MARKER = "\u2063weave-orchestration-v1";
 const CHAT_TOOL_MARKER = "\u2063weave-ui-v1";
 const CHAT_LEARNING_MARKER = "\u2063weave-ui-v2";
 const EDITOR_THREAD_MARKER = "\u2063weave-editor-v1";
@@ -43,8 +45,8 @@ function isWithinRoot(root, candidate) {
   return relativePath === "" || (relativePath !== ".." && !relativePath.startsWith(`..${sep}`) && !isAbsolute(relativePath));
 }
 
-function markedThreadName(name, learning = false) {
-  return `${name}${learning ? CHAT_LEARNING_MARKER : CHAT_TOOL_MARKER}`;
+function markedThreadName(name, learning = false, orchestration = false) {
+  return `${name}${learning ? CHAT_LEARNING_MARKER : CHAT_TOOL_MARKER}${orchestration ? CHAT_ORCHESTRATION_MARKER : ""}`;
 }
 
 function markedEditorThreadName(name) {
@@ -52,7 +54,7 @@ function markedEditorThreadName(name) {
 }
 
 function visibleThreadName(name) {
-  return typeof name === "string" ? name.replaceAll(CHAT_TOOL_MARKER, "").replaceAll(CHAT_LEARNING_MARKER, "").replaceAll(EDITOR_THREAD_MARKER, "") : name;
+  return typeof name === "string" ? name.replaceAll(CHAT_TOOL_MARKER, "").replaceAll(CHAT_LEARNING_MARKER, "").replaceAll(EDITOR_THREAD_MARKER, "").replaceAll(CHAT_ORCHESTRATION_MARKER, "") : name;
 }
 
 function threadWithVisibleName(thread) {
@@ -547,7 +549,7 @@ export class CodexService extends EventEmitter {
       if (isChat && this.slidePreferenceLearning !== null) this.chatLearningThreads.add(result.thread.id);
       const threadName = `${WEAVE_NAME_PREFIX}New conversation`;
       const persistedThreadName = isChat
-        ? markedThreadName(threadName, this.slidePreferenceLearning !== null)
+        ? markedThreadName(threadName, this.slidePreferenceLearning !== null, typeof this.onOrchestrationTool === "function")
         : markedEditorThreadName(threadName);
       await this.client.request("thread/name/set", {
         threadId: result.thread.id,
@@ -576,7 +578,7 @@ export class CodexService extends EventEmitter {
     const targetCwd = requireWorkspaceCwd(cwd, this.workspaceRoot);
     const alreadyToolCapable = this.chatToolThreads.has(threadId);
     const hasLearningTools = this.slidePreferenceLearning === null || this.chatLearningThreads.has(threadId);
-    if (alreadyToolCapable && hasLearningTools && targetCwd === requireThreadCwd(source.cwd)) {
+    if (alreadyToolCapable && hasLearningTools && (typeof this.onOrchestrationTool !== "function" || source.name?.includes(CHAT_ORCHESTRATION_MARKER)) && targetCwd === requireThreadCwd(source.cwd)) {
       return { thread: threadWithVisibleName(source), migrated: false, sourceThreadId: threadId };
     }
     if (this.activeTurns.has(threadId)) {
@@ -594,7 +596,7 @@ export class CodexService extends EventEmitter {
       const continuationName = `${WEAVE_NAME_PREFIX}Continuation`;
       await this.client.request("thread/name/set", {
         threadId: continuation.id,
-        name: markedThreadName(continuationName, this.slidePreferenceLearning !== null),
+        name: markedThreadName(continuationName, this.slidePreferenceLearning !== null, typeof this.onOrchestrationTool === "function"),
       });
       continuation.name = continuationName;
       if (history) this.threadHistories.set(continuation.id, {
@@ -669,7 +671,7 @@ export class CodexService extends EventEmitter {
     const thread = await this.assertWeaveThread(params.threadId);
     const safeParams = action === "name"
       ? { ...params, name: (isChatToolThread(thread) || this.chatToolThreads.has(params.threadId))
-        ? markedThreadName(`${WEAVE_NAME_PREFIX}${String(params.name ?? "Untitled").replace(/^Weave · /, "")}`, isLearningToolThread(thread) || this.chatLearningThreads.has(params.threadId))
+        ? markedThreadName(`${WEAVE_NAME_PREFIX}${String(params.name ?? "Untitled").replace(/^Weave · /, "")}`, isLearningToolThread(thread) || this.chatLearningThreads.has(params.threadId), thread.name?.includes(CHAT_ORCHESTRATION_MARKER) === true)
         : isEditorThread(thread) || this.threadPurposes.get(params.threadId) === "editor"
           ? markedEditorThreadName(`${WEAVE_NAME_PREFIX}${String(params.name ?? "Untitled").replace(/^Weave · /, "")}`)
         : `${WEAVE_NAME_PREFIX}${String(params.name ?? "Untitled").replace(/^Weave · /, "")}` }
@@ -991,6 +993,9 @@ export class CodexService extends EventEmitter {
   handleDynamicToolCall(request) {
     if (request.params?.namespace === UI_TOOL_NAMESPACE && !this.isActiveChatTurn(request.params)) {
       return this.rejectStaleUiTool(request);
+    }
+    if (request.params?.namespace === UI_TOOL_NAMESPACE && (orchestrationTools.some(tool => tool.name === request.params.tool) || (typeof this.onOrchestrationTool === "function" && [GET_SLIDE_LEARNING_TOOL_NAME, LEARN_SLIDE_PREFERENCE_TOOL_NAME].includes(request.params.tool)))) {
+      return (async () => { try { const result = await this.onOrchestrationTool(request.params); this.client.respond(request.id, dynamicToolResult(result, true)); return { accepted: true }; } catch (error) { this.client.respond(request.id, dynamicToolResult({ error: error.message }, false)); return { accepted: false, error }; } })();
     }
     if (request.params?.namespace === UI_TOOL_NAMESPACE && request.params?.tool === EDIT_SLIDES_TOOL_NAME) {
       return this.handleEditSlidesCall(request);

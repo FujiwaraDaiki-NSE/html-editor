@@ -189,3 +189,21 @@ test("a pinned version rejects a different runtime model rather than silently us
   assert.match(turn.error.message, /requires claude-opus-5-5/);
   assert.equal((await service.readThread(thread.id)).model, "claude:claude-opus-5-5");
 });
+
+test("orchestrator Claude receives read-only tools and a turn-scoped MCP capability", async t => {
+  const { service, calls } = await setup(t);
+  let closed = 0;
+  service.toolConfiguration = () => ({ url: 'http://127.0.0.1:4325/api/agent/tools', token: 'test-turn-capability', close: () => { closed++; } });
+  const thread = await service.startThread({ model: 'claude:sonnet' });
+  const done = completed(service);
+  await service.startTurn({ ...payload(thread.id, 'REVIEW'), instructions: 'Delegate edits and review exact changes.' });
+  await done;
+  const args = calls[0].args;
+  assert.equal(args[args.indexOf('--tools') + 1], 'Read,Glob,Grep');
+  assert.equal(args[args.indexOf('--allowedTools') + 1], 'Read,Glob,Grep,mcp__weave_ui__*');
+  assert.equal(args[args.indexOf('--system-prompt-snapshot') + 1], 'off');
+  assert.equal(args[args.indexOf('--append-system-prompt') + 1], 'Delegate edits and review exact changes.');
+  assert.equal(JSON.parse(args[args.indexOf('--mcp-config') + 1]).mcpServers.weave_ui.env.WEAVE_TOOL_TOKEN, 'test-turn-capability');
+  assert.equal(closed, 1);
+  assert.equal(JSON.stringify(await service.readThread(thread.id)).includes('test-turn-capability'), false);
+});

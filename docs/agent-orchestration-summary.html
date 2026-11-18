@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>オーケストレーションの実装概要</title>
+<style>body{font:16px/1.85 system-ui,sans-serif;max-width:1040px;margin:48px auto;padding:0 24px;color:#202534;background:#fafbfe}h1,h2{line-height:1.4}table{border-collapse:collapse;width:100%;background:white}th,td{border:1px solid #ccd3df;padding:12px;text-align:left;vertical-align:top}code{background:#edf0f5;padding:2px 6px;border-radius:4px}.flow{padding:20px;background:#eaf1ff;border-radius:12px}</style>
+<h1>オーケストレーションの実装概要</h1>
+<p>編集の実行中に追加指示を送れない問題を解消し、選択したCodex／Claudeが担当への指示とレビューを行う。実装担当には別のCodex会話を使う。モデルメニューがオーケストレータの選択を兼ね、実装モデルは明示的に別途選ぶ。</p>
+<p class="flow">人間の指示 → オーケストレータ → 必要に応じて人間の承認 → Codex担当 → 差分レビュー → 変更範囲・同時編集の検証 → 反映</p>
+<h2>操作</h2><table><tr><th>設定・操作</th><th>結果</th></tr><tr><td>編集を任せる</td><td>編集を委任し、レビュー後に反映する。</td></tr><tr><td>確認してから編集</td><td>担当の作業内容を示し、人間がカードを承認してから実装する。実装後にもレビューする。</td></tr><tr><td>案や計画を相談</td><td>会話で回答する。編集の許可として扱わない。</td></tr><tr><td>作業中に追加指示</td><td>受付を記録し、オーケストレータが担当の継続・変更・停止を判断する。</td></tr><tr><td>担当カード</td><td>対象、モデル、指示、試行回数、進行状況を表示し、レビューと変更前後を展開できる。担当単位で中止できる。</td></tr></table>
+<h2>実装と状態の所有者</h2><table><tr><th>ファイル</th><th>責務</th></tr><tr><td>server/orchestration.mjs</td><td>受信履歴、担当キュー、追加指示バージョン、人間承認、レビュー待ち、停止、再起動時の失敗記録。</td></tr><tr><td>server/local-api.mjs</td><td>接続先の実行、Codex担当の起動と既存のプレビュー・復旧・マージ処理への接続。ブラウザー所有権とプロジェクトの排他制御。</td></tr><tr><td>server/orchestration-tools.mjs / task-view.mjs</td><td>依頼・担当確認・制御・レビュー用ツール。担当一覧は要約、詳細ソースは必要な担当だけ取得し、大きい場合は全ページ閲覧を要求する。</td></tr><tr><td>server/claude/service.mjs / orchestrator-mcp.mjs</td><td>Claude Codeの既存ログインを利用。読み取り専用ツールと、会話・ターンに限定した一時トークン付き専用MCPを接続する。</td></tr><tr><td>app/page.tsx / components/AgentTasks.tsx</td><td>HTTP受付後に入力欄を開放し、担当状態と受信確認を表示する。</td></tr></table>
+<h2>反映と追加指示の順序</h2><p>人間の新しい指示は担当のバージョンを更新する。判断前の待機作業は開始せず、古いバージョンのレビューは拒否する。変更前後を閲覧したオーケストレータだけがレビューでき、反映時にもプロジェクトロック内で再確認する。人間の同時編集は従来のマージ処理で保全する。プレビュー表示と反映済み状態を分ける。</p>
+<h2>接続と復旧</h2><p>Claudeの会話はローカルAPIからClaude Codeへ直接実行し、Codex app-serverを通らない。スライドの実装担当だけがCodex app-serverを使う。CLIの直接編集権限はClaudeに渡さず、人間の承認操作はAgent UIから除外する。再起動時に未完了作業を再実行・再送しない。状態はGit管理対象外の.weave/orchestration.jsonに保存し、ブラウザー認証トークンは保存しない。</p>
+<h2>既存機能と制約</h2><p>変更範囲、同時編集、復旧、名前付き保存、別方向のブランチ、スキル参照とレビュー後の学習を維持する。担当の書き込みは順次実行し、その間も会話を続けられる。進行中の担当がある会話のアーカイブ・削除は、担当の明示的な停止を先に求める。モデル未選択やバージョン不一致を別モデルで代替しない。</p>
+<h2>確認内容</h2><p>専用workspaceでClaude Opus 5.5をオーケストレータ、GPT-6.1-Solを実装担当として、人間承認、実装中の追加指示、レビュー、見出しだけの反映を確認した。Codexをオーケストレータに選んだ場合も、別のCodex担当による編集とレビュー後の反映を確認した。自動テストでは重複受付、古いレビュー、停止、再起動、キューの順序、追加指示、閲覧ページの完全性、既存会話の移行を検証する。</p>
+</html>

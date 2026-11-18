@@ -138,7 +138,7 @@ export class ClaudeService extends EventEmitter {
     }
   }
 
-  async launch({ threadId, prompt, userPrompt, model, effort, attachments }) {
+  async launch({ threadId, prompt, userPrompt, model, effort, attachments, instructions: suppliedInstructions }) {
     if (this.stopping) throw new Error("Claude Code service is stopping.");
     if (!this.ready) throw new Error(this.connection.error);
     if (typeof userPrompt !== "string") throw new Error("User prompt is required.");
@@ -161,12 +161,14 @@ export class ClaudeService extends EventEmitter {
     thread.effort = descriptor.supportedReasoningEfforts.length ? effort : null;
     thread.preview = userPrompt.slice(0, 160);
     let instructions;
-    try { instructions = await this.instructions(); }
+    try { instructions = suppliedInstructions === undefined ? await this.instructions() : suppliedInstructions; }
     catch (error) { this.activeTurns.delete(threadId); throw error; }
+    const capability = this.toolConfiguration ? this.toolConfiguration(threadId, turn.id) : null;
+    const mcp = capability === null ? { mcpServers: {} } : { mcpServers: { weave_ui: { command: process.execPath, args: [fileURLToPath(new URL("../orchestrator-mcp.mjs", import.meta.url))], env: { WEAVE_TOOL_URL: capability.url, WEAVE_TOOL_TOKEN: capability.token } } } };
     const args = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
       "--model", model.slice(7), "--settings", JSON.stringify({ fallbackModel: [], switchModelsOnFlag: false }), "--restricted", "--permission-mode", "acceptEdits", "--permission-prompts", "none",
-      "--tools", "Read,Edit,Write,Glob,Grep", "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}',
-      "--append-system-prompt", instructions,
+      "--tools", "Read,Glob,Grep", "--allowedTools", "Read,Glob,Grep,mcp__weave_ui__*", "--strict-mcp-config", "--mcp-config", JSON.stringify(mcp),
+      "--system-prompt-snapshot", "off", "--append-system-prompt", instructions,
       thread.sessionStarted ? "--resume" : "--session-id", thread.sessionId];
     if (descriptor.supportedReasoningEfforts.length) args.push("--effort", effort);
     const input = prompt + (attachments?.length ? `\n\nAttached project references (use Read to inspect them):\n${JSON.stringify(attachments)}` : "");
@@ -175,7 +177,7 @@ export class ClaudeService extends EventEmitter {
       await this.persist(thread);
       if (this.stopping) throw new Error("Claude Code service is stopping.");
       child = this.spawnProcess(this.command, args, { cwd: this.projectRoot, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32" });
-    } catch (error) { this.activeTurns.delete(threadId); throw error; }
+    } catch (error) { capability?.close(); this.activeTurns.delete(threadId); throw error; }
     this.activeTurns.set(threadId, turn.id);
     let resolveDone;
     const record = { child, interrupted: false, done: new Promise((resolve) => { resolveDone = resolve; }) };
@@ -244,11 +246,12 @@ export class ClaudeService extends EventEmitter {
       void (async () => {
         const denied = Array.isArray(result?.permission_denials) && result.permission_denials.length > 0;
         turn.status = record.interrupted ? "interrupted" : !protocolError && !processError && code === 0 && result?.subtype === "success" && !result.is_error && !denied ? "completed" : "failed";
-        if (turn.status === "failed") turn.error = { message: protocolError ?? processError ?? (denied ? "Claude Code denied a tool permission. This editor permits project file tools only." : result?.errors?.join("\n") || result?.result || stderr || "Claude Code exited without a successful result.") };
+        if (turn.status === "failed") turn.error = { message: protocolError ?? processError ?? (denied ? "Claude Code denied a tool permission. This editor permits read-only file tools and its orchestration tools only." : result?.errors?.join("\n") || result?.result || stderr || "Claude Code exited without a successful result.") };
         for (const item of turn.items) if (item.status === "running") item.status = turn.status;
         thread.updatedAt = Date.now() / 1000;
         thread.status = "idle";
         try { await saveQueue; await this.persist(thread); } catch (error) { turn.status = "failed"; turn.error = { message: `Could not save Claude history: ${error.message}` }; }
+        capability?.close();
         this.activeTurns.delete(threadId);
         this.processes.delete(threadId);
         clearTimeout(record.killTimer);

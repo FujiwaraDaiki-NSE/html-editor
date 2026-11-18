@@ -36,7 +36,7 @@ test("registers semantic browser tools with the experimental dynamic-tool contra
   const [namespace] = uiDynamicTools({ purpose: "chat" });
   assert.equal(namespace.type, "namespace");
   assert.equal(namespace.name, UI_TOOL_NAMESPACE);
-  assert.deepEqual(namespace.tools.map(({ name }) => name), ["inspect", "click", "fill", "select", "key", "edit_slides"]);
+  assert.deepEqual(namespace.tools.map(({ name }) => name), ["inspect", "click", "fill", "select", "key", "edit_slides", "tasks", "read_task_changes", "control_task", "review_edit"]);
   assert.deepEqual(namespace.tools.find(({ name }) => name === "inspect").inputSchema.required, ["target"]);
   assert.deepEqual(namespace.tools.find(({ name }) => name === "select").inputSchema.required, ["target", "value"]);
   assert.deepEqual(namespace.tools.find(({ name }) => name === "edit_slides").inputSchema.required, ["prompt", "scope", "execution", "allowSkillChanges"]);

@@ -21,6 +21,7 @@ import { BlockResizeOverlay, type BlockResizeSize, type BlockResizeCommit } from
 import { AnnotationOverlay } from "./components/AnnotationOverlay";
 import type { Annotation, AnnotationGestureKind, AnnotationRect, PointerCandidate, ResizeHandle } from "./components/AnnotationOverlay";
 import { useEditorDialog } from "./components/EditorDialog";
+import { AgentTasks, type AgentTask, type OrchestrationSnapshot } from "./components/AgentTasks";
 import { ApplicationSkillDialog } from "./components/ApplicationSkillDialog";
 import { ApplicationSkillLearning } from "./components/ApplicationSkillLearning";
 import { isApplicationSkill, type ApplicationSkillEntry, type SkillEntry, type SkillScope } from "./components/application-skill-requests";
@@ -32,7 +33,7 @@ import { ServerRequestCard } from "./codex/components/ServerRequestCard";
 import { codexReducer, initialCodexState } from "./codex/reducer";
 import type { RequestResolutionOutcome } from "./codex/request-state";
 import { isConversationMessage, partitionPendingRequests, pendingRequestScope, selectThreadRunning, selectThreadTurns, selectTurnItems } from "./codex/selectors";
-import { deriveTurnPresentation, IDLE_TURN_SUBMISSION, isTerminalTurnStatus, resetTurnSubmission, type TurnPresentationState, type TurnSubmissionState } from "./codex/turn-status";
+import { deriveTurnPresentation, IDLE_TURN_SUBMISSION, resetTurnSubmission, type TurnPresentationState, type TurnSubmissionState } from "./codex/turn-status";
 import { preservedSlideNumber, projectEventDecision, projectEventMatchesActivePreview, viewedSlideIdForHydration } from "./project-events";
 
 /* A slide is now a real HTML file: its `<main class="weave-slide">` fragment is the single
@@ -58,7 +59,7 @@ type OpenPopover = "delivery" | "threads" | "addBlock" | "layouts" | "newSlide" 
 type VariationPreview = { branch: string; label: string; css: string; deck: ServerState["deck"] };
 type ChangedTarget = { slideId: string; elementId: string };
 type ChangeScope = "element" | "current-slide" | "selected-slides" | "deck";
-type ExecutionMode = "apply" | "propose" | "plan";
+type ExecutionMode = "apply" | "confirm";
 type DraftSyncState = "synced" | "saving" | "offline" | "error";
 type Density = "comfortable" | "compact";
 type SourceDiagnostic = { message: string; line: number; column: number };
@@ -82,6 +83,7 @@ function reviewChangeMatches(deck: { title: string; defaultTemplateId: string; s
 }
 
 type ServerState = {
+  orchestration: OrchestrationSnapshot;
   deck: { title: string; defaultTemplateId: string; slides: SlideDoc[] };
   css: string;
   templates: TemplateDoc[];
@@ -206,6 +208,12 @@ const agentModelStore = {
   write(value: AgentModel) { agentModelSnapshot = value; agentModelRead = true; window.localStorage.setItem(agentModelKeys.model, value.model); window.localStorage.setItem(agentModelKeys.effort, value.effort); agentModelListeners.forEach((listener) => listener()); },
 };
 
+const workerModelListeners = new Set<() => void>();
+const workerModelStore = {
+  subscribe(listener: () => void) { workerModelListeners.add(listener); return () => { workerModelListeners.delete(listener); }; },
+  read: () => window.localStorage.getItem("weave.worker.model") ?? "", serverRead: () => "",
+  write(model: string) { window.localStorage.setItem("weave.worker.model", model); workerModelListeners.forEach(listener => listener()); },
+};
 const createMessageId = () => `weave-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 const formatBytes = (bytes: number) => bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} KB` : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 const retryDelay = (attempt: number) => Math.min(10_000, 400 * (2 ** Math.min(attempt, 5))) + Math.random() * 250;
@@ -547,6 +555,10 @@ export default function Home() {
   const [agentCompletion, setAgentCompletion] = useState<number | null>(null);
   const [previewHighlightSlideId, setPreviewHighlightSlideId] = useState<string | null>(null);
   const [changeScope, setChangeScope] = useState<ChangeScope>("current-slide");
+  const [orchestration, setOrchestration] = useState<OrchestrationSnapshot>({ tasks: [], messages: [] });
+  const workerModel = useSyncExternalStore(workerModelStore.subscribe, workerModelStore.read, workerModelStore.serverRead);
+  const [workerEffort, setWorkerEffort] = useState("medium");
+  const activeProjectRootRef = useRef<string | null>(null);
   const [executionMode, setExecutionMode] = useState<ExecutionMode>("apply");
   const [draftSync, setDraftSync] = useState<DraftSyncState>("synced");
   const [agentProjectReady, setAgentProjectReady] = useState(true);
@@ -566,6 +578,7 @@ export default function Home() {
   const uiBridgeRef = useRef<UiBridge | null>(null);
   const uiSessionRef = useRef<{ sessionId: string; token: string; threadId: string | null }>({ sessionId: "", token: "", threadId: null });
   const uiSessionRevisionRef = useRef(0);
+  const uiEditorContextRef = useRef<{ root: string; contextEnvelope: ReturnType<typeof editorEnvelope> } | null>(null);
   const uiSessionQueueRef = useRef<Promise<unknown>>(Promise.resolve());
   const uiSessionLeaseRef = useRef<{ threadId: string | null; replaced: boolean }>({ threadId: null, replaced: false });
   const uiRequestOwnerRef = useRef<UiRequestOwner | null>(null);
@@ -639,7 +652,8 @@ export default function Home() {
   const blockingPendingRequests = [...pendingRequestGroups.active, ...pendingRequestGroups.unscoped];
   const turnPresentation = deriveTurnPresentation(turnSubmission, codexState.activeThreadId, agentRunning);
   const turnBusy = turnSubmission.phase !== "idle" || codexState.activeTurnId !== null;
-  const canSubmitAgentMessage = (!turnInFlightRef.current || agentRunning) && !(claudeSelected && agentRunning);
+  const canSubmitAgentMessage = turnSubmission.phase === "idle";
+  const conversationWorking = agentRunning || orchestration.tasks.some(task => task.threadId === codexState.activeThreadId && !["completed", "cancelled", "failed"].includes(task.status));
   const slideScale = manualZoom ?? fitScale;
   const zoomMode = manualZoom === null ? "fit" : "manual";
   const activeSlideId = slides[activeSlide - 1]?.id;
@@ -898,6 +912,7 @@ export default function Home() {
           sessionId: initialOwner.sessionId,
           token: session.token,
           response: responseResult,
+          editorContext: uiExpectedProjectOperationRef.current?.requestId === initialOwner.requestId ? uiEditorContextRef.current : null,
         }),
       });
       const responseBody = await response.json();
@@ -1272,6 +1287,8 @@ export default function Home() {
     attachments: attachments.map(({ path, name, size, kind, files, storage }) => ({ path, name, bytes: size, kind, files, storage })),
   });
 
+  uiEditorContextRef.current = project ? { root: project.root, contextEnvelope: contextEnvelope() } : null;
+
   const quality = useMemo(() => {
     let renderedSlides: string[];
     try { renderedSlides = composedSlides(slides); } catch (error) { return { ok: false, diagnostics: [{ id: "template-reference", code: "template-reference", source: "slides", severity: "error" as const, message: error instanceof Error ? error.message : String(error), explanation: "テンプレート参照を解決できません。", fixSuggestion: "テンプレートとレイアウトの参照を確認してください。", slideId: null, elementId: null }], errors: 1, warnings: 0, suggestions: 0 }; }
@@ -1400,6 +1417,8 @@ export default function Home() {
     setSkillProposals(state.skillProposals ?? []);
     setVariations(state.variations ?? []);
     setProject(state.project);
+    activeProjectRootRef.current = state.project.root;
+    setOrchestration(state.orchestration);
     setServerRevision(state.project.revision ?? state.project.commit);
     setActiveVariation(state.project.branch);
     dispatchCodex({ type: "connection", connection: state.codex.connection });
@@ -1477,6 +1496,7 @@ export default function Home() {
           for (const line of lines) {
             if (!line.trim()) continue;
             const envelope = JSON.parse(line);
+            if (envelope.type === "weave/orchestration") setOrchestration({ tasks: envelope.payload.tasks.filter((task: AgentTask) => task.root === activeProjectRootRef.current), messages: envelope.payload.messages.filter((message: { root: string }) => message.root === activeProjectRootRef.current) });
             const envelopeSequence = Number(envelope.sequence ?? 0);
             if (envelope.type === "weave/ui") {
               void handleUiToolEvent(envelope.payload);
@@ -3256,45 +3276,9 @@ export default function Home() {
   };
 
   const generateVariation = async () => {
-    if (turnBusy) return;
-    const prompt = variationPrompt.trim();
-    const boxes = liveAnnotationBoxes();
-    const variationAnnotations = collectTurnAnnotations(prompt, boxes);
-    if (!canSendTurn(prompt, variationAnnotations) || turnInFlightRef.current || turnSubmission.phase !== "idle") return;
-    turnInFlightRef.current = true;
-    setTurnSubmission({ phase: "submitting", threadId: codexState.activeThreadId, turnId: null });
+    const value = variationPrompt.trim(); if (!value) return;
     setShowVariationPrompt(false);
-    setApiError(null);
-    setAgentCompletion(null);
-    let accepted = false;
-    const requestDeck = deckPayload();
-    agentPreviewBaselineRef.current = requestDeck.slides.map((item) => ({ ...item }));
-    agentViewedSlideIdRef.current = requestDeck.slides[activeRef.current - 1]?.id ?? null;
-    setAgentPreview({ phase: "checking", changedSlideIds: [], sequence: 0 });
-    try {
-      // Variations are branch trials, so annotations stay on the canvas instead of being consumed.
-      const response = await fetch(`${apiBase}/variations/generate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt, deck: requestDeck, clientUserMessageId: createMessageId(), model: selectedModel, effort: reasoningEffort, approvalPolicy: claudeSelected ? null : approvalPolicy, contextEnvelope: contextEnvelope(variationAnnotations, overflowingIds(liveOverflowMeasurements())) }) });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "デザイン案を生成できませんでした。");
-      if (response.status !== 202 || typeof result.thread?.id !== "string" || typeof result.turn?.id !== "string") throw new Error("デザイン案の受付状態を確認できませんでした。");
-      accepted = true;
-      if (isTerminalTurnStatus(result.turn.status)) {
-        turnInFlightRef.current = false;
-        setTurnSubmission(IDLE_TURN_SUBMISSION);
-      } else setTurnSubmission({ phase: "accepted", threadId: result.thread.id, turnId: result.turn.id });
-      setActiveVariation(result.branch);
-      dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
-    } catch (error) {
-      if (!accepted) setTurnSubmission(IDLE_TURN_SUBMISSION);
-      if (!accepted) {
-        agentPreviewBaselineRef.current = null;
-        agentViewedSlideIdRef.current = null;
-        setAgentPreview(null);
-      }
-      setApiError(error instanceof Error ? error.message : String(error));
-    } finally {
-      if (!accepted) turnInFlightRef.current = false;
-    }
+    await sendMessage({ prompt: `別の探索案を作成してください。variation:trueで別ブランチにしてください。\n${value}`, variation: true });
   };
 
   const acceptVariation = async () => {
@@ -3378,14 +3362,14 @@ export default function Home() {
     setTurnSubmission(IDLE_TURN_SUBMISSION);
   };
 
-  const sendMessage = async () => {
-    const value = promptDraft.trim();
+  const sendMessage = async (request?: { prompt: string; variation: boolean }) => {
+    const value = request === undefined ? promptDraft.trim() : request.prompt;
     const slide = slidesRef.current[activeRef.current - 1];
     const slideNumber = activeRef.current;
     const overflowing = overflowingIds(liveOverflowMeasurements());
     const boxes = viewportRef.current ? liveAnnotationBoxes() : null;
     const turnAnnotations = collectTurnAnnotations(value, boxes);
-    if (!(canSendTurn(value, turnAnnotations) || referenceAttachments.length > 0) || turnInFlightRef.current || turnSubmission.phase !== "idle" || !canSubmitAgentMessage) return;
+    if (!(canSendTurn(value, turnAnnotations) || referenceAttachments.length > 0) || !canSubmitAgentMessage) return;
     if (slide && boxes) setAnnotations((current) => refreshSlideAnnotations(current, slide.id, boxes));
     const requestDeck = deckPayload();
     const requestEnvelope = contextEnvelope(turnAnnotations, overflowing, referenceAttachments);
@@ -3418,7 +3402,7 @@ export default function Home() {
         const prepareResponse = await fetch(`${apiBase}/agent/thread/prepare`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ threadId: requestThreadId, approvalPolicy, model: selectedModel || undefined }),
+          body: JSON.stringify({ threadId: requestThreadId, approvalPolicy, model: selectedModel }),
         });
         const prepared = await prepareResponse.json();
         if (!prepareResponse.ok) throw new Error(prepared.error ?? "会話をUI操作へ接続できませんでした。");
@@ -3449,23 +3433,13 @@ export default function Home() {
       }
       const runningTurnId = codexState.activeTurnId;
       const endpoint = steering ? "agent/turn/steer" : "agent/turn/start";
-      const response = await fetch(`${apiBase}/${endpoint}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: requestThreadId, purpose: "chat", prompt: value, clientUserMessageId: createMessageId(), selectedId, deck: requestDeck, model: selectedModel, effort: reasoningEffort, approvalPolicy: claudeSelected ? null : approvalPolicy, contextEnvelope: requestEnvelope, attachments: referenceAttachments, uiSession: { sessionId: uiSession.sessionId, token: uiSession.token } }) });
+      const response = await fetch(`${apiBase}/${endpoint}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: requestThreadId, purpose: "chat", prompt: value, clientUserMessageId: createMessageId(), selectedId, deck: requestDeck, model: selectedModel, effort: reasoningEffort, approvalPolicy: claudeSelected ? null : approvalPolicy, workerApprovalPolicy: approvalPolicy, workerModel, workerEffort, humanEdited: browserDirtyRef.current, contextEnvelope: requestEnvelope, attachments: referenceAttachments, uiSession: { sessionId: uiSession.sessionId, token: uiSession.token } }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Agentへの依頼を開始できませんでした。");
-      if (response.status !== 202 || (!steering && typeof result.turn?.id !== "string") || (steering && typeof result.turnId !== "string")) throw new Error("Agentへの依頼受付状態を確認できませんでした。");
-      if (result.thread && typeof result.thread.id === "string") {
-        requestThreadId = result.thread.id;
-        dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
-        await ensureUiSessionForThread(requestThreadId);
-      }
-      if (!steering) {
-        accepted = true;
-        if (isTerminalTurnStatus(result.turn.status)) {
-          turnInFlightRef.current = false;
-          setTurnSubmission(IDLE_TURN_SUBMISSION);
-        } else setTurnSubmission({ phase: "accepted", threadId: requestThreadId, turnId: result.turn.id });
-      } else setTurnSubmission(IDLE_TURN_SUBMISSION);
-      if (turnAnnotations.length > 0 && slide) {
+      if (response.status !== 202 || typeof result.message?.id !== "string") throw new Error("メッセージの受付を確認できませんでした。");
+      accepted = true;
+      setOrchestration(current => ({ ...current, messages: current.messages.some(message => message.id === result.message.id) ? current.messages : [...current.messages, result.message] }));
+      if (turnAnnotations.length > 0 && slide && request?.variation !== true) {
         const turnId = steering ? runningTurnId ?? result.turn?.id ?? result.turnId ?? null : result.turn?.id ?? result.turnId ?? null;
         setAnnotationAttachments((current) => [...current, {
           id: createMessageId(),
@@ -3492,7 +3466,8 @@ export default function Home() {
       }
       setApiError(error instanceof Error ? error.message : String(error));
     } finally {
-      if (!accepted) turnInFlightRef.current = false;
+      turnInFlightRef.current = false;
+      setTurnSubmission(IDLE_TURN_SUBMISSION);
     }
   };
 
@@ -3971,7 +3946,7 @@ export default function Home() {
         <nav className="more-navigation" aria-label="その他の機能"><button onClick={() => showActivity("history")}>履歴・保存</button><button onClick={(event) => togglePopover("quality", event.currentTarget)}>品質チェック</button><button onClick={() => showActivity("skills")}>スキル</button><button onClick={() => showActivity("shortcuts")}>ヘルプとショートカット</button></nav>
         <section><h3>表示</h3><label><span>カラーモード</span><select value={theme} onChange={(event) => setTheme(event.target.value as "dark" | "light")}><option value="dark">ダーク</option><option value="light">ライト</option></select></label><label><span>表示密度</span><select value={density} onChange={(event) => densityStore.write(event.target.value as Density)}><option value="comfortable">通常</option><option value="compact">コンパクト</option></select></label><p>スライド一覧は左、チャットを常に表示するコンテキストパネルは右にあります。タブでデザインや変更レビューへ切り替えられます。</p></section>
         <section><h3>Agent</h3>
-          {claudeSelected ? <p>Claude Codeの既存ログインを使用します。プロジェクト内のファイル読み書きを許可し、コマンド実行は許可しません。</p> : <label><span>承認方法</span><select value={approvalPolicy} onChange={(event) => setApprovalPolicy(event.target.value)}><option value="never">確認しない</option><option value="on-request">必要なとき確認</option><option value="untrusted">未確認コマンドのみ</option></select></label>}
+          {claudeSelected ? <p>Claude Codeの既存ログインを使用します。Claudeは会話とレビューを担当し、編集は選択したCodexモデルへ委任します。</p> : <label><span>承認方法</span><select value={approvalPolicy} onChange={(event) => setApprovalPolicy(event.target.value)}><option value="never">確認しない</option><option value="on-request">必要なとき確認</option><option value="untrusted">未確認コマンドのみ</option></select></label>}
           {codexState.catalog.modelProvider && <pre className="settings-output">{JSON.stringify(codexState.catalog.modelProvider, null, 2)}</pre>}
         </section>
         <section><h3>Claude Code</h3><p>{codexState.catalog.providers?.claude?.connection.error ?? (codexState.catalog.providers?.claude?.ready ? "既存ログインで接続済み" : "接続を確認中…")}</p><button data-ui-agent-exclude="true" onClick={() => { void fetch(`${apiBase}/agent/catalog/refresh`, { method: "POST" }).catch((error) => setApiError(error.message)); }}>接続を再確認</button></section>
@@ -4118,6 +4093,7 @@ export default function Home() {
                   {(turn.status !== "completed" || turn.diff) && <footer className="turn-status"><span role="status">{turn.status}</span>{turn.diff && <details><summary>ターンの差分</summary><pre>{turn.diff}</pre></details>}</footer>}
                 </section>;
               })}
+              <AgentTasks snapshot={orchestration} threadId={codexState.activeThreadId} onAction={(task, action) => { void fetch(`${apiBase}/agent/tasks/${action}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: task.threadId, taskId: task.id, version: task.version, uiSession: { sessionId: uiSessionRef.current.sessionId, token: uiSessionRef.current.token } }) }).then(async response => { const result = await response.json(); if (!response.ok) throw new Error(result.error); }).catch(error => setApiError(error.message)); }} />
               {unmatchedAttachments.map((attachment) => <AnnotationAttachment
                 key={attachment.id}
                 slideLabel={attachment.slideLabel}
@@ -4202,7 +4178,9 @@ export default function Home() {
               </>}
               <div className="agent-boundary-controls" role="group" aria-label="Agentの変更範囲と実行方法">
                 <label><span>変更範囲</span><select value={changeScope} onChange={(event) => setChangeScope(event.target.value as ChangeScope)}><option value="element" disabled={!selectedId}>この要素だけ</option><option value="current-slide">現在のスライド</option><option value="selected-slides">選択したスライド</option><option value="deck">デッキ全体</option></select></label>
-                <label><span>実行</span><select value={executionMode} onChange={(event) => { const mode = event.target.value as ExecutionMode; setExecutionMode(mode); }}><option value="apply">直接反映</option><option value="propose">提案だけ作成</option><option value="plan">先に計画を提示</option></select></label>
+                <label><span>実装担当（Codex）</span><select aria-label="実装担当のモデル" value={workerModel} onChange={event => workerModelStore.write(event.target.value)}><option value="">モデルを選択</option>{codexState.catalog.models.filter((model: any) => model.provider === "codex").map((model: any) => <option key={model.id} value={model.id}>{model.displayName ?? model.id}</option>)}</select></label>
+                <label><span>実装の推論レベル</span><select aria-label="実装担当の推論レベル" value={workerEffort} onChange={event => setWorkerEffort(event.target.value)}>{((codexState.catalog.models.find((model: any) => model.id === workerModel) as any)?.supportedReasoningEfforts ?? []).map((option: any) => <option key={option.reasoningEffort} value={option.reasoningEffort}>{option.reasoningEffort}</option>)}</select></label>
+                <label><span>実行</span><select value={executionMode} onChange={(event) => { const mode = event.target.value as ExecutionMode; setExecutionMode(mode); }}><option value="apply">編集を任せる</option><option value="confirm">確認してから編集</option></select></label>
                 <p>Agentは{changeScope === "element" ? `「${blockLabels[sel?.kind ?? ""] ?? "選択要素"}」だけ` : changeScope === "current-slide" ? `スライド${activeSlide}だけ` : changeScope === "selected-slides" ? `選択した${selectedSlideIds.size || 1}枚のスライド` : "デッキ全体"}を変更できます。</p>
               </div>
               <div className="context-chip" role="group" aria-label="参照対象">
@@ -4229,19 +4207,19 @@ export default function Home() {
                   <button type="button" aria-label={`${attachment.name}を添付から外す`} onClick={() => setReferenceAttachments((current) => current.filter((item) => item.path !== attachment.path))}>×</button>
                 </div>)}
               </div>}
-              <textarea ref={promptRef} value={promptDraft} onChange={onPromptChange} onCompositionStart={() => { compositionRef.current = true; }} onCompositionEnd={onPromptCompositionEnd} onKeyDown={onPromptKeyDown} placeholder={agentReady ? "プロジェクト作成、スライド編集、画面の操作を依頼…" : "Codexへの接続を待っています…"} aria-label="Agentへのメッセージ" aria-busy={turnBusy} maxLength={20000} disabled={!agentReady} />
+              <textarea ref={promptRef} value={promptDraft} onChange={onPromptChange} onCompositionStart={() => { compositionRef.current = true; }} onCompositionEnd={onPromptCompositionEnd} onKeyDown={onPromptKeyDown} placeholder={agentReady ? conversationWorking ? "追加の指示・質問を送れます…" : "プロジェクト作成、スライド編集、画面の操作を依頼…" : "Codexへの接続を待っています…"} aria-label="Agentへのメッセージ" aria-busy={turnBusy} maxLength={20000} disabled={!agentReady} />
               <div className="chat-actions">
                 <input ref={referenceInputRef} className="sr-only" type="file" multiple onChange={(event) => { if (event.target.files) void uploadReferences(event.target.files); }} />
                 <input ref={referenceFolderInputRef} className="sr-only" type="file" aria-label="参照フォルダーを選択" multiple {...{ webkitdirectory: "" }} onChange={(event) => { if (event.target.files?.length) void uploadReferenceFolder(event.target.files); }} />
                 <button className={`attach-button${openPopover === "references" ? " active" : ""}`} type="button" onClick={(event) => togglePopover("references", event.currentTarget)} disabled={!agentReady} aria-expanded={openPopover === "references"} aria-haspopup="dialog" aria-label="参照資料" title="Agentへ渡すファイルやフォルダーを選びます">📎</button>
                 {codexState.catalog.models.length > 0 && (
                   <div className="agent-model-control">
-                    <button className="agent-model-button" type="button" onClick={(event) => togglePopover("agentModel", event.currentTarget)} disabled={turnBusy} aria-expanded={openPopover === "agentModel"} aria-haspopup="menu" title="Agentのモデルと推論レベルを選びます"><span className="agent-model-name">{selectedModelInfo?.displayName ?? selectedModelInfo?.name ?? (selectedModel || "モデルを選択")}</span><span className="agent-effort-value">{availableEfforts.length > 0 ? reasoningEffort : ""}</span><b aria-hidden="true">⌄</b></button>
+                    <button className="agent-model-button" type="button" onClick={(event) => togglePopover("agentModel", event.currentTarget)} disabled={turnBusy} aria-expanded={openPopover === "agentModel"} aria-haspopup="menu" title="オーケストレータのモデルと推論レベルを選びます"><span className="agent-model-name">{selectedModelInfo?.displayName ?? selectedModelInfo?.name ?? (selectedModel || "モデルを選択")}</span><span className="agent-effort-value">{availableEfforts.length > 0 ? reasoningEffort : ""}</span><b aria-hidden="true">⌄</b></button>
                     {openPopover === "agentModel" && (
                       <>
                         <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
                         <div className="agent-model-popover" role="menu" aria-label="Agentのモデルと推論レベル">
-                          <section role="group" aria-label="モデル"><strong>モデル</strong>{codexState.catalog.models.map((model: any) => { const modelId = model.id ?? model.model; return <button key={modelId} role="menuitemradio" aria-checked={selectedModel === modelId} className={selectedModel === modelId ? "active" : ""} disabled={turnBusy} onClick={() => { const nextEffort = model.supportedReasoningEfforts?.map((option: any) => option.reasoningEffort).includes(reasoningEffort) ? reasoningEffort : model.defaultReasoningEffort ?? model.supportedReasoningEfforts?.[0]?.reasoningEffort ?? reasoningEffort; if (codexState.activeThreadId && (modelId.startsWith("claude:") ? "claude" : "codex") !== (claudeThread ? "claude" : "codex") && threadProviderMatches) { autoOpenThreadRef.current = false; dispatchCodex({ type: "activateThread", threadId: null }); setAnnouncement("接続先を変更しました。次の送信で新しい会話を開始します"); } agentModelStore.write({ model: modelId, effort: nextEffort }); dismissPopover(false); }}><span>{model.displayName ?? model.name ?? model.id ?? model.model}</span>{selectedModel === modelId && <b aria-hidden="true">✓</b>}</button>; })}</section>
+                          <section role="group" aria-label="モデル"><strong>モデル</strong>{codexState.catalog.models.map((model: any) => { const modelId = model.id ?? model.model; return <button key={modelId} role="menuitemradio" aria-checked={selectedModel === modelId} className={selectedModel === modelId ? "active" : ""} disabled={turnBusy} onClick={() => { const nextEffort = model.supportedReasoningEfforts?.map((option: any) => option.reasoningEffort).includes(reasoningEffort) ? reasoningEffort : model.defaultReasoningEffort ?? model.supportedReasoningEfforts?.[0]?.reasoningEffort ?? reasoningEffort; if (codexState.activeThreadId && modelId !== selectedModel) { autoOpenThreadRef.current = false; dispatchCodex({ type: "activateThread", threadId: null }); setAnnouncement("接続先を変更しました。次の送信で新しい会話を開始します"); } agentModelStore.write({ model: modelId, effort: nextEffort }); dismissPopover(false); }}><span>{model.displayName ?? model.name ?? model.id ?? model.model}</span>{selectedModel === modelId && <b aria-hidden="true">✓</b>}</button>; })}</section>
                           {availableEfforts.length > 0 && <section role="group" aria-label="推論レベル"><strong>推論レベル</strong>{availableEfforts.map((effort: string) => <button key={effort} role="menuitemradio" aria-checked={reasoningEffort === effort} className={reasoningEffort === effort ? "active" : ""} disabled={turnBusy} onClick={() => { agentModelStore.write({ model: selectedModel, effort }); dismissPopover(false); }}><span>{effort}</span>{reasoningEffort === effort && <b aria-hidden="true">✓</b>}</button>)}</section>}
                         </div>
                       </>
@@ -4250,8 +4228,8 @@ export default function Home() {
                 )}
                 <span className="chat-shortcut">⌘ / Ctrl ↵</span>
                 <span className="chat-actions-spacer" aria-hidden="true" />
-                <button className={`stop-button${agentRunning ? " active" : ""}`} onClick={() => { if (agentRunning) void interruptAgent(); }} disabled={!agentRunning} aria-hidden={!agentRunning} tabIndex={agentRunning ? 0 : -1} aria-label="Agentを停止" title="実行中のAgentを停止します">■</button>
-                <button className="send-button" onClick={() => void sendMessage()} disabled={!agentReady || !(canSendTurn(promptDraft, sendableAnnotations) || referenceAttachments.length > 0) || turnSubmission.phase !== "idle" || !canSubmitAgentMessage} aria-label="メッセージを送信" data-help="入力内容と選択中の編集コンテキストをAgentへ送信します">↑</button>
+                <button className={`stop-button${conversationWorking ? " active" : ""}`} onClick={() => { if (conversationWorking) void interruptAgent(); }} disabled={!conversationWorking} aria-hidden={!conversationWorking} tabIndex={conversationWorking ? 0 : -1} aria-label="Agentを停止" title="実行中のAgentを停止します">■</button>
+                <button className="send-button" onClick={() => void sendMessage()} disabled={!agentReady || !(canSendTurn(promptDraft, sendableAnnotations) || referenceAttachments.length > 0) || !canSubmitAgentMessage} aria-label="メッセージを送信" data-help="入力内容と選択中の編集コンテキストをAgentへ送信します">↑</button>
               </div>
             </div>
             </div>
