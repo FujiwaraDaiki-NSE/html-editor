@@ -8,7 +8,7 @@ export type AgentTask = {
   report: null | { workerOutput: string; sources: Array<{ slideId: string; before: string | null; after: string | null }> };
 };
 export type MessageReceipt = { id: string; threadId: string; root: string; text: string; automatic: boolean; status: string; error: string | null };
-export type OrchestrationSnapshot = { tasks: AgentTask[]; messages: MessageReceipt[] };
+export type OrchestrationSnapshot = { tasks: AgentTask[]; messages: MessageReceipt[]; executionModeChoices: Array<{ threadId: string; root: string }> };
 const labels: Record<string, string> = { preparing: '準備中', queued: '開始待ち', awaiting_approval: '編集前の確認待ち', running: 'Codexが作業中', reviewing: 'オーケストレータがレビュー中', applying: 'レビュー合格・反映中', cancelling: '停止処理中', completed: '反映済み', cancelled: '中止', failed: '失敗' };
 const finished = new Set(['completed', 'cancelled', 'failed']);
 export function AgentTasks({ snapshot, threadId, onAction }: { snapshot: OrchestrationSnapshot; threadId: string | null; onAction: (task: AgentTask, action: 'approve' | 'cancel') => void }) {
@@ -24,7 +24,7 @@ export function AgentTasks({ snapshot, threadId, onAction }: { snapshot: Orchest
         <p>対象：{task.scope.kind === 'deck' ? 'デッキ全体' : task.scope.slideIds.join(' / ')}{task.scope.elementId ? ` · ${task.scope.elementId}` : ''}</p>
         <p role="status">{task.activity}</p>
         {task.instructionStatus === 'pending' && <p className="activity-warning">追加指示を受付済み・継続／変更／停止を判断待ち</p>}
-        {!finished.has(task.status) && <button type="button" data-ui-agent-exclude="true" onClick={() => onAction(task, 'cancel')}>この作業を中止</button>}
+        {!finished.has(task.status) && <button type="button" onClick={() => onAction(task, 'cancel')}>この作業を中止</button>}
         {task.error && <p role="alert">{task.error}</p>}
         <details><summary>指示・レビュー・作業結果</summary>
           <p>担当への指示：{task.prompt}</p>

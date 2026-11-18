@@ -72,7 +72,7 @@ test("Agent and user conversation text renders Markdown with user line breaks pr
   assert.match(itemCard, /import ReactMarkdown from "react-markdown"/);
   assert.match(itemCard, /import remarkGfm from "remark-gfm"/);
   const messageContent = itemCard.slice(itemCard.indexOf('{isMessage ? ('), itemCard.indexOf('<div className="work-summary">'));
-  assert.match(messageContent, /item\.text && \(\s*<div className="codex-item-text chat-markdown">\s*<ReactMarkdown remarkPlugins=\{\[remarkGfm\]\}[\s\S]*?\{item\.text\}<\/ReactMarkdown>/);
+  assert.match(messageContent, /item\.text && \(\s*<div className="codex-item-text chat-markdown">\s*<ReactMarkdown remarkPlugins=\{\[remarkGfm\]\}[\s\S]*?\{messageText\}<\/ReactMarkdown>/);
   assert.doesNotMatch(messageContent, /item\.type ===|<p className="codex-item-text">/);
   assert.match(itemCard, /<a href=\{href\} target="_blank" rel="noreferrer noopener">/);
   assert.doesNotMatch(itemCard, /rehypeRaw|rehype-raw|dangerouslySetInnerHTML/);

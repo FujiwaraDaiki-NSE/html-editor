@@ -559,11 +559,15 @@ export default function Home() {
   const [changeScope, setChangeScope] = useState<ChangeScope>("current-slide");
   const [proposalGroups, setProposalGroups] = useState<ProposalGroup[]>([]);
   const [proposalTarget, setProposalTarget] = useState<ProposalTarget | null>(null);
-  const [orchestration, setOrchestration] = useState<OrchestrationSnapshot>({ tasks: [], messages: [] });
+  const [orchestration, setOrchestration] = useState<OrchestrationSnapshot>({ tasks: [], messages: [], executionModeChoices: [] });
   const workerModel = useSyncExternalStore(workerModelStore.subscribe, workerModelStore.read, workerModelStore.serverRead);
   const [workerEffort, setWorkerEffort] = useState("medium");
   const activeProjectRootRef = useRef<string | null>(null);
   const [executionMode, setExecutionMode] = useState<ExecutionMode>("apply");
+  const [executionModeBusy, setExecutionModeBusy] = useState(false);
+  const executionModeBusyRef = useRef(false);
+  const executionModeSelectedBeforeThreadRef = useRef(false);
+  const executionModeSelectedThreadsRef = useRef(new Set<string>());
   const [draftSync, setDraftSync] = useState<DraftSyncState>("synced");
   const [agentProjectReady, setAgentProjectReady] = useState(true);
   const [sourceBuffer, setSourceBuffer] = useState("");
@@ -715,10 +719,40 @@ export default function Home() {
       && owner.threadId === uiActiveThreadRef.current;
   }, []);
 
+  const changeExecutionMode = useCallback(async (value: string, human: boolean) => {
+    if (value !== "apply" && value !== "compare") throw new Error("実行方法が不正です。");
+    if (executionModeBusyRef.current) throw new Error("実行方法を確定しています。完了してから変更してください。");
+    executionModeBusyRef.current = true;
+    setExecutionModeBusy(true);
+    try {
+      const threadId = uiActiveThreadRef.current;
+      if (threadId) {
+        const session = uiSessionRef.current;
+        const endpoint = human ? "execution-mode/confirm" : "execution-mode";
+        const response = await fetch(`${apiBase}/agent/${endpoint}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId, executionMode: value, uiSession: { sessionId: session.sessionId, token: session.token } }) });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error);
+        if (human) executionModeSelectedThreadsRef.current.add(threadId);
+      } else if (human) {
+        executionModeSelectedBeforeThreadRef.current = true;
+      }
+      setExecutionMode(value);
+      setApiError(null);
+    } finally {
+      executionModeBusyRef.current = false;
+      setExecutionModeBusy(false);
+    }
+  }, []);
+
   useEffect(() => {
     const bridge = installUiBridge({
       root: appRootRef.current,
       isRequestCurrent: isUiRequestCurrent,
+      selectControl: async (element, value) => {
+        if (element.dataset.uiId !== "execution-mode") return false;
+        await changeExecutionMode(value, false);
+        return true;
+      },
       onStatus: (status) => {
         setUiOperation(status);
         if (status.message) setAnnouncement(status.message);
@@ -729,7 +763,7 @@ export default function Home() {
       bridge?.dispose();
       uiBridgeRef.current = null;
     };
-  }, [isUiRequestCurrent]);
+  }, [isUiRequestCurrent, changeExecutionMode]);
 
   const syncUiSession = useCallback(async (threadId: string, allowReclaim = false) => {
     if (uiSessionLeaseRef.current.threadId !== threadId) uiSessionLeaseRef.current = { threadId, replaced: false };
@@ -921,6 +955,7 @@ export default function Home() {
         }),
       });
       const responseBody = await response.json();
+      if (!response.ok && initialOwner.threadId !== uiActiveThreadRef.current && responseBody?.code === "WEAVE_UI_SESSION_MISMATCH") return;
       if (!response.ok) throw new Error(responseBody?.error ?? "UI操作の結果をAgentへ返せませんでした。");
     } catch (error) {
       setApiError(error instanceof Error ? error.message : String(error));
@@ -1279,6 +1314,7 @@ export default function Home() {
       elementId: changeScope === "element" ? selectedId : null,
     },
     executionMode,
+    executionModeSelected: codexState.activeThreadId ? executionModeSelectedThreadsRef.current.has(codexState.activeThreadId) : executionModeSelectedBeforeThreadRef.current,
     proposalTarget,
     selected: selectedId ? {
       id: selectedId,
@@ -1351,6 +1387,7 @@ export default function Home() {
   }, [quality, projectEventDiagnostics]);
 
   const activeThread = codexState.activeThreadId ? codexState.threads[codexState.activeThreadId] : null;
+  const executionModePending = orchestration.executionModeChoices.some(choice => choice.threadId === codexState.activeThreadId);
   const activeThreadName = activeThread ? displayThreadName(activeThread.name) || activeThread.preview || "新しい制作タスク" : "タスク未選択";
   const selectedModelInfo = useMemo(() => codexState.catalog.models.find((model: any) => (model.id ?? model.model) === selectedModel) as any, [codexState.catalog.models, selectedModel]);
   const availableEfforts = useMemo(() => selectedModelInfo?.supportedReasoningEfforts?.map((option: any) => option.reasoningEffort) ?? [], [selectedModelInfo]);
@@ -1522,7 +1559,7 @@ export default function Home() {
             }
             if (envelope.type === "weave/orchestration") {
               const tasks = envelope.payload.tasks.filter((task: AgentTask) => task.root === activeProjectRootRef.current);
-              setOrchestration({ tasks, messages: envelope.payload.messages.filter((message: { root: string }) => message.root === activeProjectRootRef.current) });
+              setOrchestration({ tasks, messages: envelope.payload.messages.filter((message: { root: string }) => message.root === activeProjectRootRef.current), executionModeChoices: envelope.payload.executionModeChoices.filter((choice: { root: string }) => choice.root === activeProjectRootRef.current) });
               setProposalGroups(current => current.map(group => ({ ...group, candidates: group.candidates.map(candidate => {
                 const task = tasks.find((task: AgentTask) => task.id === candidate.taskId);
                 return task && candidate.status !== "ready" ? { ...candidate, status: task.status, error: task.error, activity: task.activity, startedAt: task.startedAt === undefined ? null : task.startedAt } : candidate;
@@ -3420,6 +3457,7 @@ export default function Home() {
   };
 
   const sendMessage = async (request?: { prompt: string; variation: boolean }) => {
+    if (executionModeBusyRef.current) return;
     const value = request === undefined ? promptDraft.trim() : request.prompt;
     const slide = slidesRef.current[activeRef.current - 1];
     const slideNumber = activeRef.current;
@@ -3496,6 +3534,8 @@ export default function Home() {
       if (!response.ok) throw new Error(result.error ?? "Agentへの依頼を開始できませんでした。");
       if (response.status !== 202 || typeof result.message?.id !== "string") throw new Error("メッセージの受付を確認できませんでした。");
       accepted = true;
+      if ("executionModeSelected" in requestEnvelope && requestEnvelope.executionModeSelected === true) executionModeSelectedThreadsRef.current.add(requestThreadId);
+      executionModeSelectedBeforeThreadRef.current = false;
       setOrchestration(current => ({ ...current, messages: current.messages.some(message => message.id === result.message.id) ? current.messages : [...current.messages, result.message] }));
       if (turnAnnotations.length > 0 && slide && request?.variation !== true) {
         const turnId = steering ? runningTurnId ?? result.turn?.id ?? result.turnId ?? null : result.turn?.id ?? result.turnId ?? null;
@@ -3544,6 +3584,10 @@ export default function Home() {
       const response = await fetch(`${apiBase}/agent/thread/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ purpose: "chat", approvalPolicy: claudeSelected ? null : approvalPolicy, model: selectedModel }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "制作タスクを開始できませんでした。");
+      if (executionModeSelectedBeforeThreadRef.current) {
+        executionModeSelectedThreadsRef.current.add(result.thread.id);
+        executionModeSelectedBeforeThreadRef.current = false;
+      }
       dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
       await ensureUiSessionForThread(result.thread.id);
       if (typeof result.thread.model === "string") { const current = agentModelStore.read(); agentModelStore.write({ model: result.thread.model, effort: typeof result.thread.effort === "string" ? result.thread.effort : current.effort }); }
@@ -4007,10 +4051,10 @@ export default function Home() {
           {claudeSelected ? <p>Claude Codeの既存ログインを使用します。Claudeは会話とレビューを担当し、編集は選択したCodexモデルへ委任します。</p> : <p>編集権限は常に付与します。選択した変更範囲で実装し、オーケストレータがレビューします。</p>}
           {codexState.catalog.modelProvider && <pre className="settings-output">{JSON.stringify(codexState.catalog.modelProvider, null, 2)}</pre>}
         </section>
-        <section><h3>Claude Code</h3><p>{codexState.catalog.providers?.claude?.connection.error ?? (codexState.catalog.providers?.claude?.ready ? "既存ログインで接続済み" : "接続を確認中…")}</p><button data-ui-agent-exclude="true" onClick={() => { void fetch(`${apiBase}/agent/catalog/refresh`, { method: "POST" }).catch((error) => setApiError(error.message)); }}>接続を再確認</button></section>
-        <section><h3>Codexアカウント</h3>{codexState.catalog.account ? <div className="setting-row"><span>{String(codexState.catalog.account.type ?? "サインイン済み")}</span><button data-ui-agent-exclude="true" onClick={() => { void fetch(`${apiBase}/agent/account/logout`, { method: "POST" }).catch((error) => setApiError(error.message)); }}>ログアウト</button></div> : <><button data-ui-agent-exclude="true" onClick={() => void login("chatgpt")}>ChatGPTでサインイン</button><div className="api-key-row"><input type="password" value={apiKeyDraft} onChange={(event) => setApiKeyDraft(event.target.value)} placeholder="APIキー" /><button disabled={!apiKeyDraft} onClick={() => void login("apiKey")}>キーを使用</button></div></>}</section>
+        <section><h3>Claude Code</h3><p>{codexState.catalog.providers?.claude?.connection.error ?? (codexState.catalog.providers?.claude?.ready ? "既存ログインで接続済み" : "接続を確認中…")}</p><button onClick={() => { void fetch(`${apiBase}/agent/catalog/refresh`, { method: "POST" }).catch((error) => setApiError(error.message)); }}>接続を再確認</button></section>
+        <section><h3>Codexアカウント</h3>{codexState.catalog.account ? <div className="setting-row"><span>{String(codexState.catalog.account.type ?? "サインイン済み")}</span><button data-ui-agent-exclude="true" onClick={() => { void fetch(`${apiBase}/agent/account/logout`, { method: "POST" }).catch((error) => setApiError(error.message)); }}>ログアウト</button></div> : <><button data-ui-agent-exclude="true" onClick={() => void login("chatgpt")}>ChatGPTでサインイン</button><div className="api-key-row"><input type="password" value={apiKeyDraft} onChange={(event) => setApiKeyDraft(event.target.value)} placeholder="APIキー" /><button data-ui-agent-exclude="true" disabled={!apiKeyDraft} onClick={() => void login("apiKey")}>キーを使用</button></div></>}</section>
         <section><h3>フック</h3>{codexState.catalog.hooks.flatMap((entry: any) => entry.hooks ?? [entry]).map((hook: any, index: number) => <div className="setting-row" key={hook.name ?? hook.event ?? index}><span>{hook.name ?? hook.event ?? "設定済みフック"}</span><small>{hook.enabled === false ? "無効" : "有効"}</small></div>)}</section>
-        <section><h3>MCPサーバー</h3>{codexState.catalog.mcpServers.map((server: any) => <div className="setting-row" key={server.name}><span>{server.name}</span><small>{server.status ?? server.authStatus ?? "設定済み"}</small>{server.resources?.length > 0 && <button data-ui-agent-exclude="true" onClick={() => void invokeMcp(server, "resource")}>リソース</button>}{Object.keys(server.tools ?? {}).length > 0 && <button disabled={!codexState.activeThreadId} onClick={() => void invokeMcp(server, "tool")}>ツール</button>}<button data-ui-agent-exclude="true" onClick={() => { void fetch(`${apiBase}/agent/mcp/oauth`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: server.name }) }).then(async (response) => { const result = await response.json(); if (!response.ok) throw new Error(result.error); const url = result.authorizationUrl ?? result.url; if (url && window.confirm(`${server.name}のOAuth認証ページを開きますか？`)) window.open(url, "_blank", "noopener,noreferrer"); }).catch((error) => setApiError(error.message)); }}>OAuth</button></div>)}</section>
+        <section><h3>MCPサーバー</h3>{codexState.catalog.mcpServers.map((server: any) => <div className="setting-row" key={server.name}><span>{server.name}</span><small>{server.status ?? server.authStatus ?? "設定済み"}</small>{server.resources?.length > 0 && <button onClick={() => void invokeMcp(server, "resource")}>リソース</button>}{Object.keys(server.tools ?? {}).length > 0 && <button disabled={!codexState.activeThreadId} onClick={() => void invokeMcp(server, "tool")}>ツール</button>}<button data-ui-agent-exclude="true" onClick={() => { void fetch(`${apiBase}/agent/mcp/oauth`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: server.name }) }).then(async (response) => { const result = await response.json(); if (!response.ok) throw new Error(result.error); const url = result.authorizationUrl ?? result.url; if (url && window.confirm(`${server.name}のOAuth認証ページを開きますか？`)) window.open(url, "_blank", "noopener,noreferrer"); }).catch((error) => setApiError(error.message)); }}>OAuth</button></div>)}</section>
         {mcpResult && <pre className="settings-output">{mcpResult}</pre>}
       </div>
     </section>
@@ -4050,7 +4094,7 @@ export default function Home() {
           <div className="topbar-popover delivery-menu" role="menu" aria-label="プレゼンと書き出し">
             <button role="menuitem" onClick={() => { dismissPopover(false); openPresenter(); }}><span>プレゼンを開始</span><small>全画面のプレゼン画面を開きます</small></button>
             <button role="menuitem" onClick={() => { dismissPopover(false); exportDeck(); }}><span>HTMLを書き出す</span><small>オフラインで使える資料を保存します</small></button>
-            <button role="menuitem" data-ui-agent-exclude="true" onClick={() => { dismissPopover(false); printDeck(); }}><span>印刷／PDF</span><small>システムの印刷画面を開きます</small></button>
+            <button role="menuitem" onClick={() => { dismissPopover(false); printDeck(); }}><span>印刷／PDF</span><small>システムの印刷画面を開きます</small></button>
             <button role="menuitem" onClick={() => { dismissPopover(false); downloadBundle(); }}><span>編集用データを保存</span><small>編集可能なWeaveプロジェクトを保存します</small></button>
           </div>
         </>
@@ -4079,19 +4123,19 @@ export default function Home() {
             <div className="agent-heading">
               <div className="agent-heading-main">
                 <h2 className="agent-heading-title">
-                <button className="thread-switcher" data-ui-agent-exclude="true" onClick={(event) => togglePopover("threads", event.currentTarget)} aria-expanded={openPopover === "threads"} aria-haspopup="dialog" title="制作タスクを切り替えます"><span>{activeThreadName}</span><em aria-hidden="true">⌄</em></button>
+                <button className="thread-switcher" onClick={(event) => togglePopover("threads", event.currentTarget)} aria-expanded={openPopover === "threads"} aria-haspopup="dialog" title="制作タスクを切り替えます"><span>{activeThreadName}</span><em aria-hidden="true">⌄</em></button>
                 </h2>
                 <span className={`agent-state agent-state-${agentHeaderState?.kind ?? "idle"}`} role="status" aria-live="polite" aria-busy={turnBusy} data-turn-state={turnPresentation} data-status={agentHeaderState?.kind ?? "idle"}>{agentHeaderState?.label ?? ""}</span>
               </div>
               <div className="agent-heading-actions">
-                <button className="new-thread-button" data-ui-agent-exclude="true" onClick={() => void newThread()} aria-label="新しい制作タスク" title="新しい制作タスクを開始します">＋</button>
-                <button className="thread-menu-trigger" data-ui-agent-exclude="true" onClick={(event) => toggleThreadMenu(event.currentTarget)} aria-expanded={threadMenuOpen} aria-haspopup="menu" aria-label="制作タスクの操作" title="制作タスクの名前変更、別の方向、アーカイブ、削除">…</button>
+                <button className="new-thread-button" onClick={() => void newThread()} aria-label="新しい制作タスク" title="新しい制作タスクを開始します">＋</button>
+                <button className="thread-menu-trigger" onClick={(event) => toggleThreadMenu(event.currentTarget)} aria-expanded={threadMenuOpen} aria-haspopup="menu" aria-label="制作タスクの操作" title="制作タスクの名前変更、別の方向、アーカイブ、削除">…</button>
               </div>
             </div>
             {openPopover === "threads" && (
               <>
                 <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
-                <div ref={threadDialogRef} className="thread-popover" role="dialog" aria-modal="true" data-ui-agent-exclude="true" aria-label="制作タスクを切り替え" tabIndex={-1} onKeyDown={onThreadDialogKeyDown}>
+                <div ref={threadDialogRef} className="thread-popover" role="dialog" aria-modal="true" aria-label="制作タスクを切り替え" tabIndex={-1} onKeyDown={onThreadDialogKeyDown}>
                   <div className="thread-popover-heading">
                     <strong>制作タスク</strong>
                     <button type="button" onClick={() => { dismissPopover(); void newThread(); }}>＋ 新しいタスク</button>
@@ -4114,7 +4158,7 @@ export default function Home() {
             {threadMenuOpen && (
               <>
                 <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
-                <div ref={threadMenuRef} className="thread-actions-menu" data-ui-agent-exclude="true" role="menu" tabIndex={-1} aria-label={`${activeThreadName}の操作`} onKeyDown={onThreadMenuKeyDown}>
+                <div ref={threadMenuRef} className="thread-actions-menu" role="menu" tabIndex={-1} aria-label={`${activeThreadName}の操作`} onKeyDown={onThreadMenuKeyDown}>
                   <strong>制作タスクの操作</strong>
                   <button role="menuitem" disabled={!codexState.activeThreadId} onClick={() => { dismissPopover(); void renameActiveThread(); }}>タスク名を変更</button>
                   <button role="menuitem" disabled={!codexState.activeThreadId || claudeThread} onClick={() => { dismissPopover(); void forkThread(); }}>別の方向で試す</button>
@@ -4125,7 +4169,7 @@ export default function Home() {
               </>
             )}
             <div ref={messagesRef} className="messages" role="log" aria-live="polite" aria-relevant="additions text" aria-label="制作タスクのやり取り" aria-busy={turnBusy} onScroll={(event) => { const element = event.currentTarget; shouldAutoScrollRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48; }}>
-              {!codexState.activeThreadId && <p className="empty-thread">依頼を書いて新しい制作タスクを始めるか、過去のタスクを選んでください。</p>}
+              {(!codexState.activeThreadId || (activeThread && Array.isArray(activeThread.raw?.turns) && activeThread.turnIds.length === 0 && !orchestration.messages.some(message => message.threadId === codexState.activeThreadId))) && <p className="empty-thread"><strong>UIの操作から資料づくりまで、AIアシスタントにお任せください。</strong><br />「スライドを整えて」「3案を比べたい」「履歴を開いて」など、やりたいことをそのまま伝えるだけで始められます。</p>}
               {activeTurns.length > visibleTurns.length && <p className="trimmed-log">最新{visibleTurns.length}ターンを表示しています。</p>}
               {visibleTurns.map((turn, turnIndex) => {
                 const turnItems = selectTurnItems(codexState, turn.id);
@@ -4167,6 +4211,13 @@ export default function Home() {
             {skillReviewCards(skillProposals.filter((proposal) => proposal.threadId === codexState.activeThreadId))}
             {skillStatus.state !== "idle" && <div className={`skill-status ${skillStatus.state}`} role={skillStatus.state === "error" ? "alert" : "status"} aria-live="polite">{skillStatus.message}</div>}
             <div className="composer-dock" data-turn-state={turnPresentation} aria-busy={turnBusy}>
+              {executionModePending && <section className="blocking-region" data-ui-agent-exclude="true" role="region" aria-live="assertive" aria-label="実行方法の選択">
+                <article className="server-request" aria-busy={executionModeBusy}>
+                  <strong>実行方法を選んでください</strong>
+                  <button type="button" className={executionMode === "apply" ? "primary-button" : undefined} disabled={executionModeBusy} onClick={(event) => { if (event.nativeEvent.isTrusted) void changeExecutionMode("apply", true).catch(error => setApiError(error.message)); }}>編集をまかせる（1案を作成して反映）</button>
+                  <button type="button" className={executionMode === "compare" ? "primary-button" : undefined} disabled={executionModeBusy} onClick={(event) => { if (event.nativeEvent.isTrusted) void changeExecutionMode("compare", true).catch(error => setApiError(error.message)); }}>3案から選ぶ（3案を作成して比較）</button>
+                </article>
+              </section>}
               {pendingServerRequests.length > 0 && <section className="blocking-region" data-ui-agent-exclude="true" role="region" aria-live="assertive" aria-label="確認が必要な操作" data-pending-count={pendingServerRequests.length}>
                 <div className="blocking-heading"><strong>{activePendingServerRequests.length > 0 ? "確認が必要です" : "確認が必要な要求があります"}</strong><span>{pendingServerRequests.length}件</span></div>
                 {pendingRequestGroups.unscoped.length > 0 && <p className="blocking-notice" role="status">会話を特定できない確認が {pendingRequestGroups.unscoped.length}件あります。</p>}
@@ -4179,7 +4230,7 @@ export default function Home() {
                   </div>;
                 })}
               </section>}
-            <div className="chat-box" data-ui-agent-exclude="true"
+            <div className="chat-box"
               onDragOver={(event) => event.preventDefault()}
               onDrop={(event) => { event.preventDefault(); void uploadReferences(event.dataTransfer.files); }}
               onPaste={(event) => { const files = event.clipboardData.files; if (files.length > 0) { event.preventDefault(); void uploadReferences(files); } }}
@@ -4211,7 +4262,7 @@ export default function Home() {
                     })}
                     </div>
                     <button className="reference-add" type="button" disabled={folderImporting} onClick={() => void browseFolders()}>＋ ホームのフォルダーを登録</button>
-                    <button className="reference-add" type="button" disabled={folderImporting} aria-busy={folderImporting} onClick={() => referenceFolderInputRef.current?.click()}>PCのフォルダーをアップロード</button>
+                    <button className="reference-add" type="button" data-ui-agent-exclude="true" disabled={folderImporting} aria-busy={folderImporting} onClick={() => referenceFolderInputRef.current?.click()}>PCのフォルダーをアップロード</button>
                     {folderUploadStatus && <p className="reference-upload-status" role="status">{folderUploadStatus}</p>}
                   </section>
                   <section className="reference-shelf-section" aria-labelledby="reference-files-heading">
@@ -4238,7 +4289,7 @@ export default function Home() {
                 <label><span>変更範囲</span><select value={changeScope} onChange={(event) => setChangeScope(event.target.value as ChangeScope)}><option value="element" disabled={!selectedId}>この要素だけ</option><option value="current-slide">現在のスライド</option><option value="selected-slides">選択したスライド</option><option value="deck">デッキ全体</option></select></label>
                 <label><span>実装担当（Codex）</span><select aria-label="実装担当のモデル" value={workerModel} onChange={event => workerModelStore.write(event.target.value)}><option value="">モデルを選択</option>{codexState.catalog.models.filter((model: any) => model.provider === "codex").map((model: any) => <option key={model.id} value={model.id}>{model.displayName ?? model.id}</option>)}</select></label>
                 <label><span>実装の推論レベル</span><select aria-label="実装担当の推論レベル" value={workerEffort} onChange={event => setWorkerEffort(event.target.value)}>{((codexState.catalog.models.find((model: any) => model.id === workerModel) as any)?.supportedReasoningEfforts ?? []).map((option: any) => <option key={option.reasoningEffort} value={option.reasoningEffort}>{option.reasoningEffort}</option>)}</select></label>
-                <label><span>実行</span><select value={executionMode} onChange={(event) => { const mode = event.target.value as ExecutionMode; setExecutionMode(mode); }}><option value="apply">編集をまかせる</option><option value="compare">3案から選ぶ</option></select></label>
+                <label><span>実行</span><select data-ui-id="execution-mode" aria-label="実行" value={executionMode} disabled={executionModeBusy || turnSubmission.phase === "submitting"} onChange={(event) => { if (event.nativeEvent.isTrusted) void changeExecutionMode(event.target.value, true).catch(error => setApiError(error.message)); }}><option value="apply">編集をまかせる</option><option value="compare">3案から選ぶ</option></select></label>
                 <p>Agentは{changeScope === "element" ? `「${blockLabels[sel?.kind ?? ""] ?? "選択要素"}」だけ` : changeScope === "current-slide" ? `スライド${activeSlide}だけ` : changeScope === "selected-slides" ? `選択した${selectedSlideIds.size || 1}枚のスライド` : "デッキ全体"}を変更できます。</p>
               </div>
               <div className="context-chip" role="group" aria-label="参照対象">
@@ -4266,7 +4317,7 @@ export default function Home() {
                 </div>)}
               </div>}
               {proposalTarget && <div className="context-target-chip">修正対象：{proposalTarget.candidateId.toUpperCase()}案 · {proposalTarget.slideId} <button type="button" onClick={() => { if (promptDraft.trim()) { setApiError("入力を送信するか消去してから対象を変更してください。"); return; } setProposalTarget(null); }}>通常編集に戻す</button></div>}
-              <textarea ref={promptRef} value={promptDraft} onChange={onPromptChange} onCompositionStart={() => { compositionRef.current = true; }} onCompositionEnd={onPromptCompositionEnd} onKeyDown={onPromptKeyDown} placeholder={agentReady ? conversationWorking ? "追加の指示・質問を送れます…" : "プロジェクト作成、スライド編集、画面の操作を依頼…" : "Codexへの接続を待っています…"} aria-label="Agentへのメッセージ" aria-busy={turnBusy} maxLength={20000} disabled={!agentReady} />
+              <textarea data-ui-agent-exclude="true" ref={promptRef} value={promptDraft} onChange={onPromptChange} onCompositionStart={() => { compositionRef.current = true; }} onCompositionEnd={onPromptCompositionEnd} onKeyDown={onPromptKeyDown} placeholder={agentReady ? conversationWorking ? "追加の指示・質問を送れます…" : "プロジェクト作成、スライド編集、画面の操作を依頼…" : "Codexへの接続を待っています…"} aria-label="Agentへのメッセージ" aria-busy={turnBusy} maxLength={20000} disabled={!agentReady} />
               <div className="chat-actions">
                 <input ref={referenceInputRef} className="sr-only" type="file" multiple onChange={(event) => { if (event.target.files) void uploadReferences(event.target.files); }} />
                 <input ref={referenceFolderInputRef} className="sr-only" type="file" aria-label="参照フォルダーを選択" multiple {...{ webkitdirectory: "" }} onChange={(event) => { if (event.target.files?.length) void uploadReferenceFolder(event.target.files); }} />
@@ -4287,8 +4338,8 @@ export default function Home() {
                 )}
                 <span className="chat-shortcut">⌘ / Ctrl ↵</span>
                 <span className="chat-actions-spacer" aria-hidden="true" />
-                <button className={`stop-button${conversationWorking ? " active" : ""}`} onClick={() => { if (conversationWorking) void interruptAgent(); }} disabled={!conversationWorking} aria-hidden={!conversationWorking} tabIndex={conversationWorking ? 0 : -1} aria-label="Agentを停止" title="実行中のAgentを停止します">■</button>
-                <button className="send-button" onClick={() => void sendMessage()} disabled={!agentReady || !(canSendTurn(promptDraft, sendableAnnotations) || referenceAttachments.length > 0) || !canSubmitAgentMessage} aria-label="メッセージを送信" data-help="入力内容と選択中の編集コンテキストをAgentへ送信します">↑</button>
+                <button data-ui-agent-exclude="true" className={`stop-button${conversationWorking ? " active" : ""}`} onClick={() => { if (conversationWorking) void interruptAgent(); }} disabled={!conversationWorking} aria-hidden={!conversationWorking} tabIndex={conversationWorking ? 0 : -1} aria-label="Agentを停止" title="実行中のAgentを停止します">■</button>
+                <button data-ui-agent-exclude="true" className="send-button" onClick={() => void sendMessage()} disabled={executionModeBusy || !agentReady || !(canSendTurn(promptDraft, sendableAnnotations) || referenceAttachments.length > 0) || !canSubmitAgentMessage} aria-label="メッセージを送信" data-help="入力内容と選択中の編集コンテキストをAgentへ送信します">↑</button>
               </div>
             </div>
             </div>
@@ -4847,7 +4898,7 @@ export default function Home() {
             <span>{presentSlide} / {slides.length}</span>
             <button onClick={() => setPresentSlide((value) => Math.min(slides.length, value + 1))}>次へ →</button>
             <small>{slides[presentSlide - 1]?.notes || "発表者ノートはありません"}</small>
-            <button data-ui-agent-exclude="true" onClick={() => document.documentElement.requestFullscreen?.()}>全画面</button>
+            <button onClick={() => document.documentElement.requestFullscreen?.()}>全画面</button>
             <button onClick={() => setShowPresenter(false)}>終了</button>
           </footer>
         </div>

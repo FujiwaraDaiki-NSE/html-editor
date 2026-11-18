@@ -411,6 +411,7 @@ button.project-card { cursor: pointer; }
 .server-request strong, .server-request p { display: block; margin: 0 0 6px; overflow-wrap: anywhere; }
 .server-request button { margin: 2px 3px 0 0; padding: 4px 6px; border: 1px solid var(--line-strong); border-radius: 4px; background: var(--panel-3); color: var(--text); font-size: var(--chat-meta); cursor: pointer; }
 .server-request button:disabled { cursor: not-allowed; opacity: .5; }
+.server-request button.primary-button { border-color: var(--accent); background: var(--accent); color: var(--on-accent); }
 .server-request-status { display: block; margin-top: 5px; color: var(--muted); font-size: var(--chat-micro); }
 .server-request-status.error { color: var(--danger); }
 

@@ -107,6 +107,7 @@ export type UiBridgeOptions = {
   root: HTMLElement | null;
   onStatus?: (status: UiBridgeStatus) => void;
   isRequestCurrent?: (request: UiRequest) => boolean;
+  selectControl?: (element: HTMLSelectElement, value: string) => Promise<boolean>;
 };
 
 export type UiBridge = {
@@ -116,15 +117,12 @@ export type UiBridge = {
   dispose(): void;
 };
 
-const CONTROL_SELECTOR = "button, input, select, textarea, a[href], [contenteditable=\"true\"], [role=\"button\"], [role=\"tab\"], [role=\"menuitem\"], [role=\"option\"]";
+const CONTROL_SELECTOR = "button, input, select, textarea, summary, a[href], [contenteditable=\"true\"], [role=\"button\"], [role=\"tab\"], [role=\"menuitem\"], [role=\"option\"]";
 const HIDDEN_SELECTOR = "[hidden], [aria-hidden=\"true\"], .sr-only";
 const EXCLUDED_SELECTOR = [
   "[data-ui-agent-exclude=\"true\"]",
-  ".composer-dock",
   ".blocking-region",
   ".server-request",
-  ".thread-popover",
-  ".thread-actions-menu",
   "input[type=\"password\"]",
   "input[type=\"file\"]",
 ].join(",");
@@ -151,7 +149,7 @@ const equalName = (left: string, right: string) => normalizeName(left).toLocaleL
 const controlRole = (element: HTMLElement): string => {
   const explicit = element.getAttribute("role");
   if (explicit) return explicit;
-  if (element instanceof HTMLButtonElement) return "button";
+  if (element instanceof HTMLButtonElement || element.tagName === "SUMMARY") return "button";
   if (element instanceof HTMLAnchorElement) return "link";
   if (element instanceof HTMLSelectElement) return "combobox";
   if (element instanceof HTMLTextAreaElement) return "textbox";
@@ -425,7 +423,7 @@ const clearPointer = (element: HTMLElement | null, requestId?: string) => {
   }
 };
 
-export function createUiBridge({ root, onStatus, isRequestCurrent }: UiBridgeOptions): UiBridge {
+export function createUiBridge({ root, onStatus, isRequestCurrent, selectControl }: UiBridgeOptions): UiBridge {
   let activeTarget: HTMLElement | null = null;
   let disposed = false;
 
@@ -600,9 +598,10 @@ export function createUiBridge({ root, onStatus, isRequestCurrent }: UiBridgeOpt
     }
     status({ phase: "performing", requestId: request.requestId, label, message: `${label}を実行しています。` });
     let defaultPrevented = false;
+    let eventDispatched = true;
     try {
       if (request.operation === "click") {
-        if (!(element instanceof HTMLButtonElement || element instanceof HTMLInputElement || element instanceof HTMLAnchorElement || element.getAttribute("role") === "button" || element.getAttribute("role") === "menuitem" || element.getAttribute("role") === "tab" || element.getAttribute("role") === "option")) throw new Error("unsupported_control");
+        if (!(element instanceof HTMLButtonElement || element instanceof HTMLInputElement || element instanceof HTMLAnchorElement || element.tagName === "SUMMARY" || element.getAttribute("role") === "button" || element.getAttribute("role") === "menuitem" || element.getAttribute("role") === "tab" || element.getAttribute("role") === "option")) throw new Error("unsupported_control");
         const count = request.count ?? 1;
         for (let index = 0; index < count; index += 1) element.click();
       } else if (request.operation === "fill") {
@@ -617,10 +616,15 @@ export function createUiBridge({ root, onStatus, isRequestCurrent }: UiBridgeOpt
         element.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: null }));
         element.dispatchEvent(new Event("change", { bubbles: true }));
       } else if (request.operation === "select") {
-        const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
-        setter?.call(element, request.value ?? "");
-        element.dispatchEvent(new Event("input", { bubbles: true }));
-        element.dispatchEvent(new Event("change", { bubbles: true }));
+        if (!(element instanceof HTMLSelectElement) || request.value === undefined) throw new Error("選択値が必要です。");
+        const handled = selectControl ? await selectControl(element, request.value) : false;
+        eventDispatched = !handled;
+        if (!handled) {
+          const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+          setter?.call(element, request.value);
+          element.dispatchEvent(new Event("input", { bubbles: true }));
+          element.dispatchEvent(new Event("change", { bubbles: true }));
+        }
       } else if (request.operation === "key") {
         element.focus();
         const key = request.key === "Space" ? " " : request.key ?? "";
@@ -645,7 +649,7 @@ export function createUiBridge({ root, onStatus, isRequestCurrent }: UiBridgeOpt
       return staleResponse(request, label);
     }
     const result = acceptedResponse(request, snapshot(element), controls().map(snapshot), {
-      eventDispatched: true,
+      eventDispatched,
       defaultPrevented,
       focused: document.activeElement === element,
       value: valueFor(element, isSensitive(element, labelFor(element))),

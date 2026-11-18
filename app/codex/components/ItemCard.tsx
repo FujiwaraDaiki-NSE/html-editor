@@ -47,6 +47,7 @@ export function ItemCard({ item }: { item: ItemState }) {
   const isUiAction = item.type === "dynamicToolCall" && item.raw?.namespace === "weave_ui";
   const uiAction = isUiAction && typeof item.raw?.tool === "string" ? uiActionNames[item.raw.tool] : null;
   const label = item.type === "userMessage" && item.text.startsWith("【作業通知】") ? "作業通知" : uiAction ? `画面操作 · ${uiAction}` : labels[item.type] ?? "不明な項目";
+  const messageText = item.type === "userMessage" && item.text.startsWith("【作業通知】") ? item.text.split("\n\nAutomatic task instructions:\n")[0] : item.text;
   const summary = isUiAction ? "" : item.text || item.reasoning[0] || item.output.split("\n")[0] || item.diff.split("\n")[0];
   const hasWorkBody = !isMessage && Boolean(item.text || item.reasoning.length);
   return (
@@ -59,7 +60,7 @@ export function ItemCard({ item }: { item: ItemState }) {
             <div className="codex-item-text chat-markdown">
               <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
                 a: ({ children, href }) => <a href={href} target="_blank" rel="noreferrer noopener">{children}</a>,
-              }}>{item.text}</ReactMarkdown>
+              }}>{messageText}</ReactMarkdown>
             </div>
           )}
         </div>

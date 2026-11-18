@@ -7,6 +7,7 @@ const ROUTE_METHODS = [
   [/^\/api\/ui\/state$/, ["GET"]],
   [/^\/api\/ui\/session$/, ["POST", "PATCH", "DELETE"]],
   [/^\/api\/ui\/response$/, ["POST"]],
+  [/^\/api\/codex\/execution-mode(?:\/confirm)?$/, ["POST"]],
   [/^\/api\/skills\/application\/[^/]+\/(?:history|version)$/, ["GET"]],
   [/^\/api\/skills\/application\/[^/]+\/restore$/, ["POST"]],
   [/^\/api\/skills\/application\/[^/]+$/, ["PATCH"]],

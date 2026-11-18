@@ -21,14 +21,40 @@ export class Orchestration {
       await this.save();
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
-  snapshot(root) { return { tasks: this.tasks.filter(t => t.root === root), messages: this.messages.filter(m => m.root === root) }; }
+  pendingExecutionModes() { return [...this.conversations.values()].filter(context => context.executionModePending === true).map(({ threadId, root }) => ({ threadId, root })); }
+  snapshot(root) { return { tasks: this.tasks.filter(t => t.root === root), messages: this.messages.filter(m => m.root === root), executionModeChoices: this.pendingExecutionModes().filter(choice => choice.root === root) }; }
   async save() {
     const data = JSON.stringify({ tasks: this.tasks, messages: this.messages, conversations: [...this.conversations] });
     const write = this.saves.then(async () => { await mkdir(dirname(this.path), { recursive: true }); const temp = `${this.path}.${randomUUID()}.tmp`; await writeFile(temp, data, { mode: 0o600 }); await rename(temp, this.path); });
     this.saves = write.catch(() => {}); await write;
-    this.events.publish('weave/orchestration', { tasks: this.tasks, messages: this.messages });
+    this.events.publish('weave/orchestration', { tasks: this.tasks, messages: this.messages, executionModeChoices: this.pendingExecutionModes() });
   }
   context(threadId) { const c = this.conversations.get(threadId); if (!c) throw new Error('Conversation context is unavailable. Send a message first.'); return c; }
+  async selectExecutionMode(threadId, executionMode, session) {
+    return await this.updateExecutionMode(threadId, executionMode, session, false);
+  }
+  async confirmExecutionMode(threadId, executionMode, session) {
+    const pending = this.conversations.get(threadId)?.executionModePending === true;
+    const result = await this.updateExecutionMode(threadId, executionMode, session, true);
+    const label = executionMode === 'apply' ? '編集をまかせる' : '3案から選ぶ';
+    if (pending) void this.wake(threadId, `The user chose ${label} (${executionMode}) as the delivery method. The delivery method is selected (executionModeSelected: true) and no choice is pending (executionModePending: false). Continue the user's immediately preceding edit request with edit_slides. For compare, directions must contain exactly three distinct candidates.`, `【作業通知】実行方法：${label} を選択しました。`).catch(error => console.error('Could not notify delivery-method selection:', error.message));
+    return result;
+  }
+  async updateExecutionMode(threadId, executionMode, session, human) {
+    if (session.activeThreadId !== threadId) throw new Error('The browser session is not attached to this conversation.');
+    if (!["apply", "compare"].includes(executionMode)) throw new Error('A valid execution mode is required.');
+    const context = this.conversations.get(threadId);
+    // Empty chats acquire their context on the first message; its envelope carries this selection.
+    if (context) {
+      const previous = context.contextEnvelope;
+      const previousPending = context.executionModePending;
+      context.contextEnvelope = { ...previous, executionMode, executionModeSelected: human || previous.executionModeSelected === true };
+      if (human) context.executionModePending = false;
+      try { await this.save(); }
+      catch (error) { context.contextEnvelope = previous; context.executionModePending = previousPending; throw error; }
+    }
+    return { executionMode, executionModeSelected: human || context?.contextEnvelope.executionModeSelected === true };
+  }
   async receive(payload, { automatic = false } = {}) {
     if (this.stopping) throw new Error('Orchestrator is stopping.');
     text(payload.clientUserMessageId, 'Message ID'); text(payload.threadId, 'Thread ID'); text(payload.prompt, 'Prompt');
@@ -37,7 +63,8 @@ export class Orchestration {
     let context = this.conversations.get(payload.threadId);
     if (!automatic) {
       const version = context ? context.version + 1 : 1;
-      context = { threadId: payload.threadId, root: payload.root, model: payload.model, effort: payload.effort, workerModel: payload.workerModel, workerEffort: payload.workerEffort, approvalPolicy: payload.approvalPolicy, contextEnvelope: payload.contextEnvelope, version };
+      payload.contextEnvelope = { ...payload.contextEnvelope, executionModeSelected: context?.contextEnvelope.executionModeSelected === true || payload.contextEnvelope.executionModeSelected === true };
+      context = { threadId: payload.threadId, root: payload.root, model: payload.model, effort: payload.effort, workerModel: payload.workerModel, workerEffort: payload.workerEffort, approvalPolicy: payload.approvalPolicy, contextEnvelope: payload.contextEnvelope, executionModePending: context?.executionModePending === true, version };
       this.conversations.set(payload.threadId, context);
       for (const task of this.tasks.filter(t => t.threadId === payload.threadId && !TERMINAL.has(t.status) && t.applied !== true)) {
         task.version = version; task.latestInstruction = payload.prompt; task.instructionStatus = 'pending';
@@ -62,14 +89,34 @@ export class Orchestration {
     this.pumping.add(threadId);
     try {
       const payload = this.payloads.get(`${message.threadId}:${message.id}`); if (!payload) throw new Error('Queued message payload is unavailable.');
+      if (message.automatic) {
+        const current = this.context(threadId);
+        payload.contextEnvelope = { ...current.contextEnvelope, executionModePending: current.executionModePending === true };
+      }
       const result = await this.startChat(payload, message.automatic);
       message.status = 'delivered'; message.turnId = result.turn.id; this.payloads.delete(`${message.threadId}:${message.id}`); await this.save();
     } catch (error) { message.status = 'failed'; message.error = error.message; if (message.automatic) { for (const task of this.tasks.filter(t => t.threadId === threadId && t.status === 'reviewing')) task.error = `レビュー依頼を渡せませんでした: ${error.message}`; } await this.save(); }
     finally { this.pumping.delete(threadId); if (!this.chatActive(threadId)) void this.pump(threadId); }
   }
-  async wake(threadId, prompt) {
+  async wake(threadId, prompt, displayPrompt) {
     const c = this.context(threadId); if (c.paused || this.stopping) return;
-    await this.receive({ ...c, prompt: "【作業通知】担当の状況を確認し、必要なレビューと報告を行ってください。", automaticInstructions: prompt, clientUserMessageId: randomUUID() }, { automatic: true });
+    text(prompt, 'Notification instructions'); text(displayPrompt, 'Notification display text');
+    await this.receive({ ...c, prompt: displayPrompt, automaticInstructions: prompt, contextEnvelope: { ...c.contextEnvelope, executionModePending: c.executionModePending === true }, clientUserMessageId: randomUUID() }, { automatic: true });
+  }
+  async assertExecutionModeSelected(threadId, turnId) {
+    const context = this.context(threadId);
+    const { contextEnvelope, version } = context;
+    if (contextEnvelope.executionModeSelected === true || contextEnvelope.proposalTarget) return;
+    const request = this.messages.findLast(message => message.threadId === threadId && message.version === version && !message.automatic);
+    // This exact prefix is added by the existing explicit comparison button, not inferred from prose.
+    if (contextEnvelope.executionMode === 'compare' && request?.text.startsWith('別の探索案を作成してください。variation:trueで別ブランチにしてください。\n')) return;
+    if (this.messages.some(message => message.threadId === threadId && message.version === version && message.automatic && message.status === 'delivered' && message.turnId === turnId)) return;
+    if (context.executionModePending !== true) {
+      context.executionModePending = true;
+      try { await this.save(); }
+      catch (error) { context.executionModePending = false; throw error; }
+    }
+    throw new Error("The app has displayed a delivery-method choice to the user. No edit has started. Briefly tell the user to choose in the displayed card, then end your turn. Do not choose for the user or repeat edit_slides. You will receive a notification when the user chooses; then call edit_slides again to continue the pending request.");
   }
   assertWorker(threadId) {
     const c = this.context(threadId);
@@ -135,7 +182,7 @@ export class Orchestration {
     if (task.status === 'cancelling') return false;
     const promise = new Promise(resolve => this.gates.set(id, resolve));
     task.report = report; task.status = 'reviewing'; task.activity = 'オーケストレータのレビュー待ち'; await this.save();
-    void this.wake(task.threadId, `Codex task ${id} requires review. Read it using tasks, inspect the changes and latest human instructions, then call review_edit. Do not claim completion before the task is completed.`).catch(error => { task.error = error.message; void this.save(); });
+    void this.wake(task.threadId, `Codex task ${id} requires review. Read it using tasks, inspect the changes and latest human instructions, then call review_edit. Do not claim completion before the task is completed.`, '【作業通知】担当の状況を確認し、必要なレビューと報告を行ってください。').catch(error => { task.error = error.message; void this.save(); });
     try { return await promise; } finally { this.gates.delete(id); }
   }
   get running() { return this.runningTasks.keys().next().value ?? null; }
@@ -172,7 +219,7 @@ export class Orchestration {
       }
       await this.save();
       this.runningTasks.delete(task.id);
-      if (TERMINAL.has(task.status)) void this.wake(task.threadId, `Codex task ${task.id} is ${task.status}. Read its status using tasks and report the actual outcome to the user.`).catch(() => {});
+      if (TERMINAL.has(task.status)) void this.wake(task.threadId, `Codex task ${task.id} is ${task.status}. Read its status using tasks and report the actual outcome to the user.`, '【作業通知】担当の状況を確認し、必要なレビューと報告を行ってください。').catch(() => {});
       void this.run();
     }
   }
