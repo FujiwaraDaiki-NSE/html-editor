@@ -302,7 +302,7 @@ test("editor skills are shared across decks, isolated from Codex home, and passe
     await writeFile(join(project, ".codex", "skills", "legacy", "SKILL.md"), fixtureContent("legacy"));
     await createSkill(project, { scope: "editor", name: "meaning", description: "Keep meaning", body: "Preserve causes and examples." });
     assert.deepEqual((await listSkills(other)).map(s => s.name), ["meaning"]);
-    const harness = new CodexService({ projectRoot: other, instructions: "Base" });
+    const harness = new CodexService({ projectRoot: other, workspaceRoot: home, instructions: "Base", chatInstructions: "Chat" });
     assert.match(await harness.editorInstructions(), /Preserve causes and examples/);
     assert.doesNotMatch(await harness.editorInstructions(), /external|legacy/);
     await setEditorSkillEnabled(project, "meaning", false);

@@ -35,7 +35,7 @@ test("browser UI bridge exposes the semantic, observable operation contract", as
   assert.match(page.slice(ensureSessionStart, ensureSessionEnd), /await enqueueUiSessionSync\(threadId, true\)/);
   assert.doesNotMatch(page.slice(ensureSessionStart, ensureSessionEnd), /return current/);
   assert.match(page, /payload\.threadId/);
-  assert.match(page, /\/codex\/thread\/prepare/);
+  assert.match(page, /\/agent\/thread\/prepare/);
   assert.match(page, /editing: state\.codex\.editing/);
   assert.match(page, /envelope\.type === "weave\/ui"/);
   assert.match(page, /data-ui-root="weave"/);

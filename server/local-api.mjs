@@ -861,6 +861,10 @@ const server = createServer(async (request, response) => {
       return sendJson(request, response, 200, { projects: await listProjects() });
     }
 
+    if (request.method === "PATCH" && url.pathname === "/api/skills/learning") {
+      return sendJson(request, response, 200, await setLearningEnabled({ enabled: payload.enabled, expectedRevision: payload.expectedRevision }));
+    }
+
     if (activeProjectTurn() && request.method !== "GET" && /^\/api\/(?:skills|skill-proposals)(?:\/|$)/.test(url.pathname)) {
       return sendJson(request, response, 409, { error: "Finish the running Agent turn before changing skills.", code: "WEAVE_TURN_RUNNING" });
     }
