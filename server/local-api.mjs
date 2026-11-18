@@ -773,7 +773,7 @@ async function delegateEdit(threadId, args, turnId) {
     const selected = await proposals.target(root, target);
     if (args.directions !== undefined) throw new Error("案の修正ではdirectionsを指定しないでください。");
     if (selected.group.scope.kind !== "deck" && (args.scope.kind === "deck" || args.scope.slideIds.some(id => !selected.group.scope.slideIds.includes(id)))) throw new Error("案の修正範囲が元の提案を超えています。");
-    const receipt = await orchestrator.create(threadId, { ...args, variation: false, deferStart: true, proposal: { groupId: target.groupId, candidateId: target.candidateId } });
+    const receipt = await orchestrator.create(threadId, { ...args, variation: false, deferStart: true, proposal: { groupId: target.groupId, candidateId: target.candidateId } }, turnId);
     try { await proposals.attach(root, target.groupId, target.candidateId, receipt.taskId, { revise: true, expectedVersion: target.version }); }
     catch (error) { const task = orchestrator.task(threadId, receipt.taskId); task.status = "cancelled"; task.error = error.message; await orchestrator.save(); throw error; }
     await orchestrator.activate([receipt.taskId]); return receipt;
@@ -783,13 +783,13 @@ async function delegateEdit(threadId, args, turnId) {
     const group = await proposals.create(root, { threadId, prompt: args.prompt, scope: args.scope, directions: args.directions });
     const receipts = [];
     for (const candidate of group.candidates) {
-      const receipt = await orchestrator.create(threadId, { ...args, prompt: `${args.prompt}\n\n比較案${candidate.id.toUpperCase()}: ${candidate.title}\n${candidate.instruction}\n全対象スライドでこの方向を一貫させてください。他の案や元の資料は編集しないでください。`, variation: false, deferStart: true, proposal: { groupId: group.id, candidateId: candidate.id } });
+      const receipt = await orchestrator.create(threadId, { ...args, prompt: `${args.prompt}\n\n比較案${candidate.id.toUpperCase()}: ${candidate.title}\n${candidate.instruction}\n全対象スライドでこの方向を一貫させてください。他の案や元の資料は編集しないでください。`, variation: false, deferStart: true, proposal: { groupId: group.id, candidateId: candidate.id } }, turnId);
       await proposals.attach(root, group.id, candidate.id, receipt.taskId); receipts.push(receipt);
     }
     await orchestrator.activate(receipts.map(receipt => receipt.taskId)); return { groupId: group.id, tasks: receipts, message: "Three candidates accepted. They do not change the live deck; adoption is required." };
   }
   if (args.directions !== undefined || args.variation === true) throw new Error("3案の生成には3案から選ぶモードを指定してください。");
-  return await orchestrator.create(threadId, args);
+  return await orchestrator.create(threadId, args, turnId);
 }
 codex.onEditSlides = async (params, args) => ({ success: true, result: await delegateEdit(params.threadId, args, params.turnId) });
 codex.onOrchestrationTool = async params => {
