@@ -102,7 +102,12 @@ const codex = new AgentService({ projectRoot: projectRoot(), workspaceRoot: work
 let codexProjectRoot = projectRoot();
 const toolCapabilities = new Map();
 const reviewedSources = new Map();
-const proposals = new SlideProposals({ workspaceRoot: workspacesRoot, publish: (type, payload) => codex.events.publish(type, payload) });
+const proposals = new SlideProposals({ workspaceRoot: workspacesRoot, publish: (type, payload) => codex.events.publish(type, payload), livePreview: taskId => {
+  if (typeof taskId !== "string") return null;
+  const pending = [...pendingTurns.values()].find(turn => turn.reviewTaskId === taskId);
+  if (!pending?.previewSnapshot) return null;
+  return { deck: pending.previewSnapshot, css: pending.preTurnCss, templates: pending.previewTemplates, revision: `${pending.threadId}:${pending.previewSequence}` };
+} });
 const orchestrator = new Orchestration({
   path: fileURLToPath(new URL("../.weave/orchestration.json", import.meta.url)), events: codex.events,
   chatActive: id => codex.activeTurns.has(id),
@@ -156,6 +161,7 @@ const completedSaves = new Map();
 const recentAgentMerges = new Map();
 let projectSwitchQueue = Promise.resolve();
 let projectLifecycleBusy = false;
+for (const root of new Set([projectRoot(), ...(await listProjects()).map(project => join(workspacesRoot, project.slug))])) await proposals.recover(root);
 const migrationNotice = "Conversations use independent Codex app-server or Claude Code sessions.";
 
 function pendingTurn(value) {
@@ -302,6 +308,11 @@ async function statePayload() {
   };
 }
 
+function publishProposalPreview(pending, threadId) {
+  const task = orchestrator.tasks.find(task => task.id === pending.reviewTaskId);
+  if (task?.proposal && task.workerThreadId === threadId) codex.events.publish("weave/proposal-preview", { root: task.root, taskId: task.id, groupId: task.proposal.groupId, candidateId: task.proposal.candidateId, revision: `${threadId}:${pending.previewSequence}` });
+}
+
 function startProjectPreview(pending, threadId, turnId) {
   pending.turnId = turnId;
   pending.previewSnapshot = pending.preTurnDeck;
@@ -323,6 +334,7 @@ function startProjectPreview(pending, threadId, turnId) {
     publish: ({ changedSlideIds, previewSequence }) => {
       pending.previewChangedSlideIds = [...new Set([...pending.previewChangedSlideIds, ...changedSlideIds])];
       pending.previewSequence = previewSequence;
+      publishProposalPreview(pending, threadId);
       codex.events.publish("weave/project", {
         status: "preview",
         projectRoot: pending.root,
@@ -552,6 +564,7 @@ async function startEditorTurn(payload, { variation = false, parentThreadId = nu
     registeredPending.reviewTaskId = payload.reviewTaskId === undefined ? null : payload.reviewTaskId;
     registeredPending.parentThreadId = parentThreadId;
     registeredPending.proposalOwnerRoot = proposalOwnerRoot;
+    registeredPending.previewTemplates = await readTemplates(root);
     registeredThreadId = thread.id;
     pendingTurns.set(thread.id, registeredPending);
     startingRoots.delete(root);
@@ -660,6 +673,7 @@ codex.on("notification", (message) => {
         const beforeMetadata = metadata(pending.baseDeck); const afterMetadata = metadata(agentDeck);
         if (beforeMetadata !== afterMetadata) sources.push({ slideId: "$deck-metadata", before: beforeMetadata, after: afterMetadata });
         const report = { request: pending.prompt, scope: pending.workflow.scope, changes: checked.changeSet, workerOutput, sources };
+        if (pending.proposalOwnerRoot !== null) { pending.previewSnapshot = agentDeck; pending.previewSequence++; publishProposalPreview(pending, threadId); }
         const approved = await orchestrator.workerReady(pending.reviewTaskId, report);
         if (!approved) throw new Error("The orchestrator rejected or revised this edit.");
       }
