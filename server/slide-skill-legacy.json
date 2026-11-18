@@ -1,0 +1,14 @@
+{
+  "technical-report-slides": {
+    "bodyHash": "27a4f82a5379203936b68d3ca51107a162cc8f6f1e6dd351ccb3c005eb295774",
+    "description": "技術報告・業務改善報告のスライドを作成・修正する。伝える主題を選び、図・対比・配置・文字の強弱によって、説明を読ませすぎずに理解できる構成へ仕上げる。"
+  },
+  "author-slide-preferences": {
+    "bodyHash": "ba3d3319f962b4cb7d7e921e0bee9ebd3b2cd6cc75e8c416f994382576f4d3fc",
+    "description": "Weave内の全プロジェクトで技術報告スライドを作成・修正するときに使う。説明の密度、文字の強弱、課題の囲み、図と実画面の扱いに関する好みを適用する。現在の依頼で指定された表現を優先する。"
+  },
+  "slide-authoring": {
+    "bodyHash": "ce8c9f50e501186a1ac55545c5a81ac74928fdc7e0b8309a10b0296ec8ef34f6",
+    "description": "html-editorで説明資料・技術報告・業務紹介のスライドを新規作成、再現、修正するときに使う。元の意味と情報の関係を保持し、図表・実画面・文章の役割、資料全体の統一感、画像の読みやすさを判断する。アプリ自体のUI開発やHTMLの保存契約は対象外。"
+  }
+}

@@ -64,11 +64,11 @@ test("application storage uses its own persistent directory and rejects explicit
   }
 });
 
-test("initialization seeds both complete folders once in an independent Git repo and preserves learned edits", async () => fixture(async (root) => {
+test("initialization seeds all complete folders once in an independent Git repo and preserves learned edits", async () => fixture(async (root) => {
   const initialized = await initializeApplicationSkills();
   const skills = await listApplicationSkills();
   assert.equal(initialized.root, root);
-  assert.equal(skills.length, 2);
+  assert.equal(skills.length, 3);
   assert.equal(await git(root, "rev-parse", "--show-toplevel"), root);
   assert.equal(await git(root, "remote"), "");
   assert.equal(await git(root, "status", "--porcelain"), "");

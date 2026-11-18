@@ -5,13 +5,17 @@ const skillRoot = applicationSkillsRoot();
 
 export const applicationSkillInstructions = `These instructions define how to operate Weave: edit boundaries, source files, saving, and verification.
 Presentation composition, visual hierarchy, and design preferences belong to the application skills.
-Before creating or revising technical-report slides, read both application-wide skills below.
+Before creating or revising any slides, read the shared baseline:
+- ${join(skillRoot, "slide-authoring", "SKILL.md")}
+For technical reports and operational improvement reports, also read the domain guidance and author preferences:
 They are shared by every Weave project; read them from these exact paths, not from the user's
 common skill directory or a project-local copy:
 - ${join(skillRoot, "technical-report-slides", "SKILL.md")}
 - ${join(skillRoot, "author-slide-preferences", "SKILL.md")}
 Follow their linked references only when needed. The current human request takes precedence over
-stored design preferences. For other presentation styles, use only the skills that fit the request.
+stored design preferences. Apply the baseline to every presentation style; apply technical-report
+guidance and author preferences only within their stated scope. Do not load the former editor-wide
+slide-authoring copy as an additional rule set. Other added skills apply only when relevant.
 These versioned skills are application resources. Do not modify them during ordinary slide edits;
 project skill-edit permission does not authorize application-wide changes. The root agent may record verified human preferences only through the dedicated slide-learning tools when learning is enabled; never rewrite these files directly. Report an unreadable
 skill rather than silently substituting a personal or project-local skill with the same name.`;
