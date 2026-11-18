@@ -35,7 +35,7 @@ export async function consolidateSlideSkills({ applicationRoot, editorRoot }) {
       const file = await lstat(archive);
       if (!file.isFile() || file.isSymbolicLink() || await readFile(archive, "utf8") !== old.content) throw error;
     }
-    await updateSkill(editorRoot, { scope: "editor", currentName: old.name, name: old.name, description: target.description, body: target.body, frontmatter: old.frontmatter, expectedContent: old.content });
+    await updateSkill(editorRoot, { scope: "editor", currentName: old.name, name: old.name, description: old.description === legacyHashes[old.name].description ? target.description : old.description, body: target.body, frontmatter: old.frontmatter, expectedContent: old.content });
   }
   return { ...result, editorUpdated: Boolean(old && old.body !== target.body) };
 }

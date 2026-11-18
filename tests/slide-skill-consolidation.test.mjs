@@ -7,7 +7,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { consolidateSlideSkills } from "../scripts/consolidate-slide-skills.mjs";
 import { consolidateApplicationSlideSkills, initializeApplicationSkills, readApplicationSkill, updateApplicationSkill, updateApplicationLearningState } from "../server/application-skills.mjs";
-import { parseSkillDocument } from "../server/skills.mjs";
+import { parseSkillDocument, serializeSkillDocument } from "../server/skills.mjs";
 const execute = promisify(execFile);
 const fixture = (name) => readFile(new URL(`./fixtures/legacy-slide-skills/${name}.md`, import.meta.url), "utf8");
 
@@ -105,4 +105,21 @@ test("stale revisions cannot consolidate over a newer preference edit", async ()
   await assert.rejects(consolidateApplicationSlideSkills(before.revision), { code: "WEAVE_SKILL_CONFLICT" });
   assert.equal((await readApplicationSkill(before.name)).content, saved.content);
   assert.equal((await readApplicationSkill(before.name)).revision, saved.revision);
+}));
+
+test("editor migration retains a custom description, metadata and disabled state", async () => withStore(async (roots) => {
+  await legacyStore(roots);
+  const path = join(roots.editorRoot, "slide-authoring", "SKILL.md");
+  const old = parseSkillDocument(await readFile(path, "utf8"), "slide-authoring");
+  const original = serializeSkillDocument({ name: old.name, description: "Custom editor description", body: old.body, unknownFrontmatter: "metadata:\n  owner: editor-author" });
+  await writeFile(path, original);
+  const disabled = join(roots.editorRoot, "slide-authoring", ".disabled");
+  await writeFile(disabled, "disabled by the user\n");
+  await consolidateSlideSkills(roots);
+  const after = parseSkillDocument(await readFile(path, "utf8"), old.name);
+  assert.equal(after.description, "Custom editor description");
+  assert.equal(after.unknownFrontmatter, "metadata:\n  owner: editor-author");
+  assert.equal(await readFile(disabled, "utf8"), "disabled by the user\n");
+  assert.equal(await readFile(join(roots.editorRoot, old.name, "references", "before-consolidation.md"), "utf8"), original);
+  assert.equal((await consolidateSlideSkills(roots)).editorUpdated, false);
 }));
