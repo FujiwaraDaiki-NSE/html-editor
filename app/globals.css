@@ -1848,3 +1848,22 @@ button.project-card { cursor: pointer; }
 /* Keep proposal chrome out of the canvas sizing/centering grid. */
 .canvas-workspace > .proposal-workspace { max-height: 48%; min-height: 0; overflow: auto; overscroll-behavior: contain; overflow-anchor: none; border-bottom: 1px solid var(--line); }
 .canvas-workspace > .proposal-workspace[data-open="true"] { flex: 1 1 0; max-height: none; }
+
+/* A compact proposal strip occupies the canvas margin without changing its fit area. */
+.canvas-workspace { position: relative; }
+.canvas-workspace > .proposal-workspace[data-open="false"] { position: absolute; inset: 0 0 auto; display: flex; align-items: stretch; gap: 8px; padding: 5px 8px; max-height: 56px; }
+.proposal-workspace[data-open="false"] .proposal-toolbar { display: contents; }
+.proposal-workspace[data-open="false"] .proposal-toolbar-context { flex: 0 0 auto; flex-direction: column; justify-content: center; gap: 2px; order: 0; }
+.proposal-workspace[data-open="false"] .proposal-toolbar-actions { flex: 0 0 auto; flex-direction: column; justify-content: center; gap: 0; order: 2; }
+.proposal-workspace[data-open="false"] .proposal-toolbar button { min-height: 20px; padding: 2px 5px; font-size: 11px; }
+.proposal-workspace[data-open="false"] .proposal-progress { font-size: 10px; white-space: nowrap; }
+.proposal-workspace[data-open="false"] .proposal-choices { flex: 1 0 360px; gap: 6px; margin: 0; order: 1; }
+.proposal-choice { min-height: 44px; display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto auto; align-content: center; column-gap: 7px; row-gap: 1px; padding: 5px 7px; border-radius: 6px; }
+.proposal-choice-heading { grid-row: 1 / 3; flex-direction: column; justify-content: center; gap: 1px; }
+.proposal-choice-letter { padding: 2px 4px; font-size: 11px; }
+.proposal-choice-selected { font-size: 9px; }
+.proposal-choice-title { display: block; font-size: 12px; line-height: 1.4; white-space: nowrap; text-overflow: ellipsis; }
+.proposal-choice-status { min-width: 0; display: block; margin: 0; font-size: 11px; line-height: 1.4; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.proposal-state-dot { display: inline-block; width: 6px; height: 6px; margin-right: 5px; vertical-align: middle; }
+.proposal-state-dot.ready { background: #4ade80; }
+@container proposal-panel (max-width: 520px) { .proposal-workspace[data-open="false"] .proposal-choices { grid-template-columns: repeat(3, minmax(0, 1fr)); } .proposal-choice { min-height: 44px; } }
