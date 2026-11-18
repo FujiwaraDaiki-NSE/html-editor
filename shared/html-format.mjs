@@ -12,6 +12,7 @@
    and it survives formatting unchanged. */
 
 import prettier from "prettier";
+import htmlPlugin from "prettier/plugins/html";
 
 const options = { printWidth: 100, tabWidth: 2, htmlWhitespaceSensitivity: "css" };
 
@@ -20,7 +21,7 @@ const oneTrailingNewline = (text) => `${text.replace(/\n*$/, "")}\n`;
 
 /** Format a slide's HTML (the `<main class="weave-slide">` element or a fragment of it). */
 export async function formatSlideHtml(html) {
-  return oneTrailingNewline(await prettier.format(html, { ...options, parser: "html" }));
+  return oneTrailingNewline(await prettier.format(html, { ...options, parser: "html", plugins: [htmlPlugin] }));
 }
 
 /** Format the project stylesheet. */

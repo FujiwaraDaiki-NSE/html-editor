@@ -439,7 +439,7 @@ export class SlideProposals {
             ],
           };
       const current = await readProject(root);
-      const merged = mergeEditorDecks({
+      const merged = await mergeEditorDecks({
         base: group.baseDeck,
         agent,
         current,

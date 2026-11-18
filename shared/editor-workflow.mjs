@@ -1,3 +1,5 @@
+import { formatSlideHtml } from "./html-format.mjs";
+
 /* Pure editor workflow primitives.
 
    The functions in this module deliberately do not know about React, the API, or
@@ -226,14 +228,29 @@ function mergeValue(base, agent, current, path, conflicts) {
 }
 
 /** Three-way merge that treats ID-bearing slides/elements as independent units. */
-export function mergeEditorDecks(input) {
+export async function mergeEditorDecks(input) {
   requireRecord(input, "input");
   for (const key of ["base", "agent", "current"]) if (!hasOwn(input, key)) throw new TypeError(`input.${key} is required.`);
   const { base, agent, current } = input;
   slideList(base); slideList(agent); slideList(current);
   if (hasOwn(input, "scope")) validateScopeValue(input.scope);
   const conflicts = [];
-  const merged = mergeValue(base, agent, current, "deck", conflicts);
+  // Only slides affected by transient chrome need formatting. Normalize all three
+  // versions of those slides so marker-induced line wrapping is not an edit.
+  const affectedIds = new Set([base, agent, current].flatMap(deck => deck.slides)
+    .filter(slide => typeof slide.html === "string" && /\sdata-(?:agent-changed|quality-severity|quality-label)(?=[\s=>])/i.test(slide.html))
+    .map(slide => slide.id));
+  const normalize = async deck => ({ ...deck, slides: await Promise.all(deck.slides.map(async slide => {
+    if (!affectedIds.has(slide.id) || typeof slide.html !== "string") return slide;
+    const html = slide.html.replace(/<!--[\s\S]*?-->|<(script|style)\b[^>]*>[\s\S]*?<\/\1\s*>|<[A-Za-z](?:[^'">]|"[^"]*"|'[^']*')*>/gi, tag => {
+      if (/^<!--|^<(?:script|style)\b/i.test(tag)) return tag;
+      return tag.replace(/(\s+)([^\s=<>]+)(\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/g,
+        (attribute, space, name) => /^(?:data-agent-changed|data-quality-severity|data-quality-label)$/i.test(name) ? "" : attribute);
+    });
+    return { ...slide, html: await formatSlideHtml(html) };
+  })) });
+  const [normalizedBase, normalizedAgent, normalizedCurrent] = await Promise.all([base, agent, current].map(normalize));
+  const merged = mergeValue(normalizedBase, normalizedAgent, normalizedCurrent, "deck", conflicts);
   return { deck: merged, conflicts, ok: conflicts.length === 0 };
 }
 
