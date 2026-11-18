@@ -4324,8 +4324,8 @@ export default function Home() {
           </div>
 
           <div className="canvas-workspace">
-          <div className="canvas-area">
             {activeSlideId && <SlideProposals key={`${project?.root}:${activeSlideId}`} groups={proposalGroups} slideId={activeSlideId} apiBase={apiBase} syncReady={draftSync === "synced" && !historyBusy} onTarget={selectProposalTarget} onAdopt={adoptSlideProposal} onDismiss={dismissSlideProposal} />}
+          <div className="canvas-area">
             {showVariationPrompt && (
               <div className="variation-prompt">
                 <div><span>新しい探索セッション</span><button aria-label="探索セッションの作成を閉じる" onClick={() => setShowVariationPrompt(false)}>×</button></div>
