@@ -64,13 +64,19 @@ test("Agent production tasks separate messages, work logs, and blocking requests
   assert.match(requestCard, /resolutionRetryable/);
 });
 
-test("only Agent conversation text renders Markdown with GFM and external links", async () => {
-  const itemCard = await readFile(new URL("../app/codex/components/ItemCard.tsx", import.meta.url), "utf8");
+test("Agent and user conversation text renders Markdown with user line breaks preserved", async () => {
+  const [itemCard, css] = await Promise.all([
+    readFile(new URL("../app/codex/components/ItemCard.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
   assert.match(itemCard, /import ReactMarkdown from "react-markdown"/);
   assert.match(itemCard, /import remarkGfm from "remark-gfm"/);
-  assert.match(itemCard, /item\.text && \(item\.type === "agentMessage" \? \([\s\S]*?<ReactMarkdown remarkPlugins=\{\[remarkGfm\]\}[\s\S]*?\{item\.text\}<\/ReactMarkdown>[\s\S]*?: <p className="codex-item-text">\{item\.text\}<\/p>/);
+  const messageContent = itemCard.slice(itemCard.indexOf('{isMessage ? ('), itemCard.indexOf('<div className="work-summary">'));
+  assert.match(messageContent, /item\.text && \(\s*<div className="codex-item-text chat-markdown">\s*<ReactMarkdown remarkPlugins=\{\[remarkGfm\]\}[\s\S]*?\{item\.text\}<\/ReactMarkdown>/);
+  assert.doesNotMatch(messageContent, /item\.type ===|<p className="codex-item-text">/);
   assert.match(itemCard, /<a href=\{href\} target="_blank" rel="noreferrer noopener">/);
   assert.doesNotMatch(itemCard, /rehypeRaw|rehype-raw|dangerouslySetInnerHTML/);
+  assert.match(css, /\.codex-item-userMessage \.chat-markdown :is\(p, li\) \{ white-space: pre-wrap; \}/);
 });
 
 test("turn submission distinguishes acceptance from progress and survives conversation switches", () => {

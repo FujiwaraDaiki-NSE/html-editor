@@ -55,13 +55,13 @@ export function ItemCard({ item }: { item: ItemState }) {
         <div className="message-content">
           <span className="message-label">{label}{item.status !== "completed" && <span className="message-status">{item.status}</span>}</span>
           {item.reasoning.map((part, index) => <p key={index}>{part}</p>)}
-          {item.text && (item.type === "agentMessage" ? (
+          {item.text && (
             <div className="codex-item-text chat-markdown">
               <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
                 a: ({ children, href }) => <a href={href} target="_blank" rel="noreferrer noopener">{children}</a>,
               }}>{item.text}</ReactMarkdown>
             </div>
-          ) : <p className="codex-item-text">{item.text}</p>)}
+          )}
         </div>
       ) : (
         <div className="work-summary"><span className="work-glyph" aria-hidden="true">{glyphs[item.type] ?? "·"}</span><strong>{label}</strong>{summary && <span className="work-summary-text">· {summary}</span>}</div>
