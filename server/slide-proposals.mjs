@@ -251,6 +251,10 @@ export class SlideProposals {
           version: candidate.version,
           taskId: candidate.taskId,
           status,
+          activity: task ? task.activity : null,
+          startedAt: task?.startedAt === undefined ? null : task.startedAt,
+          workerStartedAt: task?.workerStartedAt === undefined ? null : task.workerStartedAt,
+          finishedAt: task?.finishedAt === undefined ? null : task.finishedAt,
           error: candidate.error ?? task?.error ?? null,
           stale: JSON.stringify(current) !== JSON.stringify(group.baseDeck),
           available: {

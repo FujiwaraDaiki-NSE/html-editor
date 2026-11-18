@@ -19,6 +19,8 @@ export type ProposalCandidate = {
   version: number;
   taskId: string | null;
   status: string;
+  activity: string | null;
+  startedAt: number | null;
   stale: boolean;
   error: string | null;
   available: {
@@ -257,6 +259,12 @@ export function SlideProposals({
       data-open={compare || !!selected}
       aria-label="このスライドの提案"
     >
+      {visible.map((g) => (
+        <p className="proposal-progress" key={g.id} role="status">
+          {g.candidates.filter((c) => c.available.view).length} /{" "}
+          {g.candidates.length} 案を確認できます
+        </p>
+      ))}
       <div className="variation-tabs">
         <button
           className={!selected && !compare ? "active" : ""}
@@ -277,7 +285,13 @@ export function SlideProposals({
               <span>
                 {c.id.toUpperCase()} {c.title}
               </span>
-              <small>{statusLabels[c.status] ?? c.status}</small>
+              <small>
+                {statusLabels[c.status] ?? c.status}
+                {["running", "reviewing", "applying"].includes(c.status) &&
+                c.activity
+                  ? ` · ${c.activity}`
+                  : ""}
+              </small>
             </button>
           )),
         )}

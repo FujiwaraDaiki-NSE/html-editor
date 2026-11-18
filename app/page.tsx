@@ -1520,7 +1520,7 @@ export default function Home() {
               setOrchestration({ tasks, messages: envelope.payload.messages.filter((message: { root: string }) => message.root === activeProjectRootRef.current) });
               setProposalGroups(current => current.map(group => ({ ...group, candidates: group.candidates.map(candidate => {
                 const task = tasks.find((task: AgentTask) => task.id === candidate.taskId);
-                return task && candidate.status !== "ready" ? { ...candidate, status: task.status, error: task.error } : candidate;
+                return task && candidate.status !== "ready" ? { ...candidate, status: task.status, error: task.error, activity: task.activity, startedAt: task.startedAt === undefined ? null : task.startedAt } : candidate;
               }) })));
             }
             const envelopeSequence = Number(envelope.sequence ?? 0);

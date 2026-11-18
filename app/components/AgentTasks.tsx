@@ -1,5 +1,6 @@
 export type AgentTask = {
   applied?: boolean;
+  startedAt?: number;
   proposal?: { groupId: string; candidateId: string } | null;
   id: string; threadId: string; root: string; model: string; prompt: string; version: number;
   status: string; activity: string; scope: { kind: string; slideIds: string[]; elementId: string | null };

@@ -10,7 +10,7 @@ export class Orchestration {
   constructor({ path, events, startChat, steerChat, interruptChat, chatActive, execute, interruptWorker, wakePrompt, onTaskSettled }) {
     Object.assign(this, { path, events, startChat, steerChat, interruptChat, chatActive, execute, interruptWorker, wakePrompt, onTaskSettled });
     this.messages = []; this.tasks = []; this.conversations = new Map(); this.payloads = new Map();
-    this.pumping = new Set(); this.running = null; this.gates = new Map(); this.saves = Promise.resolve(); this.stopping = false;
+    this.pumping = new Set(); this.runningTasks = new Map(); this.gates = new Map(); this.saves = Promise.resolve(); this.stopping = false;
   }
   async load() {
     try {
@@ -125,10 +125,10 @@ export class Orchestration {
     const task = this.tasks.find(t => t.workerThreadId === threadId && t.status === 'running'); if (!task) return;
     const labels = { commandExecution: 'コマンドを実行中', fileChange: 'ファイルを編集中', reasoning: '実装方法を検討中', agentMessage: '作業結果を整理中', mcpToolCall: '資料を確認中' };
     if (!Object.hasOwn(labels, item.type)) return;
-    task.activity = labels[item.type]; await this.save();
+    task.activity = labels[item.type]; task.activityAt = Date.now(); await this.save();
   }
   async workerStarted(id, threadId, turnId) {
-    const task = this.tasks.find(t => t.id === id); task.workerThreadId = threadId; task.workerTurnId = turnId; if (task.status === 'running') task.activity = 'Codexが編集しています'; await this.save();
+    const task = this.tasks.find(t => t.id === id); task.workerThreadId = threadId; task.workerTurnId = turnId; task.workerStartedAt = Date.now(); if (task.status === 'running') task.activity = 'Codexが編集しています'; await this.save();
   }
   async workerReady(id, report) {
     const task = this.tasks.find(t => t.id === id);
@@ -138,10 +138,22 @@ export class Orchestration {
     void this.wake(task.threadId, `Codex task ${id} requires review. Read it using tasks, inspect the changes and latest human instructions, then call review_edit. Do not claim completion before the task is completed.`).catch(error => { task.error = error.message; void this.save(); });
     try { return await promise; } finally { this.gates.delete(id); }
   }
+  get running() { return this.runningTasks.keys().next().value ?? null; }
+  canRun(task) {
+    const active = [...this.runningTasks.values()];
+    if (!task.proposal) return active.length === 0;
+    if (active.length >= 3 || active.some(other => !other.proposal)) return false;
+    return !active.some(other => other.proposal.groupId === task.proposal.groupId && other.proposal.candidateId === task.proposal.candidateId);
+  }
   async run() {
-    if (this.stopping || this.running) return;
-    const task = this.tasks.find(t => t.status === 'queued' && t.instructionStatus === 'current'); if (!task) return;
-    this.running = task.id; task.status = 'running'; task.attempt++;
+    if (this.stopping) return;
+    for (const task of this.tasks.filter(t => t.status === 'queued' && t.instructionStatus === 'current')) {
+      if (!this.canRun(task)) continue;
+      this.runningTasks.set(task.id, task); task.status = 'running'; task.attempt++; task.finishedAt = null; task.workerStartedAt = null; task.workerThreadId = null; task.workerTurnId = null; task.startedAt = Date.now(); task.activity = 'Codexを起動中'; task.activityAt = task.startedAt;
+      void this.runTask(task);
+    }
+  }
+  async runTask(task) {
     try {
       await this.save();
       const outcome = await this.execute(task);
@@ -151,7 +163,7 @@ export class Orchestration {
       else { task.status = outcome.success ? 'completed' : 'failed'; task.error = outcome.success ? null : outcome.error; }
     } catch (error) { task.status = 'failed'; task.error = error.message; }
     finally {
-      this.running = null;
+      task.finishedAt = Date.now();
       if (task.status === 'completed') task.activity = task.proposal ? 'レビュー済み・比較できます（未採用）' : 'オーケストレータのレビュー後、反映を確認済み';
       if (task.status === 'failed') task.activity = '結果を反映できませんでした';
       if (task.status === 'cancelled') task.activity = '変更を採用せず終了';
@@ -159,6 +171,7 @@ export class Orchestration {
         try { await this.onTaskSettled(task); } catch (error) { task.status = 'failed'; task.error = `Could not publish the verified result: ${error.message}`; task.activity = '結果を保存できませんでした'; }
       }
       await this.save();
+      this.runningTasks.delete(task.id);
       if (TERMINAL.has(task.status)) void this.wake(task.threadId, `Codex task ${task.id} is ${task.status}. Read its status using tasks and report the actual outcome to the user.`).catch(() => {});
       void this.run();
     }

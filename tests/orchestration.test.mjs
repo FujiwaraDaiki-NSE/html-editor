@@ -18,6 +18,7 @@ async function setup(t, options = {}) {
     interruptWorker: async () => {},
     execute: async task => {
       await manager.workerStarted(task.id, `worker-${task.id}`, `turn-${task.id}`);
+      if (options.beforeReady) await options.beforeReady(task);
       const yes = await manager.workerReady(task.id, { workerOutput: 'Changed title only.', sources: [{ slideId: 'one', before: 'Before', after: 'After' }] });
       if (options.beforeApply) await options.beforeApply();
       if (yes) { manager.assertApply(task.id); applied.push(task.id); }
@@ -156,4 +157,58 @@ test('unattached proposal tasks cannot start when another worker finishes', asyn
   await manager.activate([b.id]); await until(() => b.status === 'reviewing');
   await manager.review('parent', { taskId: b.id, version: 1, decision: 'reject', reason: 'Finish this test.' });
   await until(() => b.status === 'cancelled');
+});
+
+test('three candidate subagents run concurrently and each can finish before its peers', async t => {
+  const { manager, applied } = await setup(t); await manager.receive(input('one', 'compare'));
+  const receipts = await Promise.all(['a','b','c'].map(candidateId => manager.create('parent', { ...args, deferStart: true, proposal: { groupId: 'group', candidateId } })));
+  await manager.activate(receipts.map(r => r.taskId));
+  const tasks = receipts.map(r => manager.task('parent', r.taskId));
+  await until(() => tasks.every(task => task.status === 'reviewing'));
+  assert.equal(manager.runningTasks.size, 3);
+  assert.equal(new Set(tasks.map(task => task.workerThreadId)).size, 3);
+  const second = tasks[1];
+  await manager.review('parent', { taskId: second.id, version: 1, decision: 'approve', reason: 'This candidate is ready independently.' });
+  await until(() => second.status === 'completed' && manager.runningTasks.size === 2);
+  assert.deepEqual(applied, [second.id]);
+  assert.equal(tasks[0].status, 'reviewing'); assert.equal(tasks[2].status, 'reviewing');
+  for (const task of [tasks[0],tasks[2]]) await manager.review('parent', {taskId:task.id,version:1,decision:'reject',reason:'End the remaining test work.'});
+  await until(() => manager.running === null);
+});
+
+test('the same candidate workspace never overlaps and at most three workers run', async t => {
+  const { manager } = await setup(t); await manager.receive(input('one'));
+  const entries = ['a','a','b','c','d'];
+  const receipts = await Promise.all(entries.map(candidateId => manager.create('parent', { ...args, deferStart: true, proposal: {groupId:'group',candidateId} })));
+  await manager.activate(receipts.map(r=>r.taskId));
+  const tasks = receipts.map(r=>manager.task('parent',r.taskId));
+  await until(()=>[tasks[0],tasks[2],tasks[3]].every(task=>task.status==='reviewing'));
+  assert.equal(tasks[1].status,'queued'); assert.equal(tasks[4].status,'queued'); assert.equal(manager.runningTasks.size,3);
+  await manager.control('parent',{taskId:tasks[0].id,version:1,action:'cancel',instruction:'Cancel only the first candidate attempt.'});
+  await until(()=>tasks[1].status==='reviewing'); assert.equal(tasks[0].status,'cancelled'); assert.equal(tasks[2].status,'reviewing'); assert.equal(manager.runningTasks.size,3);
+  await manager.cancelConversation('parent'); await until(()=>manager.running===null);
+});
+
+test('failure of one parallel candidate does not cancel or hold another candidate', async t => {
+  const { manager } = await setup(t,{beforeReady: task=>{if(task.proposal.candidateId==='b')throw new Error('Candidate B failed');}});
+  await manager.receive(input('one'));
+  const receipts=await Promise.all(['a','b','c'].map(candidateId=>manager.create('parent',{...args,deferStart:true,proposal:{groupId:'group',candidateId}})));
+  await manager.activate(receipts.map(r=>r.taskId)); const tasks=receipts.map(r=>manager.task('parent',r.taskId));
+  await until(()=>tasks[0].status==='reviewing'&&tasks[1].status==='failed'&&tasks[2].status==='reviewing');
+  assert.match(tasks[1].error,/Candidate B failed/);
+  await manager.review('parent',{taskId:tasks[0].id,version:1,decision:'approve',reason:'A is valid despite the unrelated failure.'});
+  await until(()=>tasks[0].status==='completed'); assert.equal(tasks[2].status,'reviewing');
+  await manager.cancelConversation('parent'); await until(()=>manager.running===null);
+});
+
+test('each running candidate publishes its own real activity', async t => {
+  let release; const hold=new Promise(resolve=>{release=resolve;});
+  const { manager }=await setup(t,{beforeReady:()=>hold}); await manager.receive(input('one'));
+  const receipts=await Promise.all(['a','b','c'].map(candidateId=>manager.create('parent',{...args,deferStart:true,proposal:{groupId:'group',candidateId}})));
+  await manager.activate(receipts.map(r=>r.taskId));const tasks=receipts.map(r=>manager.task('parent',r.taskId));
+  await until(()=>tasks.every(task=>task.workerThreadId));
+  await manager.progress(tasks[1].workerThreadId,{type:'fileChange'});
+  assert.equal(tasks[1].activity,'ファイルを編集中'); assert.notEqual(tasks[0].activity,tasks[1].activity); assert.ok(tasks[1].activityAt>=tasks[1].startedAt);
+  release();await until(()=>tasks.every(task=>task.status==='reviewing'));
+  await manager.cancelConversation('parent');await until(()=>manager.running===null);
 });
