@@ -267,7 +267,11 @@ export function SlideProposals({
   return (
     <section
       className="proposal-workspace"
-      data-open={compare || !!selected}
+      data-open={
+        compare ||
+        !!selected ||
+        visible.some((g) => g.preparationError !== null)
+      }
       aria-label="このスライドの提案"
     >
       <div className="proposal-toolbar">
