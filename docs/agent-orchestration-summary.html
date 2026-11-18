@@ -2,6 +2,7 @@
 <html lang="ja"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>オーケストレーションの実装概要</title>
 <style>body{font:16px/1.85 system-ui,sans-serif;max-width:1040px;margin:48px auto;padding:0 24px;color:#202534;background:#fafbfe}h1,h2{line-height:1.4}table{border-collapse:collapse;width:100%;background:white}th,td{border:1px solid #ccd3df;padding:12px;text-align:left;vertical-align:top}code{background:#edf0f5;padding:2px 6px;border-radius:4px}.flow{padding:20px;background:#eaf1ff;border-radius:12px}</style>
 <h1>オーケストレーションの実装概要</h1>
+<p><strong>更新：</strong>着手前の人間承認は、後続の<a href="slide-proposals-summary.html">1案編集と3案比較</a>で置き換えた。現在の実行モードは「編集をまかせる」「3案から選ぶ」。以下は導入時の記録。</p>
 <p>編集の実行中に追加指示を送れない問題を解消し、選択したCodex／Claudeが担当への指示とレビューを行う。実装担当には別のCodex会話を使う。モデルメニューがオーケストレータの選択を兼ね、実装モデルは明示的に別途選ぶ。</p>
 <p class="flow">人間の指示 → オーケストレータ → 必要に応じて人間の承認 → Codex担当 → 差分レビュー → 変更範囲・同時編集の検証 → 反映</p>
 <h2>操作</h2><table><tr><th>設定・操作</th><th>結果</th></tr><tr><td>編集を任せる</td><td>編集を委任し、レビュー後に反映する。</td></tr><tr><td>確認してから編集</td><td>担当の作業内容を示し、人間がカードを承認してから実装する。実装後にもレビューする。</td></tr><tr><td>案や計画を相談</td><td>会話で回答する。編集の許可として扱わない。</td></tr><tr><td>作業中に追加指示</td><td>受付を記録し、オーケストレータが担当の継続・変更・停止を判断する。</td></tr><tr><td>担当カード</td><td>対象、モデル、指示、試行回数、進行状況を表示し、レビューと変更前後を展開できる。担当単位で中止できる。</td></tr></table>

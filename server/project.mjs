@@ -1804,6 +1804,7 @@ export async function duplicateProject(slug) {
   const sourceReferences = resolve(referencesRoot(source));
   const sourceReferencesIndex = join(sourceReferences, "index.json");
   await cp(source, target, { recursive: true, filter: (path) => {
+    if (resolve(path) === join(source, ".weave", "slide-proposals.json")) return false;
     if (path.split("/").includes(".git") || /[\\/]\.weave[\\/]recovery(?:[\\/]|$)/.test(path) || /\.slides-[^/]+\.(staged|previous)$/.test(path)) return false;
     const absolutePath = resolve(path);
     if (absolutePath === sourceReferences || !absolutePath.startsWith(`${sourceReferences}/`)) return true;

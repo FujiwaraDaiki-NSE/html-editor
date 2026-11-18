@@ -1,4 +1,6 @@
 const ROUTE_METHODS = [
+  [/^\/api\/proposals(?:\/preview|\/[^/]+\/[abc]\/assets\/[^/]+)?$/, ["GET"]],
+  [/^\/api\/proposals\/(?:adopt|dismiss)$/, ["POST"]],
   [/^\/api\/references\/folder\/upload$/, ["POST"]],
   [/^\/healthz$/, ["GET"]],
   [/^\/api\/(?:state|variations|variations\/compare|codex\/events|codex\/threads)$/, ["GET"]],

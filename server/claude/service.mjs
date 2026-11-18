@@ -1,3 +1,4 @@
+import { applicationSkillsRoot } from "../application-skills.mjs";
 import { EventEmitter } from "node:events";
 import { spawn, execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -167,7 +168,7 @@ export class ClaudeService extends EventEmitter {
     const mcp = capability === null ? { mcpServers: {} } : { mcpServers: { weave_ui: { command: process.execPath, args: [fileURLToPath(new URL("../orchestrator-mcp.mjs", import.meta.url))], env: { WEAVE_TOOL_URL: capability.url, WEAVE_TOOL_TOKEN: capability.token } } } };
     const args = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages",
       "--model", model.slice(7), "--settings", JSON.stringify({ fallbackModel: [], switchModelsOnFlag: false }), "--restricted", "--permission-mode", "acceptEdits", "--permission-prompts", "none",
-      "--tools", "Read,Glob,Grep", "--allowedTools", "Read,Glob,Grep,mcp__weave_ui__*", "--strict-mcp-config", "--mcp-config", JSON.stringify(mcp),
+      "--add-dir", applicationSkillsRoot(), "--tools", "Read,Glob,Grep", "--allowedTools", "Read,Glob,Grep,mcp__weave_ui__*", "--strict-mcp-config", "--mcp-config", JSON.stringify(mcp),
       "--system-prompt-snapshot", "off", "--append-system-prompt", instructions,
       thread.sessionStarted ? "--resume" : "--session-id", thread.sessionId];
     if (descriptor.supportedReasoningEfforts.length) args.push("--effort", effort);

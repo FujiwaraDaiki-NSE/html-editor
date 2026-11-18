@@ -1,3 +1,4 @@
+import { SlideProposals, validateDirections } from "./slide-proposals.mjs";
 import { taskSummary, taskDetails, taskChanges } from "./task-view.mjs";
 import { randomBytes, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -58,6 +59,7 @@ import {
   createRecoverySnapshot,
   updateRecoverySnapshot,
   readAllRecoverySnapshots,
+  readRecoverySnapshots,
   discardRecoverySnapshot,
   createAgentFileSnapshot,
   captureAgentFilePreservation,
@@ -100,6 +102,7 @@ const codex = new AgentService({ projectRoot: projectRoot(), workspaceRoot: work
 let codexProjectRoot = projectRoot();
 const toolCapabilities = new Map();
 const reviewedSources = new Map();
+const proposals = new SlideProposals({ workspaceRoot: workspacesRoot, publish: (type, payload) => codex.events.publish(type, payload) });
 const orchestrator = new Orchestration({
   path: fileURLToPath(new URL("../.weave/orchestration.json", import.meta.url)), events: codex.events,
   chatActive: id => codex.activeTurns.has(id),
@@ -111,11 +114,17 @@ const orchestrator = new Orchestration({
   },
   steerChat: async payload => await codex.steerTurn({ ...payload, humanPrompt: payload.prompt, prompt: `${payload.prompt}${await serializeEditorContext(payload, payload.root)}` }),
   interruptChat: id => codex.interruptTurn(id), interruptWorker: id => codex.codex.interruptTurn(id),
+  onTaskSettled: async task => { if (task.proposal) await proposals.finish(task.root, task.proposal.groupId, task.proposal.candidateId, task); },
   execute: async task => {
-    if (task.root !== projectRoot()) throw new Error("The project changed before the delegated edit started. Send the request in the current project.");
-    const deck = await readProject(task.root);
+    if (!task.proposal && task.root !== projectRoot()) throw new Error("The project changed before the delegated edit started. Send the request in the current project.");
+    let executionRoot = task.root;
+    if (task.proposal) {
+      const group = proposals.group(await proposals.read(task.root), task.proposal.groupId);
+      executionRoot = proposals.workspace(group, proposals.candidate(group, task.proposal.candidateId));
+    }
+    const deck = await readProject(executionRoot);
     const contextEnvelope = { ...task.contextEnvelope, modificationScope: task.scope, executionMode: "apply", allowSkillChanges: task.allowSkillChanges };
-    const started = await startEditorTurn({ prompt: task.prompt, deck, contextEnvelope, clientUserMessageId: `task-${task.id}-${task.attempt}`, model: task.model, effort: task.effort, approvalPolicy: task.approvalPolicy, reviewTaskId: task.id }, { parentThreadId: task.threadId, variation: task.variation });
+    const started = await startEditorTurn({ prompt: task.prompt, deck, contextEnvelope, clientUserMessageId: `task-${task.id}-${task.attempt}`, model: task.model, effort: task.effort, approvalPolicy: task.approvalPolicy, reviewTaskId: task.id }, { parentThreadId: task.threadId, variation: task.proposal ? false : task.variation, root: executionRoot, proposalOwnerRoot: task.proposal ? task.root : null });
     await orchestrator.workerStarted(task.id, started.thread.id, started.turn.id);
     await started.pending.finalization;
     if (!started.pending.outcome) throw new Error("Codex finished without a verified editor outcome.");
@@ -133,7 +142,8 @@ codex.claude.toolConfiguration = (threadId, turnId) => {
 const pendingTurns = new Map();
 const startingRoots = new Set();
 const chatTurns = new Map();
-const recoveredSnapshots = await readAllRecoverySnapshots();
+const proposalRoots = [...new Set(orchestrator.tasks.filter(task => task.proposal !== null && task.proposal !== undefined).map(task => join(workspacesRoot, ".proposals", task.proposal.groupId, task.proposal.candidateId)))];
+const recoveredSnapshots = [...await readAllRecoverySnapshots(), ...(await Promise.all(proposalRoots.map(root => readRecoverySnapshots(root)))).flat()];
 for (const snapshot of recoveredSnapshots) {
   if (snapshot.agentFileSnapshot) await restoreAgentManagedFiles(snapshot);
   await runProjectExclusive(async () => {
@@ -278,6 +288,7 @@ async function statePayload() {
     },
     skills: await allSkills(projectRoot()),
     orchestration: orchestrator.snapshot(projectRoot()),
+    proposals: await proposals.snapshot(projectRoot(), orchestrator.tasks),
     skillProposals: await listSkillProposals(projectRoot()),
     agentPreview: activePending ? {
       threadId: activePendingEntry[0],
@@ -507,11 +518,10 @@ async function serializeEditorContext(payload, root) {
   return `\n\nEditor context envelope:\n${JSON.stringify(envelope)}\n\nContext rules:\n${contextPromptRules}${annotationRules}`;
 }
 
-async function startEditorTurn(payload, { variation = false, parentThreadId = null } = {}) {
+async function startEditorTurn(payload, { variation = false, parentThreadId = null, root = projectRoot(), proposalOwnerRoot = null } = {}) {
   if (agentStartBlocked(parentThreadId)) throw new Error("Another Agent task is running. Editing remains available and Agent will reconnect to this project when it finishes.");
   const prompt = requireTurnPrompt(payload);
   const workflow = workflowFromPayload(payload);
-  const root = projectRoot();
   startingRoots.add(root);
   let branch = null;
   let registeredPending = null;
@@ -542,6 +552,7 @@ async function startEditorTurn(payload, { variation = false, parentThreadId = nu
     registeredPending.threadId = thread.id;
     registeredPending.reviewTaskId = payload.reviewTaskId === undefined ? null : payload.reviewTaskId;
     registeredPending.parentThreadId = parentThreadId;
+    registeredPending.proposalOwnerRoot = proposalOwnerRoot;
     registeredThreadId = thread.id;
     pendingTurns.set(thread.id, registeredPending);
     startingRoots.delete(root);
@@ -677,8 +688,8 @@ codex.on("notification", (message) => {
           await assertCommittable(pending.root);
         }
         if (pending.queuedMilestone) commitIfChanged(`Milestone: ${pending.queuedMilestone}`, pending.root);
-        if (pending.reviewTaskId) orchestrator.task(pending.parentThreadId, pending.reviewTaskId).applied = true;
-      }, pending.root);
+        if (pending.reviewTaskId) orchestrator.task(pending.parentThreadId, pending.reviewTaskId).applied = pending.proposalOwnerRoot === null;
+      }, pending.proposalOwnerRoot === null ? pending.root : pending.proposalOwnerRoot);
       let skillProposalError = null;
       try { await captureSkillProposal(pending.root, { threadId, turnId: pending.turnId }); }
       catch (error) { skillProposalError = error.message; }
@@ -732,7 +743,7 @@ codex.on("notification", (message) => {
 
 async function delegateEdit(threadId, args) {
   validateEditSlidesArguments(args);
-  if (args.execution !== "apply") throw new Error("Use execution apply. Human confirmation is enforced separately; advice and plans are conversation responses.");
+  if (args.execution !== "apply") throw new Error("Use execution apply. Delivery is controlled by the chosen mode; consultations are conversation responses.");
   const chat = orchestrator.context(threadId);
   const root = projectRoot(); const deck = await readProject(root);
   delegatedEditorContext(args, deck);
@@ -741,6 +752,28 @@ async function delegateEdit(threadId, args) {
   if (!allowed) throw new Error("The human modification scope is required.");
   if (allowed.kind !== "deck" && (args.scope.kind === "deck" || args.scope.slideIds.some(id => !allowed.slideIds.includes(id)) || (allowed.kind === "element" && (args.scope.kind !== "element" || args.scope.elementId !== allowed.elementId)))) throw new Error("The requested edit exceeds the human scope.");
   if (args.allowSkillChanges && chat.contextEnvelope.allowSkillChanges !== true) throw new Error("Skill changes were not authorized.");
+  orchestrator.assertWorker(threadId);
+  const target = chat.contextEnvelope.proposalTarget;
+  if (target) {
+    const selected = await proposals.target(root, target);
+    if (args.directions !== undefined) throw new Error("案の修正ではdirectionsを指定しないでください。");
+    if (selected.group.scope.kind !== "deck" && (args.scope.kind === "deck" || args.scope.slideIds.some(id => !selected.group.scope.slideIds.includes(id)))) throw new Error("案の修正範囲が元の提案を超えています。");
+    const receipt = await orchestrator.create(threadId, { ...args, variation: false, deferStart: true, proposal: { groupId: target.groupId, candidateId: target.candidateId } });
+    try { await proposals.attach(root, target.groupId, target.candidateId, receipt.taskId, { revise: true, expectedVersion: target.version }); }
+    catch (error) { const task = orchestrator.task(threadId, receipt.taskId); task.status = "cancelled"; task.error = error.message; await orchestrator.save(); throw error; }
+    await orchestrator.activate([receipt.taskId]); return receipt;
+  }
+  if (chat.contextEnvelope.executionMode === "compare") {
+    validateDirections(args.directions);
+    const group = await proposals.create(root, { threadId, prompt: args.prompt, scope: args.scope, directions: args.directions });
+    const receipts = [];
+    for (const candidate of group.candidates) {
+      const receipt = await orchestrator.create(threadId, { ...args, prompt: `${args.prompt}\n\n比較案${candidate.id.toUpperCase()}: ${candidate.title}\n${candidate.instruction}\n全対象スライドでこの方向を一貫させてください。他の案や元の資料は編集しないでください。`, variation: false, deferStart: true, proposal: { groupId: group.id, candidateId: candidate.id } });
+      await proposals.attach(root, group.id, candidate.id, receipt.taskId); receipts.push(receipt);
+    }
+    await orchestrator.activate(receipts.map(receipt => receipt.taskId)); return { groupId: group.id, tasks: receipts, message: "Three candidates accepted. They do not change the live deck; human adoption is required." };
+  }
+  if (args.directions !== undefined || args.variation === true) throw new Error("3案の生成には3案から選ぶモードを指定してください。");
   return await orchestrator.create(threadId, args);
 }
 codex.onEditSlides = async (params, args) => ({ success: true, result: await delegateEdit(params.threadId, args) });
@@ -873,8 +906,29 @@ const server = createServer(async (request, response) => {
         () => assertHumanFileMutationReady(root)), { allowPending: true });
       return sendJson(request, response, 201, reference);
     }
+    const proposalAsset = url.pathname.match(/^\/api\/proposals\/([a-f0-9-]{36})\/([abc])\/assets\/([^/]+)$/);
+    if (request.method === "GET" && proposalAsset) { const filename = decodeURIComponent(proposalAsset[3]); assertAssetFilename(filename); return await sendAsset(request, response, filename, await proposals.assetPath(projectRoot(), proposalAsset[1], proposalAsset[2], filename)); }
+    if (request.method === "GET" && url.pathname === "/api/proposals") return sendJson(request, response, 200, { proposals: await proposals.snapshot(projectRoot(), orchestrator.tasks) });
+    if (request.method === "GET" && url.pathname === "/api/proposals/preview") return sendJson(request, response, 200, await proposals.preview(projectRoot(), url.searchParams.get("groupId"), url.searchParams.get("candidateId"), Number(url.searchParams.get("version"))));
     const payload = await readJson(request, url.pathname === "/api/assets" ? 14_000_000 : url.pathname === "/api/references" ? 36_000_000 : ["/api/save", "/api/draft", "/api/milestones"].includes(url.pathname) ? 5_000_000 : 1_500_000);
 
+    if (request.method === "POST" && url.pathname === "/api/proposals/adopt") {
+      codex.uiTools.authenticate(payload.uiSession);
+      const root = projectRoot(); if (activeProjectTurn() || startingRoots.has(root)) throw new Error("資料への反映処理が終わってから採用してください。");
+      const result = await proposals.adopt(root, payload, orchestrator.tasks);
+      const adoptedGroup = proposals.group(await proposals.read(root), payload.groupId);
+      const adoptedCandidate = proposals.candidate(adoptedGroup, payload.candidateId);
+      const adoptedTask = orchestrator.tasks.find(task => task.id === adoptedCandidate.taskId);
+      if (adoptedTask) {
+        adoptedTask.applied = true; adoptedTask.activity = "ユーザーが選択したスライドへ採用済み";
+        adoptedTask.outcome = { success: true, result: { projectRoot: root, changeCount: createEditorChangeSet(result.baseline, result.deck, "Adopt proposal").changes.length, conflictCount: 0 } };
+        await orchestrator.save();
+        void orchestrator.wake(adoptedGroup.threadId, `The human adopted candidate ${payload.candidateId} from proposal ${payload.groupId} on slides ${JSON.stringify(payload.slideIds)}. Report the actual adoption and use learning tools only for verified adopted changes.`).catch(error => console.error("Could not notify adoption:", error.message));
+      }
+      codex.events.publish("weave/project", { status: "updated", projectRoot: root, baseline: result.baseline, changes: createEditorChangeSet(result.baseline, result.deck, "Adopt proposal"), conflicts: [], deck: result.deck });
+      return sendJson(request, response, 200, await statePayload());
+    }
+    if (request.method === "POST" && url.pathname === "/api/proposals/dismiss") { codex.uiTools.authenticate(payload.uiSession); await proposals.dismiss(projectRoot(), payload.groupId, orchestrator.tasks); return sendJson(request, response, 200, { proposals: await proposals.snapshot(projectRoot(), orchestrator.tasks) }); }
     if (request.method === "POST" && url.pathname === "/api/projects") {
       if (startingRoots.size > 0) return sendJson(request, response, 409, { error: "Agent setup is capturing a project. Retry project creation.", code: "WEAVE_AGENT_STARTING" });
       const result = await enqueueProjectSwitch(async () => {
@@ -1160,19 +1214,15 @@ const server = createServer(async (request, response) => {
       const session = codex.uiTools.authenticate(payload.uiSession);
       if (session.activeThreadId !== payload.threadId) throw new Error("The browser session is not attached to this conversation.");
       const envelope = editorEnvelope(payload.contextEnvelope);
-      if (!["apply", "confirm"].includes(envelope.executionMode)) throw new Error("Choose edit or confirm before editing.");
+      if (!["apply", "compare"].includes(envelope.executionMode)) throw new Error("Choose edit or confirm before editing.");
       const receipt = await runProjectExclusive(async () => {
         const pending = [...pendingTurns.values()].find(turn => turn.root === root);
         if (pending && pending.acceptingDrafts) {
           if (payload.humanEdited === true) { pending.humanDraft = structuredClone(payload.deck); await updateRecoverySnapshot(pending.recoverySnapshot, { humanDraft: pending.humanDraft }, root); }
         } else if (!pending && payload.humanEdited === true && !startingRoots.has(root)) await writeProjectUnlocked(payload.deck, null, root);
-        return await orchestrator.receive({ ...payload, root, prompt, userPrompt: prompt, contextEnvelope: envelope, approvalPolicy: payload.workerApprovalPolicy });
+        return await orchestrator.receive({ ...payload, root, prompt, userPrompt: prompt, contextEnvelope: envelope, approvalPolicy: "never" });
       }, root);
       return sendJson(request, response, 202, receipt);
-    }
-    if (url.pathname === "/api/codex/tasks/approve") {
-      const session = codex.uiTools.authenticate(payload.uiSession); if (session.activeThreadId !== payload.threadId) throw new Error("The browser session is not attached to this conversation.");
-      return sendJson(request, response, 200, await runProjectExclusive(() => orchestrator.approve(payload.threadId, payload.taskId, payload.version), orchestrator.task(payload.threadId, payload.taskId).root));
     }
     if (url.pathname === "/api/codex/tasks/cancel") {
       const session = codex.uiTools.authenticate(payload.uiSession); if (session.activeThreadId !== payload.threadId) throw new Error("The browser session is not attached to this conversation.");

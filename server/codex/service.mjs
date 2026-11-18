@@ -18,7 +18,7 @@ const WEAVE_NAME_PREFIX = "Weave · ";
 // Dynamic tools are attached at thread/start and are not exposed by the
 // persisted thread/read shape. Keep a zero-width marker in the durable title
 // so a service restart can distinguish a tool-capable chat from a legacy one.
-const CHAT_ORCHESTRATION_MARKER = "\u2063weave-orchestration-v1";
+const CHAT_ORCHESTRATION_MARKER = "\u2063weave-orchestration-v2";
 const CHAT_TOOL_MARKER = "\u2063weave-ui-v1";
 const CHAT_LEARNING_MARKER = "\u2063weave-ui-v2";
 const EDITOR_THREAD_MARKER = "\u2063weave-editor-v1";

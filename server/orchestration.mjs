@@ -7,8 +7,8 @@ const text = (value, name) => { if (typeof value !== 'string' || !value.trim()) 
 
 /** Owns durable message receipts and delegated work independently of model turns. */
 export class Orchestration {
-  constructor({ path, events, startChat, steerChat, interruptChat, chatActive, execute, interruptWorker, wakePrompt }) {
-    Object.assign(this, { path, events, startChat, steerChat, interruptChat, chatActive, execute, interruptWorker, wakePrompt });
+  constructor({ path, events, startChat, steerChat, interruptChat, chatActive, execute, interruptWorker, wakePrompt, onTaskSettled }) {
+    Object.assign(this, { path, events, startChat, steerChat, interruptChat, chatActive, execute, interruptWorker, wakePrompt, onTaskSettled });
     this.messages = []; this.tasks = []; this.conversations = new Map(); this.payloads = new Map();
     this.pumping = new Set(); this.running = null; this.gates = new Map(); this.saves = Promise.resolve(); this.stopping = false;
   }
@@ -71,22 +71,25 @@ export class Orchestration {
     const c = this.context(threadId); if (c.paused || this.stopping) return;
     await this.receive({ ...c, prompt: "【作業通知】担当の状況を確認し、必要なレビューと報告を行ってください。", automaticInstructions: prompt, clientUserMessageId: randomUUID() }, { automatic: true });
   }
-  async create(threadId, args) {
+  assertWorker(threadId) {
     const c = this.context(threadId);
     if (c.paused) throw new Error('This conversation was stopped. Wait for a new human instruction.');
     text(c.workerModel, 'Codex implementation model'); text(c.workerEffort, 'Codex implementation effort');
     if (!["never", "on-request", "untrusted"].includes(c.approvalPolicy)) throw new Error("The implementation approval policy is required.");
     if (c.workerModel.startsWith('claude:')) throw new Error('The implementation agent must use Codex.');
-    const task = { id: randomUUID(), threadId, root: c.root, model: c.workerModel, effort: c.workerEffort, approvalPolicy: c.approvalPolicy, prompt: args.prompt, variation: args.variation === true, scope: args.scope, allowSkillChanges: args.allowSkillChanges, contextEnvelope: structuredClone(c.contextEnvelope), version: c.version, latestInstruction: this.messages.filter(message => message.threadId === threadId && !message.automatic).at(-1).text, instructionStatus: 'current', status: c.contextEnvelope.executionMode === 'confirm' ? 'awaiting_approval' : 'queued', createdAt: Date.now(), workerThreadId: null, workerTurnId: null, attempt: 0, activity: c.contextEnvelope.executionMode === 'confirm' ? 'ユーザーの編集承認待ち' : '開始待ち', report: null, review: null, error: null };
-    this.tasks.push(task); await this.save(); void this.run();
+  }
+  async create(threadId, args) {
+    const c = this.context(threadId);
+    this.assertWorker(threadId);
+    const task = { id: randomUUID(), threadId, root: c.root, model: c.workerModel, effort: c.workerEffort, approvalPolicy: c.approvalPolicy, prompt: args.prompt, variation: args.variation === true, scope: args.scope, allowSkillChanges: args.allowSkillChanges, contextEnvelope: structuredClone(c.contextEnvelope), version: c.version, latestInstruction: this.messages.filter(message => message.threadId === threadId && !message.automatic).at(-1).text, instructionStatus: 'current', proposal: args.proposal === undefined ? null : args.proposal, status: args.deferStart === true ? 'preparing' : 'queued', createdAt: Date.now(), workerThreadId: null, workerTurnId: null, attempt: 0, activity: '開始待ち', report: null, review: null, error: null };
+    this.tasks.push(task); await this.save(); if (args.deferStart !== true) void this.run();
     return { taskId: task.id, status: task.status, message: 'Task accepted. Work runs independently. Respond to the user now; you will be notified when review is needed.' };
   }
-  task(threadId, id) { const task = this.tasks.find(t => t.id === id && t.threadId === threadId); if (!task) throw new Error('Task does not belong to this conversation.'); return task; }
-  async approve(threadId, id, version) {
-    const task = this.task(threadId, id);
-    if (task.status !== 'awaiting_approval' || task.version !== version || task.instructionStatus !== 'current') throw new Error('The proposed work changed. Ask the orchestrator to update the proposal before approval.');
-    task.status = 'queued'; task.contextEnvelope.executionMode = 'apply'; await this.save(); void this.run(); return task;
+  async activate(taskIds) {
+    for (const id of taskIds) { const task = this.tasks.find(task => task.id === id); if (!task) throw new Error('Unknown task.'); if (task.status === 'preparing') task.status = 'queued'; else if (task.status !== 'cancelled') throw new Error('Task is no longer preparing.'); }
+    await this.save(); void this.run();
   }
+  task(threadId, id) { const task = this.tasks.find(t => t.id === id && t.threadId === threadId); if (!task) throw new Error('Task does not belong to this conversation.'); return task; }
   async control(threadId, { taskId, action, instruction, version }) {
     const task = this.task(threadId, taskId);
     if (task.version !== version || TERMINAL.has(task.status) || task.applied === true) throw new Error('Task version or state changed. Read its current state.');
@@ -95,7 +98,7 @@ export class Orchestration {
     task.instructionStatus = 'current'; task.review = instruction;
     if (action === 'continue') { if (task.status === 'awaiting_approval') task.prompt = instruction; await this.save(); void this.run(); return task; }
     if (action === 'revise') task.prompt = instruction;
-    if (['queued', 'awaiting_approval'].includes(task.status)) {
+    if (['preparing', 'queued', 'awaiting_approval'].includes(task.status)) {
       if (action === 'cancel') task.status = 'cancelled';
       await this.save(); void this.run(); return task;
     }
@@ -149,9 +152,12 @@ export class Orchestration {
     } catch (error) { task.status = 'failed'; task.error = error.message; }
     finally {
       this.running = null;
-      if (task.status === 'completed') task.activity = 'オーケストレータのレビュー後、反映を確認済み';
+      if (task.status === 'completed') task.activity = task.proposal ? 'レビュー済み・比較できます（未採用）' : 'オーケストレータのレビュー後、反映を確認済み';
       if (task.status === 'failed') task.activity = '結果を反映できませんでした';
       if (task.status === 'cancelled') task.activity = '変更を採用せず終了';
+      if (TERMINAL.has(task.status) && this.onTaskSettled) {
+        try { await this.onTaskSettled(task); } catch (error) { task.status = 'failed'; task.error = `Could not publish the verified result: ${error.message}`; task.activity = '結果を保存できませんでした'; }
+      }
       await this.save();
       if (TERMINAL.has(task.status)) void this.wake(task.threadId, `Codex task ${task.id} is ${task.status}. Read its status using tasks and report the actual outcome to the user.`).catch(() => {});
       void this.run();

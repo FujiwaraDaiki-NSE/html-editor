@@ -1,6 +1,6 @@
 /** Bounded tool views keep old worker output out of every coordinator request. */
 export function taskSummary(task) {
-  return { id: task.id, status: task.status, model: task.model, scope: task.scope, version: task.version, attempt: task.attempt,
+  return { id: task.id, proposal: task.proposal, applied: task.applied === true, status: task.status, model: task.model, scope: task.scope, version: task.version, attempt: task.attempt,
     prompt: task.prompt.slice(0, 1200), latestInstruction: task.latestInstruction?.slice(0, 1200), instructionStatus: task.instructionStatus,
     activity: task.activity, error: task.error, requiresReview: task.status === 'reviewing' };
 }
