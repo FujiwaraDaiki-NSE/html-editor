@@ -594,6 +594,7 @@ export default function Home() {
   const presenterStageRef = useRef<HTMLDivElement>(null);
   const [presenterScale, setPresenterScale] = useState(0);
   const slideShellRef = useRef<HTMLDivElement>(null);
+  const [proposalPreviewContainer, setProposalPreviewContainer] = useState<HTMLDivElement | null>(null);
   const slideWheelRef = useRef({ delta: 0, lastEvent: 0, switched: false });
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
@@ -4324,7 +4325,7 @@ export default function Home() {
           </div>
 
           <div className="canvas-workspace">
-            {activeSlideId && <SlideProposals key={`${project?.root}:${activeSlideId}`} groups={proposalGroups} slideId={activeSlideId} apiBase={apiBase} syncReady={draftSync === "synced" && !historyBusy} onTarget={selectProposalTarget} onAdopt={adoptSlideProposal} onDismiss={dismissSlideProposal} />}
+            {activeSlideId && <SlideProposals key={`${project?.root}:${activeSlideId}`} previewContainer={proposalPreviewContainer} groups={proposalGroups} slideId={activeSlideId} apiBase={apiBase} syncReady={draftSync === "synced" && !historyBusy} onTarget={selectProposalTarget} onAdopt={adoptSlideProposal} onDismiss={dismissSlideProposal} />}
           <div className="canvas-area">
             {showVariationPrompt && (
               <div className="variation-prompt">
@@ -4352,6 +4353,7 @@ export default function Home() {
               </section>
             ) : mode === "preview" ? (
               <div ref={slideShellRef} className={`slide-shell ${previewHighlightSlideId === activeSlideId ? "agent-preview-highlight" : ""}`}>
+                <div className="proposal-preview-container" ref={setProposalPreviewContainer} />
                 {/* The project stylesheet is the only thing styling the slide; the editor's
                     own chrome lives in globals.css and never overlaps these rules. */}
                 <style>{deckCss}</style>
