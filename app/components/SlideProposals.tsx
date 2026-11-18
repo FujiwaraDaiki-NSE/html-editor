@@ -1,5 +1,6 @@
 "use client";
 import { memo, useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { composeSlideHtml } from "../../shared/slide-slots.mjs";
 import { rewriteAssetUrls } from "../../shared/asset-path.mjs";
 import { designWidth, designHeight } from "../../shared/slide-design.mjs";
@@ -153,7 +154,9 @@ export function SlideProposals({
   onAdopt,
   onDismiss,
   syncReady,
+  previewContainer,
 }: {
+  previewContainer: HTMLDivElement | null;
   groups: ProposalGroup[];
   slideId: string;
   apiBase: string;
@@ -280,26 +283,52 @@ export function SlideProposals({
       className="proposal-workspace"
       data-open={
         compare ||
-        !!selected ||
+        (history && !selected) ||
         visible.some((g) => g.preparationError !== null)
       }
       aria-label="このスライドの提案"
     >
       <div className="proposal-toolbar">
-        <div className="proposal-toolbar-context">
+        <div className="proposal-tabs">
           <button
             type="button"
             className={`proposal-draft-button${!selected && !compare ? " is-selected" : ""}`}
             aria-pressed={!selected && !compare}
+            title="編集中のスライド"
             onClick={live}
           >
-            編集中のスライド
+            編集中
           </button>
           {visible.map((g) => (
-            <p className="proposal-progress" key={g.id} role="status">
-              {g.candidates.filter((c) => c.status === "ready").length} /{" "}
-              {g.candidates.length} 案がレビュー済み
-            </p>
+            <div
+              className="proposal-choices"
+              role="group"
+              aria-label="3案の選択"
+              key={g.id}
+            >
+              {g.candidates.map((c) => {
+                const active = group?.id === g.id && selected?.id === c.id;
+                const status = `${statusLabels[c.status] ?? c.status}${c.status === "running" && c.activity ? ` · ${c.activity}` : ""}`;
+                return (
+                  <button
+                    type="button"
+                    key={c.id}
+                    className={`proposal-choice${active ? " is-selected" : ""}`}
+                    aria-pressed={active}
+                    aria-label={`${c.id.toUpperCase()}案：${c.title} — ${status}`}
+                    disabled={!c.available.view}
+                    onClick={() => choose(g, c)}
+                    title={`${c.id.toUpperCase()}案：${c.title} — ${status}`}
+                  >
+                    <span
+                      className={`proposal-state-dot ${c.status}`}
+                      aria-hidden="true"
+                    />
+                    <span>{c.id.toUpperCase()}</span>
+                  </button>
+                );
+              })}
+            </div>
           ))}
         </div>
         <div className="proposal-toolbar-actions">
@@ -308,6 +337,7 @@ export function SlideProposals({
               type="button"
               className={compare ? "is-selected" : ""}
               aria-pressed={compare}
+              title="案を比較"
               onClick={() => {
                 if (onTarget(null)) {
                   setCompare((v) => !v);
@@ -316,62 +346,22 @@ export function SlideProposals({
                 }
               }}
             >
-              案を比較
+              比較
             </button>
           )}
           <button
             type="button"
             aria-pressed={history}
+            title={history ? "未採用の案だけ" : "比較履歴"}
             onClick={() => {
               live();
               setHistory((v) => !v);
             }}
           >
-            {history ? "未採用の案だけ" : "比較履歴"}
+            {history ? "未採用" : "履歴"}
           </button>
         </div>
       </div>
-      {visible.map((g) => (
-        <div
-          className="proposal-choices"
-          role="group"
-          aria-label="3案の選択"
-          key={g.id}
-        >
-          {g.candidates.map((c) => {
-            const active = group?.id === g.id && selected?.id === c.id;
-            const status = `${statusLabels[c.status] ?? c.status}${c.status === "running" && c.activity ? ` · ${c.activity}` : ""}`;
-            return (
-              <button
-                type="button"
-                key={c.id}
-                className={`proposal-choice${active ? " is-selected" : ""}`}
-                aria-pressed={active}
-                disabled={!c.available.view}
-                onClick={() => choose(g, c)}
-                title={`${c.id.toUpperCase()}案：${c.title} — ${status}`}
-              >
-                <span className="proposal-choice-heading">
-                  <span className="proposal-choice-letter">
-                    {c.id.toUpperCase()}案
-                  </span>
-                  {active && (
-                    <span className="proposal-choice-selected">表示中</span>
-                  )}
-                </span>
-                <span className="proposal-choice-title">{c.title}</span>
-                <span className="proposal-choice-status">
-                  <span
-                    className={`proposal-state-dot ${c.status}`}
-                    aria-hidden="true"
-                  />
-                  {status}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      ))}
       {visible
         .filter((g) => g.preparationError !== null)
         .map((g) => (
@@ -388,74 +378,97 @@ export function SlideProposals({
             </button>
           </div>
         ))}
-      {error && <p role="alert">{error}</p>}
-      {selected && group && (
-        <>
-          <div className="proposal-selected-details">
-            {!reviewedPreviewVisible && (
-              <div className="proposal-live-status" role="status">
-                <strong>
-                  {selected.status === "ready"
-                    ? "最終結果を読み込み中"
-                    : (statusLabels[selected.status] ?? selected.status)}
-                </strong>
-                <span>
-                  {previews[key(group, selected)]?.phase === "baseline"
-                    ? "生成前の元資料を表示しています"
-                    : previews[key(group, selected)]?.phase === "previous"
-                      ? "更新前の案を表示しています"
-                      : "レビュー前のプレビューです。完了後に採用できます"}
-                </span>
+      {error && !selected && <p role="alert">{error}</p>}
+      {selected &&
+        group &&
+        previewContainer &&
+        createPortal(
+          <>
+            <div className="proposal-name-label">
+              {selected.id.toUpperCase()}案 {selected.title}
+              {selected.status !== "ready" &&
+                ` · ${statusLabels[selected.status] ?? selected.status}`}
+            </div>
+            <div className="proposal-preview">
+              {previews[key(group, selected)] ? (
+                <SlideFrame
+                  preview={previews[key(group, selected)]}
+                  slideId={slideId}
+                  apiBase={apiBase}
+                />
+              ) : (
+                <p role="status">案を読み込み中…</p>
+              )}
+            </div>
+            <div
+              className="canvas-toolbar proposal-action-bar"
+              role="toolbar"
+              aria-label="表示中の案の操作"
+            >
+              <div className="proposal-action-status">
+                {!reviewedPreviewVisible && (
+                  <div className="proposal-live-status" role="status">
+                    <strong>
+                      {selected.status === "ready"
+                        ? "最終結果を読み込み中"
+                        : (statusLabels[selected.status] ?? selected.status)}
+                    </strong>
+                    <span>
+                      {previews[key(group, selected)]?.phase === "baseline"
+                        ? "生成前の元資料を表示しています"
+                        : previews[key(group, selected)]?.phase === "previous"
+                          ? "更新前の案を表示しています"
+                          : "レビュー前のプレビューです。完了後に採用できます"}
+                    </span>
+                  </div>
+                )}
+                {selected.error && <p role="alert">{selected.error}</p>}
+                {error && <p role="alert">{error}</p>}
+                {!syncReady && (
+                  <small>編集中の内容を同期してから採用できます。</small>
+                )}
               </div>
-            )}
-            {selected.error && <p role="alert">{selected.error}</p>}
-            <div className="proposal-description">
-              <strong
-                className="proposal-description-title"
-                title={`${selected.id.toUpperCase()}案：${selected.title}`}
+              <button
+                type="button"
+                className="proposal-description-toggle"
+                aria-expanded={descriptionOpen}
+                aria-controls={descriptionId}
+                onClick={() => setDescriptionOpen((open) => !open)}
               >
-                {selected.id.toUpperCase()}案：{selected.title}
-              </strong>
-              <div className="editor-tab-actions">
-                <button
-                  type="button"
-                  className="proposal-description-toggle"
-                  aria-expanded={descriptionOpen}
-                  aria-controls={descriptionId}
-                  onClick={() => setDescriptionOpen((open) => !open)}
-                >
-                  説明
-                </button>
-                <button
-                  className="use-direction"
-                  data-ui-agent-exclude="true"
-                  disabled={
-                    busy ||
-                    !syncReady ||
-                    !selected.available.adopt ||
-                    !reviewedPreviewVisible ||
-                    !!group.selections[slideId]
-                  }
-                  onClick={() =>
-                    void perform(() => onAdopt(group, selected, [slideId]))
-                  }
-                >
-                  このスライドに採用
-                </button>
-                <button
-                  className="archive-direction"
-                  data-ui-agent-exclude="true"
-                  disabled={busy || !selected.available.dismiss}
-                  onClick={() => void perform(() => onDismiss(group))}
-                >
-                  提案を終了
-                </button>
-              </div>
+                説明
+              </button>
+              <button
+                className="use-direction"
+                data-ui-agent-exclude="true"
+                disabled={
+                  busy ||
+                  !syncReady ||
+                  !selected.available.adopt ||
+                  !reviewedPreviewVisible ||
+                  !!group.selections[slideId]
+                }
+                onClick={() =>
+                  void perform(() => onAdopt(group, selected, [slideId]))
+                }
+              >
+                このスライドに採用
+              </button>
+              <button
+                className="archive-direction"
+                data-ui-agent-exclude="true"
+                disabled={busy || !selected.available.dismiss}
+                onClick={() => void perform(() => onDismiss(group))}
+              >
+                提案を終了
+              </button>
               <div
                 id={descriptionId}
                 className="proposal-description-popover"
                 hidden={!descriptionOpen}
               >
+                <strong className="proposal-description-name">
+                  {selected.id.toUpperCase()}案 {selected.title}
+                </strong>
                 {selected.description !== null && <p>{selected.description}</p>}
                 <small>
                   {selected.stale
@@ -467,21 +480,9 @@ export function SlideProposals({
                 </small>
               </div>
             </div>
-            {!syncReady && (
-              <small>編集中の内容を同期してから採用できます。</small>
-            )}
-          </div>
-          {previews[key(group, selected)] ? (
-            <SlideFrame
-              preview={previews[key(group, selected)]}
-              slideId={slideId}
-              apiBase={apiBase}
-            />
-          ) : (
-            <p role="status">案を読み込み中…</p>
-          )}
-        </>
-      )}
+          </>,
+          previewContainer,
+        )}
       {compare && (
         <section className="variation-compare" aria-label="提案の比較">
           <div className="variation-compare-grid" data-mode="side-by-side">

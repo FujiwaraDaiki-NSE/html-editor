@@ -441,7 +441,41 @@ test("proposal descriptions are shown in an accessible overlay outside the actio
     /id=\{descriptionId\}\s*className="proposal-description-popover"\s*hidden=\{!descriptionOpen\}[\s\S]*?selected.description !== null && <p>\{selected.description\}<\/p>/,
   );
   assert.equal(source.match(/<p>\{selected.description\}<\/p>/g)?.length, 1);
-  assert.match(css, /\.proposal-description-popover \{ position: absolute;/);
+  assert.match(css, /\.proposal-description-popover \{ position: absolute; bottom:/);
+  assert.match(source, /className="canvas-toolbar proposal-action-bar"/);
+  assert.doesNotMatch(source, /proposal-selected-details|proposal-description-title/);
   assert.match(source, /event.key === "Escape"/);
   assert.match(source, /setDescriptionOpen\(false\);\s*setSelection\(/);
+});
+
+
+test("selecting one proposal keeps the compact strip and canvas mounted", async () => {
+  const source = await readFile(
+    new URL("../app/components/SlideProposals.tsx", import.meta.url),
+    "utf8",
+  );
+  const css = await readFile(new URL("../app/globals.css", import.meta.url), "utf8");
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  const open = source.match(/data-open=\{([\s\S]*?)\}/)?.[1];
+  assert.match(open, /compare/);
+  assert.match(open, /compare \|\|\s*\(history && !selected\) \|\|\s*visible.some/);
+  assert.match(source, /selected &&\s*group &&\s*previewContainer &&\s*createPortal\(/);
+  assert.match(page, /className="proposal-preview-container" ref=\{setProposalPreviewContainer\}/);
+  assert.match(css, /\.proposal-preview-container \{ position: absolute; inset: 0;/);
+  assert.match(css, /\.proposal-preview \{ position: absolute; inset: 0;/);
+  assert.match(source, /className="proposal-tabs"/);
+  assert.match(source, /className=\{`proposal-state-dot \$\{c.status\}`\}\s*aria-hidden="true"/);
+  assert.match(css, /\.proposal-state-dot \{ flex: 0 0 10px; width: 10px; height: 10px;/);
+  assert.match(css, /\.proposal-state-dot:is\(\.preparing, \.queued, \.running, \.reviewing, \.applying, \.completed, \.cancelling\) \{ border:/);
+  assert.match(css, /\.proposal-state-dot:is\(\.failed, \.cancelled\) \{ background-color: var\(--danger\);/);
+  assert.match(css, /@media \(prefers-reduced-motion: no-preference\) \{ \.proposal-state-dot:is\([^)]*\) \{ animation: proposal-state-spin/);
+
+  assert.doesNotMatch(source, /proposal-choice-selected|proposal-progress/);
+  assert.match(css, /\.proposal-workspace\[data-open="false"\] \{[^}]*height: 36px;/);
+  assert.doesNotMatch(source, /proposal-choice-title/);
+  assert.match(css, /\.proposal-toolbar \.proposal-choice \{[^}]*flex: 0 0 36px;/);
+  assert.match(source, /className="proposal-name-label"/);
+  assert.match(source, /className="proposal-description-name"/);
+  assert.match(css, /\.proposal-name-label \{ position: absolute;[^}]*pointer-events: none;/);
+
 });
