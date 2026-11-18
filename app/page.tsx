@@ -3925,7 +3925,7 @@ export default function Home() {
       <header className="activity-panel-heading"><span>スキル</span><small>{skills.length}件</small>{chatReturnButton("return-chat-skills")}</header>
       <div className="activity-panel-body skills-sidebar">
         {skillReviewCards(skillProposals)}
-        <div className="skills-intro"><strong>資料づくりの指示を管理</strong><p>このアプリ共通の作り方、この資料だけの指示、個人で使う共通の指示を確認・編集できます。</p></div>
+        <div className="skills-intro"><strong>資料づくりの指示を管理</strong><p>すべての資料で使う標準スキルと、追加した共通スキルを確認・編集できます。</p></div>
         <div className="skills-tabs" role="tablist" aria-label="スキルの適用範囲">
           {(["application", "editor"] as SkillScope[]).map((scope) => <button key={scope} type="button" role="tab" aria-selected={skillScope === scope} className={skillScope === scope ? "active" : ""} onClick={() => setSkillScope(scope)}><span>{scope === "application" ? "標準スキル" : "追加スキル"}</span><small>{skills.filter((skill) => skill.scope === scope).length}</small></button>)}
         </div>
