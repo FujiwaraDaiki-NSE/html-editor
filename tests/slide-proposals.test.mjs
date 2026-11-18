@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 const temporary = await mkdtemp(join(tmpdir(), "weave-slide-proposals-"));
@@ -413,4 +413,12 @@ test("a restart marks interrupted preparation as failed without resuming or edit
     false,
   );
   assert.deepEqual(await project.readProject(root), deck);
+});
+
+test("proposal adoption is offered per slide without the bulk adoption button", async () => {
+  const source = await readFile(
+    new URL("../app/components/SlideProposals.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.doesNotMatch(source, /未採用の対象すべてに採用/);
 });
