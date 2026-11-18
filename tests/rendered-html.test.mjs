@@ -19,7 +19,7 @@ test("server-renders the Weave editor shell", async () => {
   assert.match(html, /<title>Weave — HTMLネイティブなAIスライド制作<\/title>/i);
   assert.match(html, /第3四半期 戦略デッキ/);
   assert.match(html, /プレゼン・書き出し/);
-  assert.match(html, /Codexへ接続中/);
+  assert.match(html, /モデルを選択してください/);
   assert.match(html, /class="workspace"[^>]*data-inspector="closed"/);
   assert.doesNotMatch(html, /react-loading-skeleton/i);
 });

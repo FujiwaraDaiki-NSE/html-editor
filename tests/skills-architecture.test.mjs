@@ -18,21 +18,15 @@ test("Skills is a first-class activity on desktop and mobile", () => {
   assert.match(page, /activityView === "skills" \? skillsSidebar/);
   assert.match(page, /className="activity-panel skills-panel"/);
   assert.match(page, /role="tablist" aria-label="スキルの適用範囲"/);
-  assert.match(page, /scope === "application" \? "このアプリ共通" : scope === "project" \? "この資料" : "個人共通"/);
+  assert.match(page, /scope === "application" \? "標準スキル" : "追加スキル"/);
   assert.match(page, /SKILL\.mdをアップロード/);
   assert.match(page, /className="skill-dialog" role="dialog"/);
-  assert.match(page, /共通スキルに格上げしました。/);
-  assert.match(page, /個人共通へ移す/);
-  assert.match(page, /この資料へ移す/);
   assert.match(page, /data-ui-id="open-skills"/);
   assert.match(page, /data-ui-id="open-history"/);
   assert.match(page, /ApplicationSkillDialog/);
   assert.match(page, /skill\.capabilities\?\.edit !== true/);
   assert.match(page, /skill\.capabilities\?\.history !== true/);
-  assert.match(page, /typeof catalogSkill\?\.enabled === "boolean"/);
-  assert.match(page, /entry\.path === skill\.filePath/);
   assert.doesNotMatch(page, /entry\.path\.endsWith\(skill\.path\)/);
-  assert.match(page, /typeof entry\.path !== "string" \|\| !entry\.path\.trim\(\)/);
   assert.match(page, /skillStatus\.state === "error" \? "alert" : "status"/);
   assert.match(page, /skillDialogTriggerRef/);
   assert.match(page, /event\.key !== "Tab"/);
@@ -44,16 +38,13 @@ test("Skills is a first-class activity on desktop and mobile", () => {
   assert.match(css, /grid-template-rows: repeat\(2, minmax\(44px, 1fr\)\)/);
 });
 
-test("Skills API has explicit scoped CRUD, upload, and move routes", () => {
+test("Skills API has editor-only CRUD and upload routes", () => {
   for (const route of [
     'url.pathname === "/api/skills"',
     'url.pathname === "/api/skills/upload"',
-    '"/api/skills/promote", "/api/skills/demote"',
-    'scopedSkillAction = url.pathname.match',
     'scopedSkill = url.pathname.match',
     'method === "DELETE"',
   ]) assert.match(api, new RegExp(route.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-  assert.match(routes, /project\|common[\s\S]*PATCH.*DELETE/);
   assert.match(routes, /skills.*upload[\s\S]*POST/);
   assert.match(skills, /value\.length >= 64/);
   assert.match(skills, /WEAVE_SKILL_CONFLICT/);
@@ -67,8 +58,9 @@ test("Skills API has explicit scoped CRUD, upload, and move routes", () => {
   assert.match(project, /restoreGitDirectoryToDraft\(commit, "templates", root, true\)/);
 });
 
-test("Legacy cramped Settings skill toggles are removed but catalog support remains card-local", () => {
+test("Skills GUI exposes editor-wide controls without project or Codex-wide moves", () => {
   assert.doesNotMatch(page, /<section><h3>(?:Skills|スキル)<\/h3>/);
-  assert.match(page, /catalogSkills/);
-  assert.match(page, /codex\/skill\/config/);
+  assert.match(page, /html-editor共通/);
+  assert.match(page, /すべての資料で有効/);
+  assert.doesNotMatch(page, /共通に格上げ|プロジェクト固有へ格下げ|この1回だけプロジェクトスキル/);
 });

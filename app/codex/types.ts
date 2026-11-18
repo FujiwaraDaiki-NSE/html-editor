@@ -51,6 +51,7 @@ export type PendingServerRequest = {
 };
 
 export type CodexCatalog = {
+  providers?: Record<string, { ready: boolean; connection: CodexConnectionState }>;
   models: unknown[];
   skills: unknown[];
   hooks: unknown[];

@@ -1,3 +1,5 @@
+import { skillProposalInstructions } from "../skill-proposals.mjs";
+import { listSkills } from "../skills.mjs";
 import { EventEmitter } from "node:events";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -498,6 +500,12 @@ export class CodexService extends EventEmitter {
     return { ...result, data: data.map(threadWithVisibleName) };
   }
 
+  async editorInstructions() {
+    const skills = await listSkills(this.projectRoot);
+    const valid = skills.filter((skill) => skill.valid && skill.enabled);
+    return this.instructions + "\n\n" + skillProposalInstructions + (valid.length ? "\n\nhtml-editor shared skills (apply those relevant to the request):\n" + valid.map((skill) => JSON.stringify({ name: skill.name, description: skill.description, instructions: skill.body, path: skill.filePath })).join("\n") : "");
+  }
+
   async startThread(options = {}) {
     this.assertNotRetargeting();
     this.assertReady();
@@ -509,7 +517,7 @@ export class CodexService extends EventEmitter {
     }
     const isChat = purpose === "chat";
     const baseInstructions = options.instructions === undefined
-      ? (isChat ? this.chatInstructions : this.instructions)
+      ? (isChat ? this.chatInstructions : await this.editorInstructions())
       : options.instructions;
     if (!isChat) this.editorThreadStarts += 1;
     try {
@@ -614,7 +622,7 @@ export class CodexService extends EventEmitter {
     const result = await this.client.request("thread/resume", {
       threadId,
       cwd: thread.cwd,
-      baseInstructions: purpose === "chat" ? this.chatInstructions : this.instructions,
+      baseInstructions: purpose === "chat" ? this.chatInstructions : await this.editorInstructions(),
     });
     this.threadCwds.set(threadId, thread.cwd);
     return threadWithVisibleName(result.thread);
@@ -705,7 +713,7 @@ export class CodexService extends EventEmitter {
     // thread/read can find persisted history without loading it in a restarted
     // app-server. Resume the same thread before sending, within the deduped request.
     const baseInstructions = instructions === undefined
-      ? (turnPurpose === "chat" ? this.chatInstructions : this.instructions)
+      ? (turnPurpose === "chat" ? this.chatInstructions : await this.editorInstructions())
       : instructions;
     const sandboxPolicy = turnPurpose === "chat"
       ? { type: "readOnly", networkAccess: true }

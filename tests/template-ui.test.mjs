@@ -34,6 +34,7 @@ test("ordinary canvas interactions ignore inherited furniture outside content", 
   assert.match(page, /!isEditableSlideNode\(target\)/);
   assert.match(page, /!isEditableSlideNode\(node\)/);
   assert.match(page, /filter\(isEditableSlideNode\)/);
-  assert.match(page, /!isEditableSlideNode\(target\).*target === session\.node/);
+  assert.match(page, /content.querySelectorAll<HTMLElement>\("\[data-weave-id\]"\)/);
+  assert.match(page, /session\.node === target \|\| session\.node.contains\(target\)/);
   assert.match(page, /target && isEditableSlideNode\(target\)/);
 });

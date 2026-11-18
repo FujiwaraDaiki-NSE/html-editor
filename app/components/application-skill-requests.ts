@@ -1,4 +1,4 @@
-export type SkillScope = "application" | "project" | "common";
+export type SkillScope = "application" | "editor";
 export type SkillEntry = {
   name: string;
   description: string;
@@ -9,6 +9,7 @@ export type SkillEntry = {
   location: SkillScope;
   path: string;
   filePath: string;
+  enabled?: boolean;
   valid: boolean;
   error: string | null;
   revision?: string;

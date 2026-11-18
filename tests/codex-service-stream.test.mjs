@@ -125,7 +125,7 @@ test("chat and editor Threads receive distinct capabilities and durable type mar
   assert.equal(starts[0].params.baseInstructions, "chat rules");
   assert.equal(starts[0].params.dynamicTools[0].name, "weave_ui");
   assert.equal(starts[1].params.sandbox, "workspace-write");
-  assert.equal(starts[1].params.baseInstructions, "editor rules");
+  assert.equal(starts[1].params.baseInstructions, await service.editorInstructions());
   assert.equal(Object.hasOwn(starts[1].params, "dynamicTools"), false);
   assert.match(client.calls.filter(({ method }) => method === "thread/name/set")[1].params.name, /weave-editor-v1/);
   service.router.dispose();

@@ -15,6 +15,9 @@ import { editorEnvelope, overflowingIds } from "../shared/context.mjs";
 import { applyEditorChange, applyEditorHistory, mergeEditorDecks } from "../shared/editor-workflow.mjs";
 import { AnnotationAttachment } from "./components/AnnotationAttachment";
 import { AnnotationLegend } from "./components/AnnotationLegend";
+import { resolveBlockDropIntent } from "../shared/block-placement.mjs";
+import { blockDimensionClasses } from "../shared/block-dimensions.mjs";
+import { BlockResizeOverlay, type BlockResizeSize, type BlockResizeCommit } from "./components/BlockResizeOverlay";
 import { AnnotationOverlay } from "./components/AnnotationOverlay";
 import type { Annotation, AnnotationGestureKind, AnnotationRect, PointerCandidate, ResizeHandle } from "./components/AnnotationOverlay";
 import { useEditorDialog } from "./components/EditorDialog";
@@ -44,8 +47,8 @@ type ReferenceShelfEntry = ReferenceAttachment & { hash?: string; addedAt?: stri
 type FolderBrowser = { path: string; parent: string | null; breadcrumbs: Array<{ name: string; path: string }>; folders: Array<{ name: string; path: string }>; folderCount: number; fileCount: number };
 
 type SlideNav = "filmstrip" | "rail";
-type UserSkillScope = "project" | "common";
-type SkillDraft = { scope: UserSkillScope; name: string; description: string; body: string; frontmatter: string };
+type SkillProposal = { id: string; threadId: string; name: string; targetName: string | null; description: string; body: string; previousBody: string | null; reason: string; evidence: string };
+type SkillDraft = { scope: "editor"; name: string; description: string; body: string; frontmatter: string };
 type SkillDialog = { mode: "create" | "edit"; source: SkillEntry | null };
 type SkillStatus = { state: "idle" | "busy" | "success" | "error"; message: string };
 type ActivityView = "agent" | "history" | "shortcuts" | "skills" | "settings";
@@ -98,6 +101,7 @@ type ServerState = {
     pendingRequests: Array<{ id: string | number; method: string; params: Record<string, any>; createdAt: number }>;
   };
   skills: SkillEntry[];
+  skillProposals: SkillProposal[];
   agentPreview: null | {
     threadId: string;
     turnId: string | null;
@@ -237,7 +241,12 @@ const applySizeTo = (node: Element, intent: string) => writeClasses(node, applyS
    leaves the markup alone, so dragging never churns the saved HTML. */
 const relayoutForParent = (node: Element, intent: string, fromLayout: string): string => {
   const layout = layoutOf(node.parentElement);
-  if (layout !== fromLayout) applySizeTo(node, intent);
+  if (layout !== fromLayout) {
+    if ([...node.classList].some((name) => /^w-\d+$/.test(name))) {
+      node.classList.remove("flex-1", "self-stretch");
+      node.classList.add("flex-none", "max-w-full");
+    } else applySizeTo(node, intent);
+  }
   return layout;
 };
 
@@ -300,9 +309,7 @@ type BlockDragSession = {
   originNext: ChildNode | null;
   before: Snapshot;
   committed: boolean;
-  lastReorderAt: number;
-  lastReorderX: number;
-  lastReorderY: number;
+
 };
 type AnnotationGesture = {
   pointerId: number;
@@ -414,16 +421,6 @@ const refreshSlideAnnotations = (annotations: Annotation[], slideId: string, box
   return annotations.map((annotation) => refreshed.get(annotation.id) ?? annotation);
 };
 
-/* Live reordering rewrites the DOM under the cursor, so every move changes the geometry that
-   decided it. Require the pointer to travel before re-deciding: without this, a container that
-   reflows around the dropped block flips the answer back and the block oscillates in place. */
-const REORDER_HYSTERESIS_PX = 9;
-const markReorder = (session: BlockDragSession, event: { timeStamp: number; clientX: number; clientY: number }) => {
-  session.lastReorderAt = event.timeStamp;
-  session.lastReorderX = event.clientX;
-  session.lastReorderY = event.clientY;
-};
-
 export default function Home() {
   const { prompt: editorPrompt, confirm: editorConfirm, dialog: editorDialog } = useEditorDialog();
   const [deckTitle, setDeckTitle] = useState("第3四半期 戦略デッキ");
@@ -463,8 +460,9 @@ export default function Home() {
   const [skills, setSkills] = useState<SkillEntry[]>([]);
   const [skillScope, setSkillScope] = useState<SkillScope>("application");
   const [skillSearch, setSkillSearch] = useState("");
+  const [skillProposals, setSkillProposals] = useState<SkillProposal[]>([]);
   const [skillDialog, setSkillDialog] = useState<SkillDialog | null>(null);
-  const [skillDraft, setSkillDraft] = useState<SkillDraft>({ scope: "project", name: "", description: "", body: "", frontmatter: "" });
+  const [skillDraft, setSkillDraft] = useState<SkillDraft>({ scope: "editor", name: "", description: "", body: "", frontmatter: "" });
   const [skillStatus, setSkillStatus] = useState<SkillStatus>({ state: "idle", message: "" });
   const [skillBusyKey, setSkillBusyKey] = useState<string | null>(null);
   const [applicationSkillDialog, setApplicationSkillDialog] = useState<{ skill: ApplicationSkillEntry; tab: "edit" | "history" } | null>(null);
@@ -475,6 +473,10 @@ export default function Home() {
   const [apiKeyDraft, setApiKeyDraft] = useState("");
   const [mcpResult, setMcpResult] = useState("");
   const [turnSubmission, setTurnSubmission] = useState<TurnSubmissionState>(IDLE_TURN_SUBMISSION);
+  const [dropPreview, setDropPreview] = useState<{ left: number; top: number; width: number; height: number; label: string; kind: string } | null>(null);
+  const [blockBox, setBlockBox] = useState<{ left: number; top: number; width: number; height: number; maxWidth: number; maxHeight: number; tagName: string } | null>(null);
+  const [resizePreview, setResizePreview] = useState<BlockResizeSize | null>(null);
+  const resizeSessionRef = useRef<{ node: HTMLElement; before: Snapshot; classes: string[]; width: number; height: number } | null>(null);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draggedSlide, setDraggedSlide] = useState<number | null>(null);
@@ -546,7 +548,6 @@ export default function Home() {
   const [previewHighlightSlideId, setPreviewHighlightSlideId] = useState<string | null>(null);
   const [changeScope, setChangeScope] = useState<ChangeScope>("current-slide");
   const [executionMode, setExecutionMode] = useState<ExecutionMode>("apply");
-  const [allowSkillChanges, setAllowSkillChanges] = useState(false);
   const [draftSync, setDraftSync] = useState<DraftSyncState>("synced");
   const [agentProjectReady, setAgentProjectReady] = useState(true);
   const [sourceBuffer, setSourceBuffer] = useState("");
@@ -613,6 +614,7 @@ export default function Home() {
   const annotationGestureRef = useRef<AnnotationGesture | null>(null);
   const popoverTriggerRef = useRef<HTMLButtonElement | null>(null);
   const threadMenuRef = useRef<HTMLDivElement>(null);
+  const autoOpenThreadRef = useRef(true);
   const threadDialogRef = useRef<HTMLDivElement>(null);
   const galleryRef = useRef<HTMLDivElement>(null);
   const projectSwitcherRef = useRef<HTMLButtonElement>(null);
@@ -621,7 +623,13 @@ export default function Home() {
   const templatePreviewSourceHtmlRef = useRef<string | null>(null);
   const markDirty = () => { editGenerationRef.current += 1; browserDirtyRef.current = true; setSaved(false); setDraftSync("saving"); };
 
-  const agentReady = codexState.connection.status === "connected" && agentProjectReady;
+  const selectedProvider = selectedModel.startsWith("claude:") ? "claude" : "codex";
+  const providerState = codexState.catalog.providers?.[selectedProvider];
+  const claudeSelected = selectedProvider === "claude";
+  const claudeThread = codexState.activeThreadId?.startsWith("claude:") === true;
+  const threadProviderMatches = !codexState.activeThreadId || (claudeThread ? "claude" : "codex") === selectedProvider;
+  const modelAvailable = codexState.catalog.models.some((model: any) => model.id === selectedModel && model.available === true);
+  const agentReady = codexState.connection.status === "connected" && providerState?.ready === true && modelAvailable && threadProviderMatches && agentProjectReady;
   const agentRunning = selectThreadRunning(codexState, codexState.activeThreadId);
   const activeTurns = selectThreadTurns(codexState, codexState.activeThreadId);
   const visibleTurns = activeTurns.slice(-100);
@@ -631,7 +639,7 @@ export default function Home() {
   const blockingPendingRequests = [...pendingRequestGroups.active, ...pendingRequestGroups.unscoped];
   const turnPresentation = deriveTurnPresentation(turnSubmission, codexState.activeThreadId, agentRunning);
   const turnBusy = turnSubmission.phase !== "idle" || codexState.activeTurnId !== null;
-  const canSubmitAgentMessage = !turnInFlightRef.current || agentRunning;
+  const canSubmitAgentMessage = (!turnInFlightRef.current || agentRunning) && !(claudeSelected && agentRunning);
   const slideScale = manualZoom ?? fitScale;
   const zoomMode = manualZoom === null ? "fit" : "manual";
   const activeSlideId = slides[activeSlide - 1]?.id;
@@ -660,6 +668,7 @@ export default function Home() {
       if (!response.ok) throw new Error(result.error ?? "スキルを読み込めませんでした。");
       if (!Array.isArray(result?.skills)) throw new Error("スキルの応答が不正です。");
       setSkills(result.skills);
+    if (Array.isArray(result.skillProposals)) setSkillProposals(result.skillProposals);
       setSkillStatus({ state: "idle", message: "" });
       return result.skills as SkillEntry[];
     } catch (error) {
@@ -1250,7 +1259,6 @@ export default function Home() {
       elementId: changeScope === "element" ? selectedId : null,
     },
     executionMode,
-    allowSkillChanges,
     selected: selectedId ? {
       id: selectedId,
       kind: sel?.kind ?? "",
@@ -1313,19 +1321,19 @@ export default function Home() {
   const activeThread = codexState.activeThreadId ? codexState.threads[codexState.activeThreadId] : null;
   const activeThreadName = activeThread ? displayThreadName(activeThread.name) || activeThread.preview || "新しい制作タスク" : "タスク未選択";
   const selectedModelInfo = useMemo(() => codexState.catalog.models.find((model: any) => (model.id ?? model.model) === selectedModel) as any, [codexState.catalog.models, selectedModel]);
-  /* Display-only fallback: a model that declares no supported efforts still gets the three
-     standard choices in the picker, while `applyServerState` leaves such a model's effort alone. */
-  const availableEfforts = useMemo(() => selectedModelInfo?.supportedReasoningEfforts?.map((option: any) => option.reasoningEffort) ?? ["low", "medium", "high"], [selectedModelInfo]);
-  const connectionStatus = codexState.connection.status;
-  const connectionError = codexState.connection.error;
+  const availableEfforts = useMemo(() => selectedModelInfo?.supportedReasoningEfforts?.map((option: any) => option.reasoningEffort) ?? [], [selectedModelInfo]);
+  const connectionStatus = codexState.connection.status !== "connected" ? codexState.connection.status : providerState?.connection.status ?? "connecting";
+  const connectionError = codexState.connection.error ?? providerState?.connection.error;
   const agentHeaderState = (() => {
     const connectionLabels: Record<typeof connectionStatus, string> = {
-      connecting: "Codexへ接続中…",
+      connecting: claudeSelected ? "Claude Codeへ接続中…" : "Codexへ接続中…",
       connected: "",
-      reconnecting: "Codexへ再接続中…",
+      reconnecting: claudeSelected ? "Claude Codeへ再接続中…" : "Codexへ再接続中…",
       disconnected: "接続できません",
       incompatible: "互換性を確認できません",
     };
+    if (!selectedModel || (!modelAvailable && providerState?.ready === true)) return { kind: "waiting", label: selectedModel ? "選択したモデルを利用できません。接続状態を確認してください" : "モデルを選択してください" };
+    if (!threadProviderMatches) return { kind: "waiting", label: "この会話の接続先に対応するモデルを選択してください" };
     if (connectionStatus !== "connected") {
       return {
         kind: connectionStatus,
@@ -1351,13 +1359,6 @@ export default function Home() {
     if (codexState.activeTurnId) return { kind: "running", label: codexState.editing ? "別タスクで実行中 · スライドを編集中…" : "別タスクで実行中 · 操作を進めています…" };
     return null;
   })();
-  const catalogSkills = useMemo(() => codexState.catalog.skills.flatMap((entry: any) => entry?.skills ?? [entry]).filter(Boolean), [codexState.catalog.skills]);
-  const catalogSkillFor = (skill: SkillEntry) => {
-    const pathMatch = catalogSkills.find((entry: any) => typeof entry.path === "string" && entry.path === skill.filePath);
-    if (pathMatch) return pathMatch;
-    const nameMatches = catalogSkills.filter((entry: any) => entry.name === skill.name && (typeof entry.path !== "string" || !entry.path.trim()));
-    return nameMatches.length === 1 ? nameMatches[0] : undefined;
-  };
   const visibleSkills = useMemo(() => skills.filter((skill) => skill.scope === skillScope && (!skillSearch.trim() || `${skill.name} ${skill.description}`.toLowerCase().includes(skillSearch.trim().toLowerCase()))), [skillScope, skillSearch, skills]);
   const selectedHistoryEntry = history.find((entry) => entry.id === selectedHistoryId);
   const historyEntryLabel = (entry: HistoryEntry) => entry.kind === "milestone" && entry.message.startsWith("Milestone: ") ? entry.message.slice("Milestone: ".length) : entry.message;
@@ -1396,6 +1397,7 @@ export default function Home() {
     setHistory(state.history);
     setReferenceShelf(state.references ?? []);
     setSkills(state.skills ?? []);
+    setSkillProposals(state.skillProposals ?? []);
     setVariations(state.variations ?? []);
     setProject(state.project);
     setServerRevision(state.project.revision ?? state.project.commit);
@@ -1420,11 +1422,10 @@ export default function Home() {
       setPreviewHighlightSlideId(null);
     }
     const models = state.codex.catalog.models ?? [];
-    const firstModel = models[0] as any;
     const current = agentModelStore.read();
     const selected = models.find((model: any) => (model.id ?? model.model) === current.model) as any;
-    const nextModel = selected ? current.model : firstModel?.id ?? firstModel?.model ?? "";
-    const selectedModelForEffort = selected ?? firstModel;
+    const nextModel = current.model;
+    const selectedModelForEffort = selected;
     const supported = selectedModelForEffort?.supportedReasoningEfforts?.map((option: any) => option.reasoningEffort) ?? [];
     const nextEffort = supported.length > 0 && !supported.includes(current.effort) ? selectedModelForEffort.defaultReasoningEffort ?? supported[0] : current.effort;
     if (nextModel !== current.model || nextEffort !== current.effort) agentModelStore.write({ model: nextModel, effort: nextEffort });
@@ -1462,8 +1463,8 @@ export default function Home() {
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     const connect = async () => {
       try {
-        const response = await fetch(`${apiBase}/codex/events?after=${eventSequenceRef.current}`);
-        if (!response.ok || !response.body) throw new Error("Codexのイベント接続を利用できません。");
+        const response = await fetch(`${apiBase}/agent/events?after=${eventSequenceRef.current}`);
+        if (!response.ok || !response.body) throw new Error("Agentのイベント接続を利用できません。");
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let pending = "";
@@ -1532,6 +1533,7 @@ export default function Home() {
                   if (viewedSlideId && changedIds.includes(viewedSlideId)) setPreviewHighlightSlideId(viewedSlideId);
               }
               if (projectStatus === "updated") {
+                if (envelope.payload?.skillProposalError) setApiError(`資料を更新しましたが、スキル案を作成できませんでした：${envelope.payload.skillProposalError}`);
                 if (typeof envelope.payload?.milestone === "string" && envelope.payload.milestone) setAnnouncement(`マイルストーン「${envelope.payload.milestone}」を作成しました`);
                 const eventBaseline = Array.isArray(envelope.payload?.baseline?.slides)
                   ? envelope.payload.baseline.slides as SlideDoc[]
@@ -1612,13 +1614,14 @@ export default function Home() {
       void (async () => {
         try {
           const query = new URLSearchParams({ archived: String(showArchivedThreads), ...(threadSearch.trim() ? { q: threadSearch.trim() } : {}) });
-          const response = await fetch(`${apiBase}/codex/threads?${query}`);
+          const response = await fetch(`${apiBase}/agent/threads?${query}`);
           const result = await response.json();
           if (!response.ok) throw new Error(result.error ?? "制作タスク一覧を取得できませんでした。");
           if (canceled) return;
           dispatchCodex({ type: "threadsLoaded", threads: result.data ?? [], archived: showArchivedThreads });
-          if (!codexState.activeThreadId && result.data?.[0]) {
-            const read = await fetch(`${apiBase}/codex/thread/read`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: result.data[0].id }) });
+          if (autoOpenThreadRef.current && !codexState.activeThreadId && result.data?.[0]) {
+            autoOpenThreadRef.current = false;
+            const read = await fetch(`${apiBase}/agent/thread/read`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: result.data[0].id }) });
             if (read.ok && !canceled) { const value = await read.json(); dispatchCodex({ type: "threadLoaded", thread: value.thread, activate: true }); }
           }
         } catch (error) {
@@ -1724,6 +1727,8 @@ export default function Home() {
     return () => observer.disconnect();
   }, [mode]);
 
+  const hostRectForResize = (node: HTMLElement) => node.closest(".weave-slide")!.getBoundingClientRect();
+
   useLayoutEffect(() => {
     if (!selectedId || mode !== "preview") return;
     const viewport = viewportRef.current;
@@ -1733,7 +1738,12 @@ export default function Home() {
     const update = () => {
       const shellBox = shell.getBoundingClientRect();
       const box = node.getBoundingClientRect();
-      const toolbarWidth = Math.min(360, shellBox.width - 16);
+      const parentBox = node.parentElement?.getBoundingClientRect();
+      const rootBox = hostRectForResize(node);
+      setBlockBox({ left: box.left - shellBox.left, top: box.top - shellBox.top, width: box.width, height: box.height,
+        maxWidth: parentBox ? Math.max(24, (parentBox.right - box.left) / slideScale) : box.width / slideScale,
+        maxHeight: Math.max(24, (rootBox.bottom - box.top) / slideScale), tagName: node.tagName.toLowerCase() });
+      const toolbarWidth = Math.min(620, shellBox.width - 16);
       const centered = box.left - shellBox.left + box.width / 2;
       const left = Math.min(shellBox.width - toolbarWidth / 2 - 8, Math.max(toolbarWidth / 2 + 8, centered));
       const above = box.top - shellBox.top - 44;
@@ -1748,7 +1758,7 @@ export default function Home() {
     observer.observe(viewport);
     observer.observe(node);
     return () => { viewport.removeEventListener("scroll", update); observer.disconnect(); };
-  }, [activeSlide, injectKey, mode, selectedId, slideScale]);
+  }, [activeSlide, injectKey, mode, selectedId, slideScale, slides]);
 
   useLayoutEffect(() => {
     const host = canvasRef.current;
@@ -2178,23 +2188,6 @@ export default function Home() {
   };
 
   const clearDropMarkers = () => canvasRef.current?.querySelectorAll(".weave-drop-before, .weave-drop-after, .weave-drop-horizontal").forEach((node) => node.classList.remove("weave-drop-before", "weave-drop-after", "weave-drop-horizontal"));
-  const nearestContainerChild = (container: HTMLElement, dragged: HTMLElement, clientX: number, clientY: number) => {
-    const children = Array.from(container.children).filter((child): child is HTMLElement => child instanceof HTMLElement && child !== dragged && child.hasAttribute("data-weave-id"));
-    const horizontal = container.classList.contains("flex-row");
-    const grid = container.classList.contains("grid");
-    return children.reduce<HTMLElement | null>((nearest, child) => {
-      if (!nearest) return child;
-      const childRect = child.getBoundingClientRect();
-      const nearestRect = nearest.getBoundingClientRect();
-      const childX = clientX - (childRect.left + childRect.width / 2);
-      const childY = clientY - (childRect.top + childRect.height / 2);
-      const nearestX = clientX - (nearestRect.left + nearestRect.width / 2);
-      const nearestY = clientY - (nearestRect.top + nearestRect.height / 2);
-      const childDistance = grid ? childX ** 2 + childY ** 2 : Math.abs(horizontal ? childX : childY);
-      const nearestDistance = grid ? nearestX ** 2 + nearestY ** 2 : Math.abs(horizontal ? nearestX : nearestY);
-      return childDistance < nearestDistance ? child : nearest;
-    }, null);
-  };
   const animateDomReorder = (mutate: () => void) => {
     const host = canvasRef.current;
     if (!host) return mutate();
@@ -2214,11 +2207,11 @@ export default function Home() {
     }
   };
 
-  const onCanvasDragStart = (event: DragEvent<HTMLDivElement>) => {
-    if (annotationMode) { event.preventDefault(); event.stopPropagation(); return; }
-    const target = (event.target as HTMLElement).closest<HTMLElement>("[data-weave-id]");
+  const onCanvasDragStart = (event: DragEvent<HTMLElement>, chosen: HTMLElement | null) => {
+    if (annotationMode || pointerPicking) { event.preventDefault(); event.stopPropagation(); return; }
+    const target = chosen === null ? (event.target as HTMLElement).closest<HTMLElement>("[data-weave-id]") : chosen;
     const id = target?.getAttribute("data-weave-id");
-    if (!target || !id || !isEditableSlideNode(target) || isTitleSlot(target) || target.getAttribute("contenteditable") === "true" || !target.parentNode) {
+    if (!target || !id || !isEditableSlideNode(target) || destroysTitleSlot(target) || target.getAttribute("contenteditable") === "true" || !target.parentNode) {
       event.preventDefault();
       return;
     }
@@ -2229,72 +2222,39 @@ export default function Home() {
     event.dataTransfer.setData("text/plain", id);
     // A block's sizing intent survives the move; the class expressing it is rewritten whenever the
     // block lands on a parent that runs the other way.
-    blockDragRef.current = { id, node: target, sizeIntent: sizeOf(target), sizeLayout: layoutOf(target.parentElement), originParent: target.parentNode, originNext: target.nextSibling, before: snapshot(), committed: false, lastReorderAt: 0, lastReorderX: event.clientX, lastReorderY: event.clientY };
-    requestAnimationFrame(() => target.classList.add("weave-dragging"));
+    blockDragRef.current = { id, node: target, sizeIntent: sizeOf(target), sizeLayout: layoutOf(target.parentElement), originParent: target.parentNode, originNext: target.nextSibling, before: snapshot(), committed: false };
+    requestAnimationFrame(() => { if (blockDragRef.current?.node === target) target.classList.add("weave-dragging"); });
   };
 
+  const resolveCanvasDrop = (clientX: number, clientY: number) => {
+    const session = blockDragRef.current;
+    const content = contentSlot();
+    if (!session || !content) return null;
+    const rootId = "__content__";
+    const nodes = Array.from(content.querySelectorAll<HTMLElement>("[data-weave-id]"));
+    const candidates = nodes.map((node) => {
+      const parent = node.parentElement?.closest<HTMLElement>("[data-weave-id]");
+      return { id: node.dataset.weaveId!, parentId: parent && parent !== content && content.contains(parent) ? parent.dataset.weaveId! : rootId,
+        rect: node.getBoundingClientRect(), layout: layoutOf(node), container: node.classList.contains("weave-container"), locked: destroysTitleSlot(node) };
+    });
+    return resolveBlockDropIntent({ candidates, pointer: { x: clientX, y: clientY }, draggedId: session.id,
+      root: { id: rootId, rect: content.getBoundingClientRect(), layout: layoutOf(content), container: true, locked: false } });
+  };
   const onCanvasDragOver = (event: DragEvent<HTMLDivElement>) => {
     if (annotationMode) { event.preventDefault(); event.stopPropagation(); return; }
     if (Array.from(event.dataTransfer.items).some((item) => item.kind === "file")) {
-      event.preventDefault();
-      event.dataTransfer.dropEffect = "copy";
-      return;
+      event.preventDefault(); event.dataTransfer.dropEffect = "copy"; return;
     }
-    const session = blockDragRef.current;
-    const host = canvasRef.current;
-    if (!session || !host) return;
+    if (!blockDragRef.current) return;
     event.preventDefault();
-    event.dataTransfer.dropEffect = "move";
-    const now = event.timeStamp;
-    if (now - session.lastReorderAt < 110) return;
-    if (Math.hypot(event.clientX - session.lastReorderX, event.clientY - session.lastReorderY) < REORDER_HYSTERESIS_PX) return;
-    host.querySelectorAll<HTMLElement>("[data-weave-id]").forEach((node) => node.getAnimations().forEach((animation) => animation.finish()));
-    const hit = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null;
-    // The dragged block and its whole subtree are pointer-events: none, so a hit is never inside
-    // it; the contains() guard only catches the frame before .weave-dragging lands.
-    let target = hit?.closest<HTMLElement>("[data-weave-id]") ?? null;
-    if (!target || !isEditableSlideNode(target) || target === session.node || session.node.contains(target)) return;
-    clearDropMarkers();
-
-    // Containers nest: a Row carrying its children can be dropped into another Row, Column or Grid.
-    if (target.classList.contains("weave-container")) {
-      const container = target;
-      const nearestChild = nearestContainerChild(container, session.node, event.clientX, event.clientY);
-      if (nearestChild) {
-        target = nearestChild;
-      } else {
-        container.classList.add("weave-drop-after");
-        if (session.node.parentNode !== container || session.node.nextSibling) {
-          animateDomReorder(() => { container.appendChild(session.node); session.sizeLayout = relayoutForParent(session.node, session.sizeIntent, session.sizeLayout); });
-          markReorder(session, event);
-        }
-        return;
-      }
-    }
-
-    if (target === session.node || session.node.contains(target)) return;
-    const parent = target.parentElement;
-    if (!parent) return;
-    const rect = target.getBoundingClientRect();
-    // A grid cell can be approached from any side, so compare on the axis the pointer is
-    // actually crossing: below the cell means "after", not "before the cell to its left".
-    const horizontal = parent.classList.contains("grid")
-      ? event.clientY >= rect.top && event.clientY <= rect.bottom
-      : parent.classList.contains("flex-row");
-    const siblings = Array.from(parent.children);
-    const draggedIndex = siblings.indexOf(session.node);
-    const targetIndex = siblings.indexOf(target);
-    const pointer = horizontal ? event.clientX : event.clientY;
-    const start = horizontal ? rect.left : rect.top;
-    const size = horizontal ? rect.width : rect.height;
-    const threshold = session.node.parentElement === parent && draggedIndex < targetIndex ? 0.7 : session.node.parentElement === parent && draggedIndex > targetIndex ? 0.3 : 0.5;
-    const after = pointer > start + size * threshold;
-    target.classList.add(after ? "weave-drop-after" : "weave-drop-before");
-    if (horizontal) target.classList.add("weave-drop-horizontal");
-    const reference = after ? target.nextSibling : target;
-    if (reference === session.node || (!after && session.node.nextSibling === target) || (after && target.nextSibling === session.node)) return;
-    animateDomReorder(() => { parent.insertBefore(session.node, reference); session.sizeLayout = relayoutForParent(session.node, session.sizeIntent, session.sizeLayout); });
-    markReorder(session, event);
+    const intent = resolveCanvasDrop(event.clientX, event.clientY);
+    event.dataTransfer.dropEffect = intent ? "move" : "none";
+    const shell = canvasRef.current?.closest(".slide-shell")?.getBoundingClientRect();
+    if (!intent || !shell) { setDropPreview(null); return; }
+    const rect = intent.preview.rect;
+    const label = intent.kind === "wrap" ? (intent.placement === "before" ? "左に並べる" : "右に並べる")
+      : intent.kind === "inside" ? "この中に入れる" : intent.axis === "x" ? (intent.placement === "before" ? "左に挿入" : "右に挿入") : (intent.placement === "before" ? "上に挿入" : "下に挿入");
+    setDropPreview({ left: rect.left - shell.left, top: rect.top - shell.top, width: rect.right - rect.left, height: rect.bottom - rect.top, label, kind: intent.kind });
   };
 
   const onCanvasDrop = (event: DragEvent<HTMLDivElement>) => {
@@ -2313,18 +2273,57 @@ export default function Home() {
     }
     const session = blockDragRef.current;
     if (!session) return;
-    session.committed = true;
-    const changed = session.node.parentNode !== session.originParent || session.node.nextSibling !== session.originNext;
+    const intent = resolveCanvasDrop(event.clientX, event.clientY);
+    const target = intent?.targetId === "__content__" ? contentSlot() : intent?.targetId ? canvasRef.current?.querySelector<HTMLElement>(`[data-weave-id="${cssEscape(intent.targetId)}"]`) : null;
     session.node.classList.remove("weave-dragging");
+    setDropPreview(null);
     clearDropMarkers();
     blockDragRef.current = null;
     setDraggedId(null);
-    if (!changed) return;
+    if (!intent || !target || session.node === target || session.node.contains(target)) return;
+    if (intent.kind === "wrap") {
+      const parent = target.parentElement;
+      if (!parent || target.contains(session.node)) return;
+      const wrapper = document.createElement("div");
+      wrapper.className = "weave-container row flex flex-row gap-4 items-start";
+      wrapper.dataset.weaveId = `row-${createMessageId()}`;
+      wrapper.draggable = true;
+      animateDomReorder(() => {
+        parent.insertBefore(wrapper, target);
+        wrapper.append(...(intent.placement === "before" ? [session.node, target] : [target, session.node]));
+        for (const child of [target, session.node]) {
+          // Equal columns make the inferred side-by-side arrangement fit its existing parent.
+          applySizeTo(child, "fill");
+        }
+      });
+    } else {
+      const parent = intent.kind === "inside" ? target : target.parentElement;
+      const reference = intent.kind === "inside" ? null : intent.placement === "after" ? target.nextSibling : target;
+      if (!parent || reference === session.node || (session.node.parentNode === parent && session.node.nextSibling === reference)) return;
+      animateDomReorder(() => { parent.insertBefore(session.node, reference); session.sizeLayout = relayoutForParent(session.node, session.sizeIntent, session.sizeLayout); });
+    }
+    session.committed = true;
     undoRef.current = [...undoRef.current.slice(-79), session.before];
     redoRef.current = [];
     setHistoryState({ undo: undoRef.current.length, redo: 0 });
     syncFromDom();
     setAnnouncement("ブロックを移動しました");
+  };
+
+  const commitBlockResize = ({ size, handle }: BlockResizeCommit) => {
+    const session = resizeSessionRef.current;
+    resizeSessionRef.current = null;
+    setResizePreview(null);
+    if (!session || !session.node.isConnected) return;
+    const changeWidth = handle !== "s";
+    const changeHeight = handle !== "e";
+    if ((!changeWidth || Math.round(size.width / 4) === Math.round(session.width / 4)) && (!changeHeight || Math.round(size.height / 4) === Math.round(session.height / 4))) return;
+    writeClasses(session.node, blockDimensionClasses(session.classes, size.width, size.height, changeWidth, changeHeight));
+    undoRef.current = [...undoRef.current.slice(-79), session.before];
+    redoRef.current = [];
+    setHistoryState({ undo: undoRef.current.length, redo: 0 });
+    syncFromDom();
+    setAnnouncement("ブロックのサイズを変更しました");
   };
 
   const onCanvasPaste = (event: React.ClipboardEvent<HTMLDivElement>) => {
@@ -2338,7 +2337,7 @@ export default function Home() {
   const onCanvasDragEnd = () => {
     const session = blockDragRef.current;
     if (!session) return;
-    if (!session.committed) animateDomReorder(() => session.originParent.insertBefore(session.node, session.originNext));
+    setDropPreview(null);
     session.node.classList.remove("weave-dragging");
     clearDropMarkers();
     blockDragRef.current = null;
@@ -3274,7 +3273,7 @@ export default function Home() {
     setAgentPreview({ phase: "checking", changedSlideIds: [], sequence: 0 });
     try {
       // Variations are branch trials, so annotations stay on the canvas instead of being consumed.
-      const response = await fetch(`${apiBase}/variations/generate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt, deck: requestDeck, clientUserMessageId: createMessageId(), model: selectedModel || undefined, effort: reasoningEffort, approvalPolicy, contextEnvelope: contextEnvelope(variationAnnotations, overflowingIds(liveOverflowMeasurements())) }) });
+      const response = await fetch(`${apiBase}/variations/generate`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ prompt, deck: requestDeck, clientUserMessageId: createMessageId(), model: selectedModel, effort: reasoningEffort, approvalPolicy: claudeSelected ? null : approvalPolicy, contextEnvelope: contextEnvelope(variationAnnotations, overflowingIds(liveOverflowMeasurements())) }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "デザイン案を生成できませんでした。");
       if (response.status !== 202 || typeof result.thread?.id !== "string" || typeof result.turn?.id !== "string") throw new Error("デザイン案の受付状態を確認できませんでした。");
@@ -3284,7 +3283,6 @@ export default function Home() {
         setTurnSubmission(IDLE_TURN_SUBMISSION);
       } else setTurnSubmission({ phase: "accepted", threadId: result.thread.id, turnId: result.turn.id });
       setActiveVariation(result.branch);
-      setAllowSkillChanges(false);
       dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
     } catch (error) {
       if (!accepted) setTurnSubmission(IDLE_TURN_SUBMISSION);
@@ -3402,7 +3400,7 @@ export default function Home() {
       let threadId = codexState.activeThreadId;
       let startedChatThread = false;
       if (!threadId) {
-        const startResponse = await fetch(`${apiBase}/codex/thread/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ purpose: "chat", approvalPolicy, model: selectedModel || undefined }) });
+        const startResponse = await fetch(`${apiBase}/agent/thread/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ purpose: "chat", approvalPolicy: claudeSelected ? null : approvalPolicy, model: selectedModel }) });
         const started = await startResponse.json();
         if (!startResponse.ok) throw new Error(started.error ?? "会話を開始できませんでした。");
         const startedThreadId = started.thread?.id;
@@ -3417,7 +3415,7 @@ export default function Home() {
       let requestThreadId: string = threadId;
       steering = agentRunning;
       if (!steering && !startedChatThread) {
-        const prepareResponse = await fetch(`${apiBase}/codex/thread/prepare`, {
+        const prepareResponse = await fetch(`${apiBase}/agent/thread/prepare`, {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ threadId: requestThreadId, approvalPolicy, model: selectedModel || undefined }),
@@ -3428,7 +3426,7 @@ export default function Home() {
         if (typeof preparedThreadId !== "string" || !preparedThreadId) throw new Error("UI操作用の会話を特定できませんでした。");
         let preparedThread = prepared.thread;
         if (prepared.migrated === true) {
-          const readResponse = await fetch(`${apiBase}/codex/thread/read`, {
+          const readResponse = await fetch(`${apiBase}/agent/thread/read`, {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ threadId: preparedThreadId }),
@@ -3450,8 +3448,8 @@ export default function Home() {
         agentViewedSlideIdRef.current = requestDeck.slides[activeRef.current - 1]?.id ?? null;
       }
       const runningTurnId = codexState.activeTurnId;
-      const endpoint = steering ? "codex/turn/steer" : "codex/turn/start";
-      const response = await fetch(`${apiBase}/${endpoint}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: requestThreadId, purpose: "chat", prompt: value, clientUserMessageId: createMessageId(), selectedId, deck: requestDeck, model: selectedModel || undefined, effort: reasoningEffort, approvalPolicy, contextEnvelope: requestEnvelope, attachments: referenceAttachments, uiSession: { sessionId: uiSession.sessionId, token: uiSession.token } }) });
+      const endpoint = steering ? "agent/turn/steer" : "agent/turn/start";
+      const response = await fetch(`${apiBase}/${endpoint}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: requestThreadId, purpose: "chat", prompt: value, clientUserMessageId: createMessageId(), selectedId, deck: requestDeck, model: selectedModel, effort: reasoningEffort, approvalPolicy: claudeSelected ? null : approvalPolicy, contextEnvelope: requestEnvelope, attachments: referenceAttachments, uiSession: { sessionId: uiSession.sessionId, token: uiSession.token } }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "Agentへの依頼を開始できませんでした。");
       if (response.status !== 202 || (!steering && typeof result.turn?.id !== "string") || (steering && typeof result.turnId !== "string")) throw new Error("Agentへの依頼受付状態を確認できませんでした。");
@@ -3483,7 +3481,6 @@ export default function Home() {
         setAnnouncement("Agentへの指示を送信しました");
       }
       setPromptDraft("");
-      if (!steering) setAllowSkillChanges(false);
       setReferenceAttachments([]);
       setIncludeRegionAnnotations(true);
     } catch (error) {
@@ -3501,27 +3498,29 @@ export default function Home() {
 
   const interruptAgent = async () => {
     try {
-      const response = await fetch(`${apiBase}/codex/turn/interrupt`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: codexState.activeThreadId }) });
+      const response = await fetch(`${apiBase}/agent/turn/interrupt`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: codexState.activeThreadId }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "進行中のAgentを停止できませんでした。");
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   };
 
   const newThread = async () => {
+    autoOpenThreadRef.current = false;
     clearTurnSubmission();
     try {
-      const response = await fetch(`${apiBase}/codex/thread/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ purpose: "chat", approvalPolicy, model: selectedModel || undefined }) });
+      const response = await fetch(`${apiBase}/agent/thread/start`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ purpose: "chat", approvalPolicy: claudeSelected ? null : approvalPolicy, model: selectedModel }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "制作タスクを開始できませんでした。");
       dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
       await ensureUiSessionForThread(result.thread.id);
+      if (typeof result.thread.model === "string") { const current = agentModelStore.read(); agentModelStore.write({ model: result.thread.model, effort: typeof result.thread.effort === "string" ? result.thread.effort : current.effort }); }
       setApiError(null);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
   };
 
   const openThread = async (threadId: string) => {
     try {
-      const response = await fetch(`${apiBase}/codex/thread/resume`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId }) });
+      const response = await fetch(`${apiBase}/agent/thread/resume`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "制作タスクを再開できませんでした。");
       dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
@@ -3534,7 +3533,7 @@ export default function Home() {
     const threadId = codexState.activeThreadId;
     if (!threadId) return;
     try {
-      const response = await fetch(`${apiBase}/codex/thread/action`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action, params: { threadId, ...params } }) });
+      const response = await fetch(`${apiBase}/agent/thread/action`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action, params: { threadId, ...params } }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "制作タスクを操作できませんでした。");
       if (action === "delete") dispatchCodex({ type: "activateThread", threadId: null });
@@ -3546,7 +3545,7 @@ export default function Home() {
     if (!codexState.activeThreadId) return;
     clearTurnSubmission();
     try {
-      const response = await fetch(`${apiBase}/codex/thread/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: codexState.activeThreadId }) });
+      const response = await fetch(`${apiBase}/agent/thread/fork`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ threadId: codexState.activeThreadId }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "制作タスクを複製できませんでした。");
       dispatchCodex({ type: "threadLoaded", thread: result.thread, activate: true });
@@ -3573,7 +3572,7 @@ export default function Home() {
     const threadId = codexState.activeThreadId;
     if (!threadId) return;
     try {
-      const response = await fetch(`${apiBase}/codex/thread/action`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "goalGet", params: { threadId } }) });
+      const response = await fetch(`${apiBase}/agent/thread/action`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "goalGet", params: { threadId } }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "制作タスクの目標を取得できませんでした。");
       const current = result.goal?.objective ?? result.objective ?? "";
@@ -3610,7 +3609,7 @@ export default function Home() {
   };
   const resolveServerRequest = async (id: string | number, result: Record<string, unknown>): Promise<RequestResolutionOutcome> => {
     try {
-      const response = await fetch(`${apiBase}/codex/request/resolve`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, result }) });
+      const response = await fetch(`${apiBase}/agent/request/resolve`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, result }) });
       const value = await response.json();
       if (!response.ok) throw new Error(value.error ?? "Codexへ回答を送れませんでした。");
       return { result: "settled" };
@@ -3620,7 +3619,7 @@ export default function Home() {
   };
   const rejectServerRequest = async (id: string | number): Promise<RequestResolutionOutcome> => {
     try {
-      const response = await fetch(`${apiBase}/codex/request/reject`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, message: "Declined in Weave." }) });
+      const response = await fetch(`${apiBase}/agent/request/reject`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, message: "Declined in Weave." }) });
       const value = await response.json();
       if (!response.ok) throw new Error(value.error ?? "Codexへ拒否の回答を送れませんでした。");
       return { result: "settled" };
@@ -3629,31 +3628,11 @@ export default function Home() {
     }
   };
 
-  const updateSkill = async (skill: any, enabled: boolean) => {
-    const path = typeof skill?.path === "string" ? skill.path : null;
-    const name = typeof skill?.name === "string" ? skill.name : null;
-    if (path === null && name === null) {
-      setSkillStatus({ state: "error", message: "This catalog entry cannot be configured." });
-      return;
-    }
-    setSkillBusyKey(`catalog:${path ?? name}`);
-    setSkillStatus({ state: "busy", message: "Updating Codex skill…" });
-    try {
-      const response = await fetch(`${apiBase}/codex/skill/config`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path, name, enabled }) });
-      const result = await response.json();
-      if (!response.ok) throw new Error(result.error ?? "スキルを更新できませんでした。");
-      setSkillStatus({ state: "success", message: "Codexでのスキル設定を更新しました。" });
-    } catch (error) {
-      setSkillStatus({ state: "error", message: error instanceof Error ? error.message : String(error) });
-    } finally {
-      setSkillBusyKey(null);
-    }
-  };
-
   const setSkillMutationStateFromResponse = (result: any) => {
     if (!Array.isArray(result?.skills)) throw new Error("スキルの応答が不正です。");
     if (!result?.project || typeof result.project.clean !== "boolean") throw new Error("スキルの応答にプロジェクト状態がありません。");
     setSkills(result.skills);
+    if (Array.isArray(result.skillProposals)) setSkillProposals(result.skillProposals);
     setProject(result.project);
     setSaved(!browserDirtyRef.current && result.project.clean);
     setServerRevision(result.project.revision ?? result.project.commit);
@@ -3680,7 +3659,7 @@ export default function Home() {
   const openNewSkillDialog = () => {
     if (skillScope === "application") return;
     skillDialogTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    setSkillDraft({ scope: skillScope, name: "", description: "", body: "", frontmatter: "" });
+    setSkillDraft({ scope: "editor", name: "", description: "", body: "", frontmatter: "" });
     setSkillDialog({ mode: "create", source: null });
     setSkillStatus({ state: "idle", message: "" });
   };
@@ -3691,7 +3670,7 @@ export default function Home() {
       return;
     }
     skillDialogTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    setSkillDraft({ scope: skill.scope, name: skill.name, description: skill.valid ? skill.description : "", body: skill.valid ? skill.body : skill.content, frontmatter: skill.frontmatter ?? "" });
+    setSkillDraft({ scope: "editor", name: skill.name, description: skill.valid ? skill.description : "", body: skill.valid ? skill.body : skill.content, frontmatter: skill.frontmatter ?? "" });
     setSkillDialog({ mode: "edit", source: skill });
     setSkillStatus({ state: "idle", message: "" });
   };
@@ -3718,12 +3697,6 @@ export default function Home() {
     await runSkillMutation(`${skill.scope}:${skill.name}`, () => fetch(`${apiBase}/skills/${skill.scope}/${encodeURIComponent(skill.name)}`, { method: "DELETE" }), "スキルを削除しました。");
   };
 
-  const moveManagedSkill = async (skill: SkillEntry) => {
-    if (skill.scope === "application") return;
-    const action = skill.scope === "project" ? "promote" : "demote";
-    await runSkillMutation(`${skill.scope}:${skill.name}`, () => fetch(`${apiBase}/skills/${action}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: skill.name }) }), skill.scope === "project" ? "共通スキルに格上げしました。" : "プロジェクト固有へ格下げしました。");
-  };
-
   const uploadManagedSkill = async (file: File) => {
     if (skillScope === "application") return;
     const scope = skillScope;
@@ -3746,7 +3719,7 @@ export default function Home() {
 
   const login = async (type: "chatgpt" | "apiKey") => {
     try {
-      const response = await fetch(`${apiBase}/codex/account/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(type === "apiKey" ? { type, apiKey: apiKeyDraft } : { type }) });
+      const response = await fetch(`${apiBase}/agent/account/login`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(type === "apiKey" ? { type, apiKey: apiKeyDraft } : { type }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "ログインを開始できませんでした。");
       setApiKeyDraft("");
@@ -3773,7 +3746,7 @@ export default function Home() {
         path = "tool/call";
         body = { server: server.name, tool, arguments: JSON.parse(raw), threadId: codexState.activeThreadId };
       }
-      const response = await fetch(`${apiBase}/codex/mcp/${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      const response = await fetch(`${apiBase}/agent/mcp/${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error ?? "MCPへのリクエストに失敗しました。");
       setMcpResult(JSON.stringify(result, null, 2).slice(0, 20_000));
@@ -3926,13 +3899,35 @@ export default function Home() {
     </section>
   );
 
+  const resolveSkillReview = async (proposal: SkillProposal, action: "accept" | "dismiss") => {
+    await runSkillMutation(`proposal:${proposal.id}`, () => fetch(`${apiBase}/skill-proposals/${proposal.id}/${action}`, { method: "POST" }), action === "accept" ? "共通スキルに保存しました。有効なスキルは次のAgent依頼から参照されます。" : "今回は保存しません。資料への修正はそのまま残ります。");
+  };
+
+  const skillReviewCards = (proposals: SkillProposal[]) => proposals.length > 0 && <section className="skill-review-list" aria-label="スキルを育てる提案">
+    <strong>今回の指示を、ほかの資料にも活かしますか？</strong>
+    <p>確認して保存すると、html-editorの全資料で使える共通スキルになります。</p>
+    {proposals.map((proposal) => <article className="skill-card" key={proposal.id} aria-busy={skillBusyKey === `proposal:${proposal.id}`}>
+      <strong>{proposal.targetName === null ? "新しいスキル" : "既存スキルの更新"}：{proposal.name}</strong>
+      <p>{proposal.reason}</p>
+      <details><summary>指示と変更内容を確認</summary>
+        <p>元の指示：{proposal.evidence}</p>
+        <p>適用条件：{proposal.description}</p>
+        {proposal.previousBody !== null && <><h4>現在の内容</h4><pre>{proposal.previousBody}</pre></>}
+        <h4>保存する内容</h4><pre>{proposal.body}</pre>
+        <button type="button" className="sidebar-primary-action" disabled={skillBusyKey !== null || agentRunning} onClick={() => void resolveSkillReview(proposal, "accept")}>全資料の共通スキルに保存</button>
+      </details>
+      <footer><button type="button" disabled={skillBusyKey !== null || agentRunning} onClick={() => void resolveSkillReview(proposal, "dismiss")}>今回は保存しない</button></footer>
+    </article>)}
+  </section>;
+
   const skillsSidebar = (
     <section className="activity-panel skills-panel" aria-label="スキルライブラリ">
       <header className="activity-panel-heading"><span>スキル</span><small>{skills.length}件</small>{chatReturnButton("return-chat-skills")}</header>
       <div className="activity-panel-body skills-sidebar">
+        {skillReviewCards(skillProposals)}
         <div className="skills-intro"><strong>資料づくりの指示を管理</strong><p>このアプリ共通の作り方、この資料だけの指示、個人で使う共通の指示を確認・編集できます。</p></div>
         <div className="skills-tabs" role="tablist" aria-label="スキルの適用範囲">
-          {(["application", "project", "common"] as SkillScope[]).map((scope) => <button key={scope} type="button" role="tab" aria-selected={skillScope === scope} className={skillScope === scope ? "active" : ""} onClick={() => setSkillScope(scope)}><span>{scope === "application" ? "このアプリ共通" : scope === "project" ? "この資料" : "個人共通"}</span><small>{skills.filter((skill) => skill.scope === scope).length}</small></button>)}
+          {(["application", "editor"] as SkillScope[]).map((scope) => <button key={scope} type="button" role="tab" aria-selected={skillScope === scope} className={skillScope === scope ? "active" : ""} onClick={() => setSkillScope(scope)}><span>{scope === "application" ? "標準スキル" : "追加スキル"}</span><small>{skills.filter((skill) => skill.scope === scope).length}</small></button>)}
         </div>
         {skillScope === "application" && <p className="skill-scope-description">すべての資料で使う2つのスキルです。編集した内容は履歴から確認・復元できます。</p>}
         {skillScope === "application" && <ApplicationSkillLearning skills={skills} />}
@@ -3946,18 +3941,17 @@ export default function Home() {
         {skillStatus.state !== "idle" && <div className={`skill-status ${skillStatus.state}`} role={skillStatus.state === "error" ? "alert" : "status"} aria-live="polite" aria-busy={skillStatus.state === "busy"}>{skillStatus.message}</div>}
         <div className="skill-card-list">
           {visibleSkills.map((skill) => {
-            const catalogSkill = catalogSkillFor(skill);
-            const supportsToggle = skill.scope !== "application" && skill.valid && typeof catalogSkill?.enabled === "boolean";
             const key = `${skill.scope}:${skill.name}`;
             return <article className="skill-card" key={key} aria-busy={skillBusyKey === key}>
-              <div className="skill-card-head"><div><strong>{skill.name}</strong><span className={`skill-scope-badge ${skill.scope}`}>{skill.scope === "application" ? "アプリ共通" : skill.scope === "project" ? "この資料" : "個人共通"}</span>{!skill.valid && <span className="skill-invalid-badge">要修復</span>}</div><button type="button" aria-label={`${skill.name}を編集`} onClick={() => openEditSkillDialog(skill)} disabled={skillBusyKey !== null || codexState.editing || (skill.scope === "application" && (skill.capabilities?.edit !== true || !isApplicationSkill(skill)))}>{skill.valid ? "編集" : "修復"}</button></div>
+              <div className="skill-card-head"><div><strong>{skill.name}</strong><span className={`skill-scope-badge ${skill.scope}`}>{skill.scope === "application" ? "標準スキル" : "html-editor共通"}</span>{!skill.valid && <span className="skill-invalid-badge">要修復</span>}</div><button type="button" aria-label={`${skill.name}を編集`} onClick={() => openEditSkillDialog(skill)} disabled={skillBusyKey !== null || codexState.editing || (skill.scope === "application" && (skill.capabilities?.edit !== true || !isApplicationSkill(skill)))}>{skill.valid ? "編集" : "修復"}</button></div>
               <p>{skill.valid ? skill.description : skill.error}</p>
               <details className="version-details skill-location"><summary>保存場所</summary><code title={skill.path}>{skill.path}</code></details>
-              {supportsToggle && <label className="skill-enable-toggle"><span>Codexで有効</span><input type="checkbox" checked={catalogSkill.enabled} onChange={(event) => void updateSkill(catalogSkill, event.target.checked)} disabled={skillBusyKey !== null || codexState.editing} /></label>}
-              {skill.scope === "application" ? <footer><button type="button" disabled={skill.capabilities?.history !== true || !isApplicationSkill(skill)} onClick={() => { if (isApplicationSkill(skill)) setApplicationSkillDialog({ skill, tab: "history" }); }}>変更履歴を見る</button><small>すべての資料に適用</small></footer> : <footer><button type="button" onClick={() => void moveManagedSkill(skill)} disabled={!skill.valid || skillBusyKey !== null || codexState.editing}>{skill.scope === "project" ? "個人共通へ移す" : "この資料へ移す"}</button><button type="button" className="danger" onClick={() => void deleteManagedSkill(skill)} disabled={skillBusyKey !== null || codexState.editing}>削除</button></footer>}
+              <details className="skill-content-details"><summary aria-label={`${skill.name}の詳細を確認`}>詳細を確認</summary><pre tabIndex={0} aria-label={`${skill.name}の内容`}>{skill.content}</pre></details>
+              {skill.scope === "editor" && skill.valid && <label className="skill-enable-toggle"><span>すべての資料で有効</span><input type="checkbox" checked={skill.enabled === true} onChange={(event) => void runSkillMutation(key, () => fetch(`${apiBase}/skills/editor/${encodeURIComponent(skill.name)}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ enabled: event.target.checked }) }), "適用設定を更新しました。次のAgent依頼から反映されます。")} disabled={skillBusyKey !== null || codexState.editing} /></label>}
+              {skill.scope === "application" ? <footer><button type="button" disabled={skill.capabilities?.history !== true || !isApplicationSkill(skill)} onClick={() => { if (isApplicationSkill(skill)) setApplicationSkillDialog({ skill, tab: "history" }); }}>変更履歴を見る</button><small>すべての資料に適用</small></footer> : <footer><button type="button" className="danger" onClick={() => void deleteManagedSkill(skill)} disabled={skillBusyKey !== null || codexState.editing}>削除</button></footer>}
             </article>;
           })}
-          {visibleSkills.length === 0 && <p className="skills-empty">{skillSearch.trim() ? "条件に一致するスキルはありません。" : skillScope === "application" ? "アプリ共通スキルを読み込めませんでした。再読み込みしてください。" : skillScope === "project" ? "この資料のスキルはまだありません。" : "個人共通スキルはまだありません。"}{skillScope === "application" && !skillSearch.trim() && <button type="button" onClick={() => void loadSkills()} disabled={skillStatus.state === "busy"}>再読み込み</button>}</p>}
+          {visibleSkills.length === 0 && <p className="skills-empty">{skillSearch.trim() ? "条件に一致するスキルはありません。" : skillScope === "application" ? "アプリ共通スキルを読み込めませんでした。再読み込みしてください。" : "共通スキルはまだありません。新しいスキルを作成するか、SKILL.mdをアップロードしてください。"}{skillScope === "application" && !skillSearch.trim() && <button type="button" onClick={() => void loadSkills()} disabled={skillStatus.state === "busy"}>再読み込み</button>}</p>}
         </div>
       </div>
     </section>
@@ -3977,12 +3971,13 @@ export default function Home() {
         <nav className="more-navigation" aria-label="その他の機能"><button onClick={() => showActivity("history")}>履歴・保存</button><button onClick={(event) => togglePopover("quality", event.currentTarget)}>品質チェック</button><button onClick={() => showActivity("skills")}>スキル</button><button onClick={() => showActivity("shortcuts")}>ヘルプとショートカット</button></nav>
         <section><h3>表示</h3><label><span>カラーモード</span><select value={theme} onChange={(event) => setTheme(event.target.value as "dark" | "light")}><option value="dark">ダーク</option><option value="light">ライト</option></select></label><label><span>表示密度</span><select value={density} onChange={(event) => densityStore.write(event.target.value as Density)}><option value="comfortable">通常</option><option value="compact">コンパクト</option></select></label><p>スライド一覧は左、チャットを常に表示するコンテキストパネルは右にあります。タブでデザインや変更レビューへ切り替えられます。</p></section>
         <section><h3>Agent</h3>
-          <label><span>承認方法</span><select value={approvalPolicy} onChange={(event) => setApprovalPolicy(event.target.value)}><option value="never">確認しない</option><option value="on-request">必要なとき確認</option><option value="untrusted">未確認コマンドのみ</option></select></label>
+          {claudeSelected ? <p>Claude Codeの既存ログインを使用します。プロジェクト内のファイル読み書きを許可し、コマンド実行は許可しません。</p> : <label><span>承認方法</span><select value={approvalPolicy} onChange={(event) => setApprovalPolicy(event.target.value)}><option value="never">確認しない</option><option value="on-request">必要なとき確認</option><option value="untrusted">未確認コマンドのみ</option></select></label>}
           {codexState.catalog.modelProvider && <pre className="settings-output">{JSON.stringify(codexState.catalog.modelProvider, null, 2)}</pre>}
         </section>
-        <section><h3>アカウント</h3>{codexState.catalog.account ? <div className="setting-row"><span>{String(codexState.catalog.account.type ?? "サインイン済み")}</span><button data-ui-agent-exclude="true" onClick={() => { void fetch(`${apiBase}/codex/account/logout`, { method: "POST" }).catch((error) => setApiError(error.message)); }}>ログアウト</button></div> : <><button data-ui-agent-exclude="true" onClick={() => void login("chatgpt")}>ChatGPTでサインイン</button><div className="api-key-row"><input type="password" value={apiKeyDraft} onChange={(event) => setApiKeyDraft(event.target.value)} placeholder="APIキー" /><button data-ui-agent-exclude="true" disabled={!apiKeyDraft} onClick={() => void login("apiKey")}>キーを使用</button></div></>}</section>
+        <section><h3>Claude Code</h3><p>{codexState.catalog.providers?.claude?.connection.error ?? (codexState.catalog.providers?.claude?.ready ? "既存ログインで接続済み" : "接続を確認中…")}</p><button data-ui-agent-exclude="true" onClick={() => { void fetch(`${apiBase}/agent/catalog/refresh`, { method: "POST" }).catch((error) => setApiError(error.message)); }}>接続を再確認</button></section>
+        <section><h3>Codexアカウント</h3>{codexState.catalog.account ? <div className="setting-row"><span>{String(codexState.catalog.account.type ?? "サインイン済み")}</span><button data-ui-agent-exclude="true" onClick={() => { void fetch(`${apiBase}/agent/account/logout`, { method: "POST" }).catch((error) => setApiError(error.message)); }}>ログアウト</button></div> : <><button data-ui-agent-exclude="true" onClick={() => void login("chatgpt")}>ChatGPTでサインイン</button><div className="api-key-row"><input type="password" value={apiKeyDraft} onChange={(event) => setApiKeyDraft(event.target.value)} placeholder="APIキー" /><button disabled={!apiKeyDraft} onClick={() => void login("apiKey")}>キーを使用</button></div></>}</section>
         <section><h3>フック</h3>{codexState.catalog.hooks.flatMap((entry: any) => entry.hooks ?? [entry]).map((hook: any, index: number) => <div className="setting-row" key={hook.name ?? hook.event ?? index}><span>{hook.name ?? hook.event ?? "設定済みフック"}</span><small>{hook.enabled === false ? "無効" : "有効"}</small></div>)}</section>
-        <section><h3>MCPサーバー</h3>{codexState.catalog.mcpServers.map((server: any) => <div className="setting-row" key={server.name}><span>{server.name}</span><small>{server.status ?? server.authStatus ?? "設定済み"}</small>{server.resources?.length > 0 && <button onClick={() => void invokeMcp(server, "resource")}>リソース</button>}{Object.keys(server.tools ?? {}).length > 0 && <button disabled={!codexState.activeThreadId} onClick={() => void invokeMcp(server, "tool")}>ツール</button>}<button data-ui-agent-exclude="true" onClick={() => { void fetch(`${apiBase}/codex/mcp/oauth`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: server.name }) }).then(async (response) => { const result = await response.json(); if (!response.ok) throw new Error(result.error); const url = result.authorizationUrl ?? result.url; if (url && window.confirm(`${server.name}のOAuth認証ページを開きますか？`)) window.open(url, "_blank", "noopener,noreferrer"); }).catch((error) => setApiError(error.message)); }}>OAuth</button></div>)}</section>
+        <section><h3>MCPサーバー</h3>{codexState.catalog.mcpServers.map((server: any) => <div className="setting-row" key={server.name}><span>{server.name}</span><small>{server.status ?? server.authStatus ?? "設定済み"}</small>{server.resources?.length > 0 && <button data-ui-agent-exclude="true" onClick={() => void invokeMcp(server, "resource")}>リソース</button>}{Object.keys(server.tools ?? {}).length > 0 && <button disabled={!codexState.activeThreadId} onClick={() => void invokeMcp(server, "tool")}>ツール</button>}<button data-ui-agent-exclude="true" onClick={() => { void fetch(`${apiBase}/agent/mcp/oauth`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: server.name }) }).then(async (response) => { const result = await response.json(); if (!response.ok) throw new Error(result.error); const url = result.authorizationUrl ?? result.url; if (url && window.confirm(`${server.name}のOAuth認証ページを開きますか？`)) window.open(url, "_blank", "noopener,noreferrer"); }).catch((error) => setApiError(error.message)); }}>OAuth</button></div>)}</section>
         {mcpResult && <pre className="settings-output">{mcpResult}</pre>}
       </div>
     </section>
@@ -4089,9 +4084,9 @@ export default function Home() {
                 <div ref={threadMenuRef} className="thread-actions-menu" data-ui-agent-exclude="true" role="menu" tabIndex={-1} aria-label={`${activeThreadName}の操作`} onKeyDown={onThreadMenuKeyDown}>
                   <strong>制作タスクの操作</strong>
                   <button role="menuitem" disabled={!codexState.activeThreadId} onClick={() => { dismissPopover(); void renameActiveThread(); }}>タスク名を変更</button>
-                  <button role="menuitem" disabled={!codexState.activeThreadId} onClick={() => { dismissPopover(); void forkThread(); }}>別の方向で試す</button>
+                  <button role="menuitem" disabled={!codexState.activeThreadId || claudeThread} onClick={() => { dismissPopover(); void forkThread(); }}>別の方向で試す</button>
                   <button role="menuitem" disabled={!codexState.activeThreadId} onClick={() => { dismissPopover(); void threadAction(activeThread?.archived ? "unarchive" : "archive"); }}>{activeThread?.archived ? "アーカイブから戻す" : "アーカイブ"}</button>
-                  <details className="advanced-task-actions"><summary>詳細操作</summary><button role="menuitem" disabled={!codexState.activeThreadId} onClick={() => { dismissPopover(); void manageGoal(); }}>内部ゴール</button><button role="menuitem" disabled={!codexState.activeThreadId} onClick={() => { dismissPopover(); void threadAction("compact"); }}>履歴を整理</button></details>
+                  <details className="advanced-task-actions"><summary>詳細操作</summary><button role="menuitem" disabled={!codexState.activeThreadId || claudeThread} onClick={() => { dismissPopover(); void manageGoal(); }}>内部ゴール</button><button role="menuitem" disabled={!codexState.activeThreadId || claudeThread} onClick={() => { dismissPopover(); void threadAction("compact"); }}>履歴を整理</button></details>
                   <button role="menuitem" className="danger" disabled={!codexState.activeThreadId} onClick={() => { dismissPopover(); void deleteActiveThread(); }}>削除</button>
                 </div>
               </>
@@ -4135,6 +4130,8 @@ export default function Home() {
               />)}
               <div ref={messagesEndRef} className="messages-end" />
             </div>
+            {skillReviewCards(skillProposals.filter((proposal) => proposal.threadId === codexState.activeThreadId))}
+            {skillStatus.state !== "idle" && <div className={`skill-status ${skillStatus.state}`} role={skillStatus.state === "error" ? "alert" : "status"} aria-live="polite">{skillStatus.message}</div>}
             <div className="composer-dock" data-turn-state={turnPresentation} aria-busy={turnBusy}>
               {pendingServerRequests.length > 0 && <section className="blocking-region" data-ui-agent-exclude="true" role="region" aria-live="assertive" aria-label="確認が必要な操作" data-pending-count={pendingServerRequests.length}>
                 <div className="blocking-heading"><strong>{activePendingServerRequests.length > 0 ? "確認が必要です" : "確認が必要な要求があります"}</strong><span>{pendingServerRequests.length}件</span></div>
@@ -4205,8 +4202,7 @@ export default function Home() {
               </>}
               <div className="agent-boundary-controls" role="group" aria-label="Agentの変更範囲と実行方法">
                 <label><span>変更範囲</span><select value={changeScope} onChange={(event) => setChangeScope(event.target.value as ChangeScope)}><option value="element" disabled={!selectedId}>この要素だけ</option><option value="current-slide">現在のスライド</option><option value="selected-slides">選択したスライド</option><option value="deck">デッキ全体</option></select></label>
-                <label><span>実行</span><select value={executionMode} onChange={(event) => { const mode = event.target.value as ExecutionMode; setExecutionMode(mode); if (mode !== "apply") setAllowSkillChanges(false); }}><option value="apply">直接反映</option><option value="propose">提案だけ作成</option><option value="plan">先に計画を提示</option></select></label>
-                <label className="agent-skill-permission"><input type="checkbox" checked={allowSkillChanges} disabled={executionMode !== "apply"} onChange={(event) => setAllowSkillChanges(event.target.checked)} /><span>この1回だけプロジェクトスキルの変更を許可</span></label>
+                <label><span>実行</span><select value={executionMode} onChange={(event) => { const mode = event.target.value as ExecutionMode; setExecutionMode(mode); }}><option value="apply">直接反映</option><option value="propose">提案だけ作成</option><option value="plan">先に計画を提示</option></select></label>
                 <p>Agentは{changeScope === "element" ? `「${blockLabels[sel?.kind ?? ""] ?? "選択要素"}」だけ` : changeScope === "current-slide" ? `スライド${activeSlide}だけ` : changeScope === "selected-slides" ? `選択した${selectedSlideIds.size || 1}枚のスライド` : "デッキ全体"}を変更できます。</p>
               </div>
               <div className="context-chip" role="group" aria-label="参照対象">
@@ -4238,15 +4234,15 @@ export default function Home() {
                 <input ref={referenceInputRef} className="sr-only" type="file" multiple onChange={(event) => { if (event.target.files) void uploadReferences(event.target.files); }} />
                 <input ref={referenceFolderInputRef} className="sr-only" type="file" aria-label="参照フォルダーを選択" multiple {...{ webkitdirectory: "" }} onChange={(event) => { if (event.target.files?.length) void uploadReferenceFolder(event.target.files); }} />
                 <button className={`attach-button${openPopover === "references" ? " active" : ""}`} type="button" onClick={(event) => togglePopover("references", event.currentTarget)} disabled={!agentReady} aria-expanded={openPopover === "references"} aria-haspopup="dialog" aria-label="参照資料" title="Agentへ渡すファイルやフォルダーを選びます">📎</button>
-                {codexState.catalog.models.length > 0 && selectedModelInfo && (
+                {codexState.catalog.models.length > 0 && (
                   <div className="agent-model-control">
-                    <button className="agent-model-button" type="button" onClick={(event) => togglePopover("agentModel", event.currentTarget)} disabled={turnBusy} aria-expanded={openPopover === "agentModel"} aria-haspopup="menu" title="Agentのモデルと推論レベルを選びます"><span className="agent-model-name">{selectedModelInfo.displayName ?? selectedModelInfo.name ?? selectedModelInfo.id ?? selectedModelInfo.model}</span><span className="agent-effort-value">{reasoningEffort}</span><b aria-hidden="true">⌄</b></button>
+                    <button className="agent-model-button" type="button" onClick={(event) => togglePopover("agentModel", event.currentTarget)} disabled={turnBusy} aria-expanded={openPopover === "agentModel"} aria-haspopup="menu" title="Agentのモデルと推論レベルを選びます"><span className="agent-model-name">{selectedModelInfo?.displayName ?? selectedModelInfo?.name ?? (selectedModel || "モデルを選択")}</span><span className="agent-effort-value">{availableEfforts.length > 0 ? reasoningEffort : ""}</span><b aria-hidden="true">⌄</b></button>
                     {openPopover === "agentModel" && (
                       <>
                         <div className="popover-backdrop" role="presentation" onPointerDown={() => dismissPopover()} />
                         <div className="agent-model-popover" role="menu" aria-label="Agentのモデルと推論レベル">
-                          <section role="group" aria-label="モデル"><strong>モデル</strong>{codexState.catalog.models.map((model: any) => { const modelId = model.id ?? model.model; return <button key={modelId} role="menuitemradio" aria-checked={selectedModel === modelId} className={selectedModel === modelId ? "active" : ""} disabled={turnBusy} onClick={() => { const nextEffort = model.supportedReasoningEfforts?.map((option: any) => option.reasoningEffort).includes(reasoningEffort) ? reasoningEffort : model.defaultReasoningEffort ?? model.supportedReasoningEfforts?.[0]?.reasoningEffort ?? reasoningEffort; agentModelStore.write({ model: modelId, effort: nextEffort }); dismissPopover(false); }}><span>{model.displayName ?? model.name ?? model.id ?? model.model}</span>{selectedModel === modelId && <b aria-hidden="true">✓</b>}</button>; })}</section>
-                          <section role="group" aria-label="推論レベル"><strong>推論レベル</strong>{availableEfforts.map((effort: string) => <button key={effort} role="menuitemradio" aria-checked={reasoningEffort === effort} className={reasoningEffort === effort ? "active" : ""} disabled={turnBusy} onClick={() => { agentModelStore.write({ model: selectedModel, effort }); dismissPopover(false); }}><span>{effort}</span>{reasoningEffort === effort && <b aria-hidden="true">✓</b>}</button>)}</section>
+                          <section role="group" aria-label="モデル"><strong>モデル</strong>{codexState.catalog.models.map((model: any) => { const modelId = model.id ?? model.model; return <button key={modelId} role="menuitemradio" aria-checked={selectedModel === modelId} className={selectedModel === modelId ? "active" : ""} disabled={turnBusy} onClick={() => { const nextEffort = model.supportedReasoningEfforts?.map((option: any) => option.reasoningEffort).includes(reasoningEffort) ? reasoningEffort : model.defaultReasoningEffort ?? model.supportedReasoningEfforts?.[0]?.reasoningEffort ?? reasoningEffort; if (codexState.activeThreadId && (modelId.startsWith("claude:") ? "claude" : "codex") !== (claudeThread ? "claude" : "codex") && threadProviderMatches) { autoOpenThreadRef.current = false; dispatchCodex({ type: "activateThread", threadId: null }); setAnnouncement("接続先を変更しました。次の送信で新しい会話を開始します"); } agentModelStore.write({ model: modelId, effort: nextEffort }); dismissPopover(false); }}><span>{model.displayName ?? model.name ?? model.id ?? model.model}</span>{selectedModel === modelId && <b aria-hidden="true">✓</b>}</button>; })}</section>
+                          {availableEfforts.length > 0 && <section role="group" aria-label="推論レベル"><strong>推論レベル</strong>{availableEfforts.map((effort: string) => <button key={effort} role="menuitemradio" aria-checked={reasoningEffort === effort} className={reasoningEffort === effort ? "active" : ""} disabled={turnBusy} onClick={() => { agentModelStore.write({ model: selectedModel, effort }); dismissPopover(false); }}><span>{effort}</span>{reasoningEffort === effort && <b aria-hidden="true">✓</b>}</button>)}</section>}
                         </div>
                       </>
                     )}
@@ -4337,7 +4333,7 @@ export default function Home() {
                     ? `Mark for Agent · 変更したい範囲をドラッグ${recalledAnnotations.length > 0 ? ` · ${activeOverlayLabel}と比較中` : ""}`
                     : recalledAnnotations.length > 0
                       ? `送信済みの指示と比較中 · ${activeOverlayLabel}`
-                      : draggedId ? "ブロックを移動中 · 離して配置" : editingId ? "テキストを編集中 · Escで終了" : selectedId ? "選択中 · ドラッグで並べ替え" : "ブロックをクリックして選択"}
+                      : draggedId ? "ブロックを移動中 · 離して配置" : editingId ? "テキストを編集中 · Escで終了" : selectedId ? "選択中 · ドラッグで移動 · 端のハンドルでサイズ変更" : "ブロックをクリックして選択"}
                 </div>
                 <div
                   className="slide-viewport"
@@ -4353,7 +4349,8 @@ export default function Home() {
                   onDoubleClick={onCanvasDoubleClick}
                   onBlurCapture={onCanvasBlurCapture}
                   onKeyDown={onCanvasKeyDown}
-                  onDragStart={onCanvasDragStart}
+                  onDragStart={(event) => onCanvasDragStart(event, null)}
+                  onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropPreview(null); }}
                   onDragOver={onCanvasDragOver}
                   onDrop={onCanvasDrop}
                   onPaste={onCanvasPaste}
@@ -4384,9 +4381,24 @@ export default function Home() {
                     onGestureEnd={onAnnotationGestureEnd}
                   />
                 </div>
-                {selectedId && sel && !annotationMode && <div className="selection-toolbar" data-placement={selectionToolbarPosition.placement} style={{ left: selectionToolbarPosition.left, top: selectionToolbarPosition.top }} role="toolbar" aria-label="選択した要素の簡易操作">
-                  {!sel.container && sel.kind !== "image" && <button onClick={beginEditSelected}>編集</button>}
-                  {!sel.container && sel.kind !== "image" && <button aria-label="太字を切り替える" onClick={() => { const node = selectedNode(); if (!node) return; checkpoint(); node.classList.toggle("font-bold"); syncFromDom(); markDirty(); }}>太字</button>}
+                {dropPreview && <div className={`block-drop-preview ${dropPreview.kind}`} style={{ left: dropPreview.left, top: dropPreview.top, width: dropPreview.width, height: dropPreview.height }}><span>{dropPreview.label}</span></div>}
+                {selectedId && sel && !annotationMode && !draggedId && !editingId && !pointerPicking && blockBox && !outline.some((item) => item.id === selectedId && item.locked) && <BlockResizeOverlay
+                  key={selectedId + ":" + activeSlide + ":" + injectKey}
+                  rect={blockBox} scale={slideScale}
+                  activeNode={{ width: blockBox.width / slideScale, height: blockBox.height / slideScale, tagName: blockBox.tagName, aspectRatio: null }}
+                  maxSize={{ width: blockBox.maxWidth, height: blockBox.maxHeight }} minSize={24} previewSize={resizePreview}
+                  onStart={() => { const node = selectedNode(); if (!node) return; resizeSessionRef.current = { node, before: snapshot(), classes: [...node.classList], width: blockBox.width / slideScale, height: blockBox.height / slideScale }; }}
+                  onPreview={({ size }) => setResizePreview(size)}
+                  onCommit={commitBlockResize}
+                  onCancel={() => { resizeSessionRef.current = null; setResizePreview(null); setAnnouncement("サイズ変更をキャンセルしました"); }}
+                />}
+                {resizePreview && selectedId && <style>{`.slide-viewport [data-weave-id="${cssEscape(selectedId)}"] { width: ${resizePreview.width}px !important; height: ${resizePreview.height}px !important; max-width: none !important; flex: none !important; }`}</style>}
+                {resizePreview && blockBox && <div className="block-size-readout" style={{ left: blockBox.left, top: blockBox.top - 26 }}>{Math.round(resizePreview.width)} × {Math.round(resizePreview.height)} · Escで取消</div>}
+                {selectedId && sel && !annotationMode && !resizePreview && <div className="selection-toolbar" data-placement={selectionToolbarPosition.placement} style={{ left: selectionToolbarPosition.left, top: selectionToolbarPosition.top }} role="toolbar" aria-label="選択した要素の簡易操作" onDragOver={onCanvasDragOver} onDrop={onCanvasDrop}>
+                  {!outline.some((item) => item.id === selectedId && item.locked) && <button draggable className="block-move-handle" aria-label="選択ブロックをドラッグして移動" title="このブロックをまとめて移動" onDragStart={(event) => onCanvasDragStart(event, selectedNode())} onDragEnd={onCanvasDragEnd}>⠿ 移動</button>}
+                  {selectedNode()?.parentElement?.closest("[data-weave-id]") && <button onClick={() => { const parent = selectedNode()?.parentElement?.closest<HTMLElement>("[data-weave-id]"); if (parent && isEditableSlideNode(parent)) setSelectedId(parent.dataset.weaveId!); }}>親を選択</button>}
+                  {!sel.container && sel.kind !== "image" && sel.kind !== "svg" && <button onClick={beginEditSelected}>編集</button>}
+                  {!sel.container && sel.kind !== "image" && sel.kind !== "svg" && <button aria-label="太字を切り替える" onClick={() => { const node = selectedNode(); if (!node) return; checkpoint(); node.classList.toggle("font-bold"); syncFromDom(); markDirty(); }}>太字</button>}
                   {agentReady && <button onClick={referenceSelectedElement}>Agentへ指示</button>}
                   <button className="mobile-detail-action" data-ui-id="open-detail" onClick={() => { setLeftPanelOpen(false); setInspectorOpen(true); setInspectorView("design"); setMobileView("inspector"); }}>詳細</button>
                   <button onClick={copySelectedStyle}>スタイルをコピー</button>
@@ -4741,7 +4753,7 @@ export default function Home() {
           }}>
             <header><strong id="skill-dialog-title">{skillDialog.mode === "create" ? "新しいスキル" : `${skillDialog.source?.name ?? "スキル"}を編集`}</strong><button type="button" aria-label="スキル編集を閉じる" onClick={() => { if (skillBusyKey === null) setSkillDialog(null); }}>×</button></header>
             <div className="skill-dialog-body">
-              <label className="skill-dialog-field"><span>適用範囲</span><select value={skillDraft.scope} disabled={skillDialog.mode === "edit" || skillBusyKey !== null || codexState.editing} onChange={(event) => setSkillDraft((current) => ({ ...current, scope: event.target.value as UserSkillScope }))}><option value="project">この資料</option><option value="common">個人共通 · すべての資料</option></select></label>
+              <p className="skill-scope-description">適用範囲：html-editor共通 · すべての資料</p>
               <label className="skill-dialog-field"><span>名前</span><input autoFocus className="skill-name-input" value={skillDraft.name} required pattern="[a-z0-9]+(-[a-z0-9]+)*" maxLength={63} disabled={skillBusyKey !== null || codexState.editing} onChange={(event) => setSkillDraft((current) => ({ ...current, name: event.target.value }))} /><small className="skill-dialog-help">英小文字のkebab-case、63文字以内。</small></label>
               <label className="skill-dialog-field"><span>説明</span><input value={skillDraft.description} required maxLength={20000} disabled={skillBusyKey !== null || codexState.editing} onChange={(event) => setSkillDraft((current) => ({ ...current, description: event.target.value }))} /></label>
               <label className="skill-dialog-field"><span>指示内容</span><textarea value={skillDraft.body} required maxLength={900000} disabled={skillBusyKey !== null || codexState.editing} onChange={(event) => setSkillDraft((current) => ({ ...current, body: event.target.value }))} /></label>

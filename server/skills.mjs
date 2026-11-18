@@ -1,12 +1,13 @@
+import { fileURLToPath } from "node:url";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { chmod, copyFile, lstat, mkdir, mkdtemp, open, readdir, readFile, rename, rm } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { JSON_SCHEMA, load as loadYaml } from "js-yaml";
 
 export const skillNamePattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-export const skillScopes = ["project", "common"];
+export const skillScopes = ["editor"];
 
 const maxSkillBytes = 1_000_000;
 const maxSkillDescription = 20_000;
@@ -24,7 +25,7 @@ function requireProjectRoot(root) {
 }
 
 export function validateSkillScope(scope) {
-  if (!skillScopes.includes(scope)) throw skillError("Skill scope must be project or common.", "WEAVE_SKILL_INVALID");
+  if (!skillScopes.includes(scope)) throw skillError("Skill scope must be editor.", "WEAVE_SKILL_INVALID");
   return scope;
 }
 
@@ -47,12 +48,16 @@ function requireSkillBody(value) {
   return value.trim();
 }
 
+export function editorSkillsRoot() {
+  return process.env.WEAVE_SKILLS_ROOT === undefined
+    ? fileURLToPath(new URL("../.weave/skills", import.meta.url))
+    : resolve(process.env.WEAVE_SKILLS_ROOT);
+}
+
 function skillRoot(root, scope) {
-  const projectRoot = requireProjectRoot(root);
+  requireProjectRoot(root);
   validateSkillScope(scope);
-  const configuredCodexHome = process.env.CODEX_HOME;
-  const codexHome = typeof configuredCodexHome === "string" && configuredCodexHome.trim() ? resolve(configuredCodexHome) : join(homedir(), ".codex");
-  return scope === "project" ? join(projectRoot, ".codex", "skills") : join(codexHome, "skills");
+  return editorSkillsRoot();
 }
 
 export function skillFilePath(root, scope, name) {
@@ -61,10 +66,8 @@ export function skillFilePath(root, scope, name) {
 }
 
 function skillRelativePath(scope, name) {
-  if (scope === "project") return `.codex/skills/${name}/${skillFileName}`;
-  return typeof process.env.CODEX_HOME === "string" && process.env.CODEX_HOME.trim()
-    ? `$CODEX_HOME/skills/${name}/${skillFileName}`
-    : `~/.codex/skills/${name}/${skillFileName}`;
+  validateSkillScope(scope);
+  return join(editorSkillsRoot(), name, skillFileName);
 }
 
 function isMissing(error) {
@@ -282,7 +285,7 @@ async function readSkillDocument(root, scope, name) {
   await assertRegularSkillFile(path);
   const content = await readFile(path, "utf8");
   const parsed = parseSkillDocument(content, name);
-  return { ...parsed, content, path, scope, relativePath: skillRelativePath(scope, name) };
+  return { ...parsed, enabled: !(await entryInfo(join(dirname(path), ".disabled"))), content, path, scope, relativePath: skillRelativePath(scope, name) };
 }
 
 function publicSkill(document) {
@@ -296,6 +299,7 @@ function publicSkill(document) {
     location: document.scope,
     path: document.relativePath,
     filePath: document.path,
+    enabled: document.enabled,
     valid: true,
     error: null,
   };
@@ -322,14 +326,15 @@ async function invalidPublicSkill(root, scope, name, error) {
     location: scope,
     path: skillRelativePath(scope, name),
     filePath: path,
+    enabled: false,
     valid: false,
     error: detail,
   };
 }
 
 async function withSkillLocks(root, names, operation) {
-  const projectRoot = requireProjectRoot(root);
-  const keys = [...new Set(names.map((name) => `${projectRoot}\u0000${name}`))].sort();
+  requireProjectRoot(root);
+  const keys = [...new Set(names.map((name) => `${editorSkillsRoot()}\u0000${name}`))].sort();
   const releases = [];
   try {
     for (const key of keys) {
@@ -367,8 +372,6 @@ async function assertNoSkillEntry(root, scope, name) {
 
 async function assertNoNameConflict(root, scope, name) {
   await assertNoSkillEntry(root, scope, name);
-  const otherScope = scope === "project" ? "common" : "project";
-  await assertNoSkillEntry(root, otherScope, name);
 }
 
 async function writeNewSkillFile(path, content) {
@@ -473,7 +476,7 @@ async function removeSkillTree(path) {
 
 export async function createProjectSkillSnapshot(root) {
   const projectRoot = requireProjectRoot(root);
-  const sourcePath = skillRoot(projectRoot, "project");
+  const sourcePath = join(projectRoot, ".codex", "skills");
   const snapshotRoot = await mkdtemp(join(tmpdir(), "weave-project-skills-"));
   const sourceInfo = await entryInfo(sourcePath);
   if (!sourceInfo) return { snapshotRoot, hadSkills: false };
@@ -490,7 +493,7 @@ export async function createProjectSkillSnapshot(root) {
 export async function restoreProjectSkillSnapshot(root, snapshot) {
   const projectRoot = requireProjectRoot(root);
   if (!snapshot || typeof snapshot.snapshotRoot !== "string" || typeof snapshot.hadSkills !== "boolean") throw skillError("Project skill snapshot is invalid.", "WEAVE_SKILL_INVALID");
-  const targetPath = skillRoot(projectRoot, "project");
+  const targetPath = join(projectRoot, ".codex", "skills");
   const codexDirectory = dirname(targetPath);
   await assertSafeDirectoryChain(dirname(codexDirectory));
   const codexInfo = await entryInfo(codexDirectory);
@@ -562,6 +565,7 @@ export async function updateSkill(root, input) {
     await assertSafeSkillDirectory(dirname(currentPath));
     const currentInfo = await entryInfo(currentPath);
     if (currentInfo && (!currentInfo.isFile() || currentInfo.isSymbolicLink())) throw skillError("Skill file path is not a regular file.", "WEAVE_SKILL_INVALID");
+    if (Object.hasOwn(input, "expectedContent") && await readFile(currentPath, "utf8") !== input.expectedContent) throw skillError("The skill changed after this proposal. Review a new proposal before saving.", "WEAVE_SKILL_CONFLICT");
     const content = serializeSkillDocument({ name: nextName, description, body, unknownFrontmatter: input.frontmatter });
     if (nextName !== currentName) {
       await assertNoNameConflict(projectRoot, scope, nextName);
@@ -592,28 +596,6 @@ export async function deleteSkill(root, scope, name) {
   });
 }
 
-async function moveSkill(root, sourceScope, targetScope, name) {
-  const projectRoot = requireProjectRoot(root);
-  const validatedSource = validateSkillScope(sourceScope);
-  const validatedTarget = validateSkillScope(targetScope);
-  const validatedName = validateSkillName(name);
-  return withSkillLock(projectRoot, validatedName, async () => {
-    const current = await readSkillDocument(projectRoot, validatedSource, validatedName);
-    await assertNoSkillEntry(projectRoot, validatedTarget, validatedName);
-    const targetPath = skillFilePath(projectRoot, validatedTarget, validatedName);
-    await moveSkillTree(dirname(current.path), dirname(targetPath));
-    return publicSkill(await readSkillDocument(projectRoot, validatedTarget, validatedName));
-  });
-}
-
-export async function promoteSkill(root, name) {
-  return moveSkill(root, "project", "common", name);
-}
-
-export async function demoteSkill(root, name) {
-  return moveSkill(root, "common", "project", name);
-}
-
 export async function uploadSkill(root, input) {
   const projectRoot = requireProjectRoot(root);
   if (!input || typeof input !== "object") throw skillError("Skill upload payload is required.", "WEAVE_SKILL_INVALID");
@@ -627,4 +609,24 @@ export async function uploadSkill(root, input) {
     await writeNewSkillFile(skillFilePath(projectRoot, scope, parsed.name), content);
     return publicSkill(await readSkillDocument(projectRoot, scope, parsed.name));
   });
+}
+
+export async function setEditorSkillEnabled(root, name, enabled) {
+  if (typeof enabled !== "boolean") throw skillError("enabled must be boolean.", "WEAVE_SKILL_INVALID");
+  const validatedName = validateSkillName(name);
+  return withSkillLock(root, validatedName, async () => {
+    const skill = await readSkillDocument(root, "editor", validatedName);
+    const marker = join(dirname(skill.path), ".disabled");
+    if (enabled) await rm(marker, { force: true });
+    else await writeFileMarker(marker);
+    return publicSkill(await readSkillDocument(root, "editor", validatedName));
+  });
+}
+
+async function writeFileMarker(path) {
+  const handle = await open(path, "wx").catch((error) => {
+    if (error.code === "EEXIST") return null;
+    throw error;
+  });
+  if (handle) await handle.close();
 }
