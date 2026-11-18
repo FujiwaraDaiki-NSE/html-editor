@@ -49,3 +49,39 @@ test("browser UI bridge exposes the semantic, observable operation contract", as
   assert.match(css, /\.ui-operation-pointer/);
   assert.match(css, /\.editor-dialog:not\(\[open\]\) \{ display: none; \}/);
 });
+
+test("agent controls are opened individually while self-control, approvals, credentials and file choosers stay excluded", async () => {
+  const [bridge, page, tasks, proposals] = await Promise.all([
+    "../app/ui-bridge.ts", "../app/page.tsx", "../app/components/AgentTasks.tsx", "../app/components/SlideProposals.tsx",
+  ].map(path => readFile(new URL(path, import.meta.url), "utf8")));
+  const excluded = bridge.slice(bridge.indexOf("const EXCLUDED_SELECTOR"), bridge.indexOf("const SECRET_NAME"));
+  for (const selector of [".composer-dock", ".thread-popover", ".thread-actions-menu"]) assert.ok(!excluded.includes(selector));
+  for (const selector of [".blocking-region", ".server-request", "password", "file"]) assert.ok(excluded.includes(selector));
+  assert.match(bridge, /textarea, summary,/);
+  assert.match(bridge, /await selectControl\(element, request.value\)/);
+  for (const text of ["promptRef", "stop-button", "send-button", "キーを使用", "PCのフォルダーをアップロード", "＋ ファイルを追加", "SKILL.mdをアップロード", "画像を置き換え", "編集用データを読み込む"]) {
+    const tag = page.match(new RegExp(`<[^>]*${text}[^>]*>`))?.[0];
+    if (tag) assert.match(tag, /data-ui-agent-exclude="true"/, text);
+    else {
+      const index = page.indexOf(`>${text}<`);
+      assert.ok(index > 0, text);
+      assert.match(page.slice(page.lastIndexOf("<button", index), index), /data-ui-agent-exclude="true"/, text);
+    }
+  }
+  assert.match(page, /className="blocking-region" data-ui-agent-exclude="true"/);
+  for (const text of ["ログアウト", "ChatGPTでサインイン", "OAuth"]) {
+    const index = page.indexOf(`>${text}<`);
+    assert.match(page.slice(page.lastIndexOf("<button", index), index), /data-ui-agent-exclude="true"/);
+  }
+  assert.match(page, /data-ui-agent-exclude=\{kind === "image" \? "true" : undefined\}/);
+  assert.doesNotMatch(page, /className="(?:chat-box|thread-switcher|new-thread-button|thread-menu-trigger|thread-actions-menu)" data-ui-agent-exclude/);
+  assert.doesNotMatch(tasks + proposals, /data-ui-agent-exclude/);
+  assert.match(page, /await changeExecutionMode\(value, false\)/);
+  assert.match(page, /if \(event.nativeEvent.isTrusted\) void changeExecutionMode\(event.target.value, true\)/);
+  for (const mode of ["apply", "compare"]) assert.ok(page.includes(`if (event.nativeEvent.isTrusted) void changeExecutionMode("${mode}", true)`));
+  const card = page.slice(page.indexOf('{executionModePending &&'), page.indexOf('{pendingServerRequests.length > 0 &&'));
+  assert.match(card, /className="blocking-region" data-ui-agent-exclude="true"/);
+  assert.match(card, /実行方法を選んでください/);
+  assert.match(card, /編集をまかせる（1案を作成して反映）/);
+  assert.match(card, /3案から選ぶ（3案を作成して比較）/);
+});

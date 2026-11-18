@@ -129,3 +129,13 @@ test("linked folder attachments carry explicit unknown counts and discard client
   assert.match(contextPromptRules, /absolute source path supplied by the server/);
   assert.match(contextPromptRules, /never modify or delete/);
 });
+
+test("execution selection is carried explicitly in the context envelope", () => {
+  for (const executionModeSelected of [false, true]) {
+    assert.equal(editorEnvelope({ executionMode: "apply", executionModeSelected }).executionModeSelected, executionModeSelected);
+  }
+  assert.equal("executionModeSelected" in editorEnvelope({ executionMode: "apply" }), false);
+  assert.equal("executionModeSelected" in editorEnvelope({ executionModeSelected: "true" }), false);
+  assert.equal(editorEnvelope({ executionModePending: false }).executionModePending, false);
+  assert.equal(editorEnvelope({ executionModePending: true }).executionModePending, true);
+});

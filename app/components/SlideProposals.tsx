@@ -378,7 +378,6 @@ export function SlideProposals({
             <button
               type="button"
               className="archive-direction"
-              data-ui-agent-exclude="true"
               disabled={busy || !g.candidates.every((c) => c.available.dismiss)}
               onClick={() => void perform(() => onDismiss(g))}
             >
@@ -442,7 +441,6 @@ export function SlideProposals({
               </button>
               <button
                 className="use-direction"
-                data-ui-agent-exclude="true"
                 disabled={
                   busy ||
                   !syncReady ||
@@ -458,7 +456,6 @@ export function SlideProposals({
               </button>
               <button
                 className="archive-direction"
-                data-ui-agent-exclude="true"
                 disabled={busy || !selected.available.dismiss}
                 onClick={() => void perform(() => onDismiss(group))}
               >

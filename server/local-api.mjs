@@ -91,7 +91,7 @@ import { parseConfiguredPort } from "../scripts/dev-port.mjs";
 import { isAllowedWebOrigin } from "./dev-origin.mjs";
 import { routeMethodDecision } from "./route-methods.mjs";
 import { ProjectPreviewMonitor } from "./project-preview.mjs";
-import { chatInstructions, delegatedEditorContext } from "./chat-workflow.mjs";
+import { chatInstructions, chatTurnPrompt, delegatedEditorContext } from "./chat-workflow.mjs";
 
 const apiPort = Number(process.env.WEAVE_API_PORT ?? 4317);
 await initializeApplicationSkills();
@@ -114,8 +114,9 @@ const orchestrator = new Orchestration({
   startChat: async (payload, automatic) => {
     const root = payload.root;
     chatTurns.set(payload.threadId, { root, contextEnvelope: payload.contextEnvelope, model: payload.model, effort: payload.effort, approvalPolicy: payload.approvalPolicy });
-    const instructions = `${chatInstructions}\n\n${orchestrationInstructions}${await serializeEditorContext(payload, root)}\n${payload.automaticInstructions === undefined ? "" : payload.automaticInstructions}`;
-    return await codex.startTurn({ ...payload, purpose: "chat", humanPrompt: automatic ? null : payload.prompt, userPrompt: payload.prompt, cwd: root, instructions });
+    const editorContext = await serializeEditorContext(payload, root);
+    const instructions = `${chatInstructions}\n\n${orchestrationInstructions}${editorContext}\n${payload.automaticInstructions === undefined ? "" : payload.automaticInstructions}`;
+    return await codex.startTurn({ ...payload, prompt: chatTurnPrompt(payload, automatic, editorContext), purpose: "chat", humanPrompt: automatic ? null : payload.prompt, userPrompt: payload.prompt, cwd: root, instructions });
   },
   steerChat: async payload => await codex.steerTurn({ ...payload, humanPrompt: payload.prompt, prompt: `${payload.prompt}${await serializeEditorContext(payload, payload.root)}` }),
   interruptChat: id => codex.interruptTurn(id), interruptWorker: id => codex.codex.interruptTurn(id),
@@ -754,7 +755,8 @@ codex.on("notification", (message) => {
   })();
 });
 
-async function delegateEdit(threadId, args) {
+async function delegateEdit(threadId, args, turnId) {
+  await orchestrator.assertExecutionModeSelected(threadId, turnId);
   validateEditSlidesArguments(args);
   if (args.execution !== "apply") throw new Error("Use execution apply. Delivery is controlled by the chosen mode; consultations are conversation responses.");
   const chat = orchestrator.context(threadId);
@@ -784,12 +786,12 @@ async function delegateEdit(threadId, args) {
       const receipt = await orchestrator.create(threadId, { ...args, prompt: `${args.prompt}\n\n比較案${candidate.id.toUpperCase()}: ${candidate.title}\n${candidate.instruction}\n全対象スライドでこの方向を一貫させてください。他の案や元の資料は編集しないでください。`, variation: false, deferStart: true, proposal: { groupId: group.id, candidateId: candidate.id } });
       await proposals.attach(root, group.id, candidate.id, receipt.taskId); receipts.push(receipt);
     }
-    await orchestrator.activate(receipts.map(receipt => receipt.taskId)); return { groupId: group.id, tasks: receipts, message: "Three candidates accepted. They do not change the live deck; human adoption is required." };
+    await orchestrator.activate(receipts.map(receipt => receipt.taskId)); return { groupId: group.id, tasks: receipts, message: "Three candidates accepted. They do not change the live deck; adoption is required." };
   }
   if (args.directions !== undefined || args.variation === true) throw new Error("3案の生成には3案から選ぶモードを指定してください。");
   return await orchestrator.create(threadId, args);
 }
-codex.onEditSlides = async (params, args) => ({ success: true, result: await delegateEdit(params.threadId, args) });
+codex.onEditSlides = async (params, args) => ({ success: true, result: await delegateEdit(params.threadId, args, params.turnId) });
 codex.onOrchestrationTool = async params => {
   if (["get_slide_learning_context", "learn_slide_preference"].includes(params.tool)) {
     const sessionId = codex.uiTools.activeThreadSession(params.threadId).sessionId;
@@ -933,10 +935,10 @@ const server = createServer(async (request, response) => {
       const adoptedCandidate = proposals.candidate(adoptedGroup, payload.candidateId);
       const adoptedTask = orchestrator.tasks.find(task => task.id === adoptedCandidate.taskId);
       if (adoptedTask) {
-        adoptedTask.applied = true; adoptedTask.activity = "ユーザーが選択したスライドへ採用済み";
+        adoptedTask.applied = true; adoptedTask.activity = "選択したスライドへ採用済み";
         adoptedTask.outcome = { success: true, result: { projectRoot: root, changeCount: createEditorChangeSet(result.baseline, result.deck, "Adopt proposal").changes.length, conflictCount: 0 } };
         await orchestrator.save();
-        void orchestrator.wake(adoptedGroup.threadId, `The human adopted candidate ${payload.candidateId} from proposal ${payload.groupId} on slides ${JSON.stringify(payload.slideIds)}. Report the actual adoption and use learning tools only for verified adopted changes.`).catch(error => console.error("Could not notify adoption:", error.message));
+        void orchestrator.wake(adoptedGroup.threadId, `Candidate ${payload.candidateId} from proposal ${payload.groupId} was adopted on slides ${JSON.stringify(payload.slideIds)}. Report the actual adoption and use learning tools only for verified adopted changes.`, "【作業通知】比較案を採用しました。").catch(error => console.error("Could not notify adoption:", error.message));
       }
       codex.events.publish("weave/project", { status: "updated", projectRoot: root, baseline: result.baseline, changes: createEditorChangeSet(result.baseline, result.deck, "Adopt proposal"), conflicts: [], deck: result.deck });
       return sendJson(request, response, 200, await statePayload());
@@ -1190,7 +1192,7 @@ const server = createServer(async (request, response) => {
       if (payload.method !== "tools/call") throw new Error("Unknown tool operation.");
       const name = payload.params?.name; const args = payload.params?.arguments;
       let result;
-      if (name === "edit_slides") result = await delegateEdit(owner.threadId, args);
+      if (name === "edit_slides") result = await delegateEdit(owner.threadId, args, owner.turnId);
       else if (["tasks", "read_task_changes", "control_task", "review_edit", "get_slide_learning_context", "learn_slide_preference"].includes(name)) result = await codex.codex.onOrchestrationTool({ ...owner, tool: name, arguments: args });
       else if (["inspect", "click", "fill", "select", "key"].includes(name)) {
         result = await new Promise((resolve, reject) => {
@@ -1218,6 +1220,15 @@ const server = createServer(async (request, response) => {
     if (url.pathname === "/api/codex/thread/action") {
       if (["delete", "archive"].includes(payload.action) && orchestrator.tasks.some(task => task.threadId === payload.params?.threadId && !["completed", "failed", "cancelled"].includes(task.status))) throw new Error("担当の作業が残っています。先に会話の停止で作業を終了してください。");
       return sendJson(request, response, 200, await codex.threadAction(payload.action, payload.params ?? {}));
+    }
+    if (request.method === "POST" && ["/api/codex/execution-mode", "/api/codex/execution-mode/confirm"].includes(url.pathname)) {
+      const session = codex.uiTools.authenticate(payload.uiSession);
+      if (session.activeThreadId !== payload.threadId) throw new Error("The browser session is not attached to this conversation.");
+      await codex.readThread(payload.threadId);
+      const result = url.pathname === "/api/codex/execution-mode/confirm"
+        ? await orchestrator.confirmExecutionMode(payload.threadId, payload.executionMode, session)
+        : await orchestrator.selectExecutionMode(payload.threadId, payload.executionMode, session);
+      return sendJson(request, response, 200, result);
     }
     if (url.pathname === "/api/codex/turn/start" || url.pathname === "/api/codex/turn/steer") {
       const prompt = requireTurnPrompt(payload); const root = projectRoot();
