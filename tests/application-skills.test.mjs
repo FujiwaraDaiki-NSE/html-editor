@@ -21,7 +21,7 @@ const paths = [...applicationSkillInstructions.matchAll(/^- (.+\/SKILL\.md)$/gm)
 
 test("root chat and editor use the same readable application skills, outside user storage", async () => {
   const { agentInstructions } = await import("../server/project.mjs");
-  assert.equal(paths.length, 2);
+  assert.equal(paths.length, 3);
   assert.ok(chatInstructions.includes(applicationSkillInstructions));
   assert.ok(agentInstructions.includes(applicationSkillInstructions));
   for (const path of paths) {

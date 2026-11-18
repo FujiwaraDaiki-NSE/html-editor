@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="ja"><meta charset="utf-8"><title>Weave共通スライドスキル</title>
 <body><main><h1>Weave共通スライドスキル</h1>
+<p>以下は初期導入時の記録です。現在の責務と保存先、既存環境の移行については<a href="slide-skill-consolidation-summary.html">スライドスキルの責務整理</a>を参照してください。</p>
 <p>個人用のCodexスキルではなく、アプリ専用の agent-skills/ に制作方針を保存する。全プロジェクトのルートチャットと編集エージェントが同じ実ファイルを読む。</p>
 <h2>指示とスキルの役割</h2><p>server/agent-skills.mjs が実行中のアプリルートから絶対パスを組み立てる。chatInstructions と agentInstructions の両方へ読み込み指示を渡す。既存の thread/resume と turn/start による指示更新、新規・再オープン時の AGENTS.md 更新を利用する。</p>
 <p>AGENTS.md相当の指示は操作、編集範囲、保存と検証を担当する。technical-report-slides は視覚的な構成と品質基準、author-slide-preferences は合意済みのアプリ共通表現方針を担当する。</p>

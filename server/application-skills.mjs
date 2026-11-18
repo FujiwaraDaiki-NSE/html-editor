@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { copyFile, lstat, mkdir, open, readFile, readdir, rename, rm } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -11,7 +11,7 @@ import { parseSkillDocument, serializeSkillDocument, validateSkillName } from ".
 
 const execute = promisify(execFile);
 const templateRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "agent-skills");
-export const applicationSkillNames = Object.freeze(["technical-report-slides", "author-slide-preferences"]);
+export const applicationSkillNames = Object.freeze(["slide-authoring", "technical-report-slides", "author-slide-preferences"]);
 const capabilities = Object.freeze({ edit: true, history: true, restore: true, delete: false, move: false });
 const locks = new Map();
 const maxDocumentBytes = 1_000_000;
@@ -294,6 +294,14 @@ async function initialize(root) {
     }
     revision = await commitPaths(root, applicationSkillNames, "Initialize shared application skills so edits survive app updates", applicationSkillNames, null);
   }
+  // Add new standard resources without replacing any existing skill or reference.
+  if (!await info(join(root, "slide-authoring", "SKILL.md"))) {
+    const changes = [];
+    for (const path of ["slide-authoring/SKILL.md", "slide-authoring/references/sources.md"]) {
+      if (!await info(join(root, path))) changes.push({ path, content: await readFile(join(templateRoot, path), "utf8") });
+    }
+    revision = await changeFiles(root, changes, "Add the shared slide baseline without overwriting author preferences or learning history", ["slide-authoring"], revision);
+  }
   return { root, revision };
 }
 
@@ -542,5 +550,50 @@ export async function restoreApplicationSkill({ name, commit, expectedRevision, 
       await rm(staging, { recursive: true, force: true });
       if (committed || !movedOriginal) await rm(backup, { recursive: true, force: true });
     }
+  });
+}
+
+/** Explicit maintenance operation; never run during ordinary edits or learning. */
+export async function consolidateApplicationSlideSkills(expectedRevision) {
+  requireRevision(expectedRevision);
+  const legacy = JSON.parse(await readFile(new URL("./slide-skill-legacy.json", import.meta.url), "utf8"));
+  return inStorage(async (root, revision) => {
+    verifyRevision(expectedRevision, revision);
+    const changes = [];
+    for (const name of ["technical-report-slides", "author-slide-preferences"]) {
+      const current = await readCurrent(root, name, revision);
+      if (!current.valid) throw skillError(current.error);
+      const target = parseSkillDocument(await readFile(join(templateRoot, name, "SKILL.md"), "utf8"), name);
+      const marker = "<!-- weave:learned-slide-preferences:start -->";
+      const endMarker = "<!-- weave:learned-slide-preferences:end -->";
+      const index = current.body.indexOf(marker);
+      let base = current.body;
+      let learned = "";
+      if (index !== -1) {
+        if (name !== "author-slide-preferences" || current.body.indexOf(marker, index + marker.length) !== -1 || !current.body.endsWith(endMarker) || current.body.indexOf(endMarker) !== current.body.length - endMarker.length) {
+          throw skillError("Resolve the edited learned preference section before consolidation.", "WEAVE_SKILL_CONFLICT");
+        }
+        base = current.body.slice(0, index).trimEnd();
+        learned = "\n\n" + current.body.slice(index);
+      }
+      if (base === target.body) continue;
+      const hash = createHash("sha256").update(base).digest("hex");
+      if (hash !== legacy[name].bodyHash) throw skillError(name + " has custom instructions; review and consolidate them manually.", "WEAVE_SKILL_CONFLICT");
+      changes.push({ path: name + "/SKILL.md", content: serializeSkillDocument({ name, description: current.description === legacy[name].description ? target.description : current.description, body: target.body + learned, unknownFrontmatter: current.frontmatter }) });
+      if (name === "author-slide-preferences") {
+        const path = name + "/references/evidence.md";
+        await safeDirectories(dirname(join(root, path)));
+        const file = await info(join(root, path));
+        if (!file?.isFile() || file.isSymbolicLink() || file.size > maxDocumentBytes) throw skillError("Existing preference evidence must be readable before consolidation.");
+        const original = await readFile(join(root, path), "utf8");
+        const bundled = await readFile(join(templateRoot, path), "utf8");
+        const heading = "## 2026-11-18：責務の整理";
+        if (!original.includes(heading)) changes.push({ path, content: original + "\n\n" + bundled.slice(bundled.indexOf(heading)) });
+      }
+    }
+    if (changes.some(({ content }) => Buffer.byteLength(content) > maxDocumentBytes)) throw skillError("Consolidated skill data exceeds the supported file size.");
+    if (!changes.length) return { revision, changed: false };
+    const nextRevision = await changeFiles(root, changes, "Consolidate shared slide rules while preserving approved preferences, evidence, candidates and learning settings", ["technical-report-slides", "author-slide-preferences"], revision);
+    return { revision: nextRevision, changed: true };
   });
 }

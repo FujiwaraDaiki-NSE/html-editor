@@ -3904,7 +3904,7 @@ export default function Home() {
         <div className="skills-tabs" role="tablist" aria-label="スキルの適用範囲">
           {(["application", "editor"] as SkillScope[]).map((scope) => <button key={scope} type="button" role="tab" aria-selected={skillScope === scope} className={skillScope === scope ? "active" : ""} onClick={() => setSkillScope(scope)}><span>{scope === "application" ? "標準スキル" : "追加スキル"}</span><small>{skills.filter((skill) => skill.scope === scope).length}</small></button>)}
         </div>
-        {skillScope === "application" && <p className="skill-scope-description">すべての資料で使う2つのスキルです。編集した内容は履歴から確認・復元できます。</p>}
+        {skillScope === "application" && <p className="skill-scope-description">資料づくりの共通基準と、用途に応じて適用する方針です。編集した内容は履歴から確認・復元できます。</p>}
         {skillScope === "application" && <ApplicationSkillLearning skills={skills} />}
         {skillScope !== "application" && <div className="skills-actions">
           <button className="sidebar-primary-action" type="button" onClick={openNewSkillDialog} disabled={skillBusyKey !== null || codexState.editing}>新しいスキル</button>
