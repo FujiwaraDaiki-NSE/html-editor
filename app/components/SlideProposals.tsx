@@ -492,10 +492,10 @@ export function SlideProposals({
                   !syncReady ||
                   !selected.available.adopt ||
                   !reviewedPreviewVisible ||
-                  !!group.selections[slideId]
+                  !!group.selections[previewSlideId]
                 }
                 onClick={() =>
-                  void perform(() => onAdopt(group, selected, [slideId]))
+                  void perform(() => onAdopt(group, selected, [previewSlideId]))
                 }
               >
                 このスライドに採用
@@ -520,7 +520,7 @@ export function SlideProposals({
                   {selected.stale
                     ? "提案作成後に資料が更新されています。採用時に最新の編集と照合します。"
                     : "編集中の資料は変更されていません。"}
-                  {group.selections[slideId]
+                  {group.selections[previewSlideId]
                     ? " このスライドは採用済みです。"
                     : ""}
                 </small>

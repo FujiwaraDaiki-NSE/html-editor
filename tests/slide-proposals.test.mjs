@@ -524,6 +524,7 @@ test("proposal adoption is offered per slide without the bulk adoption button", 
     "utf8",
   );
   assert.doesNotMatch(source, /未採用の対象すべてに採用/);
+  assert.match(source, /onAdopt\(group, selected, \[previewSlideId\]\)/);
 });
 
 test("proposal descriptions are shown in an accessible overlay outside the action bar flow", async () => {
