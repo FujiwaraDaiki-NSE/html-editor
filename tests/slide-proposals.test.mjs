@@ -574,3 +574,20 @@ test("selecting one proposal keeps the compact strip and canvas mounted", async 
   assert.match(css, /@container proposal-panel \(max-width: 420px\) \{ \.proposal-choice-status-text \{ display: none;/);
 
 });
+
+test("resumed tasks use the same proposal workspace and publish readiness, while replaced candidates cannot run", async t => {
+  const { store, root, group } = await setup(t);
+  const task = { id: 'resumed-task', root, proposal: { groupId: group.id, candidateId: 'a' }, status: 'failed', error: 'Editor restarted', applied: false };
+  await store.attach(root, group.id, 'a', task.id);
+  const work = await store.executionWorkspace(task);
+  assert.equal(work, store.workspace(group, group.candidates[0]));
+  assert.deepEqual(await project.readProject(work), group.baseDeck);
+  task.status = 'running'; task.error = null;
+  assert.equal((await store.snapshot(root, [task]))[0].candidates[0].status, 'running');
+  task.status = 'completed';
+  await store.finish(root, group.id, 'a', task);
+  assert.equal((await store.snapshot(root, [task]))[0].candidates[0].status, 'ready');
+  await createComparison(t, store, root, group.scope, [task], noTasksRunning);
+  await assert.rejects(store.executionWorkspace(task), /提案が見つかりません/);
+  await assert.rejects(access(work));
+});

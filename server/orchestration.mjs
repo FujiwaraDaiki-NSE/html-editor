@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
+const RESTART_ERROR = 'Editor restarted before completion. Review the recovered editor draft; this task was not restarted.';
 const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
 const text = (value, name) => { if (typeof value !== 'string' || !value.trim()) throw new Error(`${name} is required.`); return value; };
 
@@ -17,7 +18,7 @@ export class Orchestration {
       const data = JSON.parse(await readFile(this.path, 'utf8'));
       this.messages = data.messages; this.tasks = data.tasks; this.conversations = new Map(data.conversations);
       for (const item of this.messages) if (item.status === 'queued') { item.status = 'failed'; item.error = 'Editor restarted before delivery. This message was not resent.'; }
-      for (const task of this.tasks) if (!TERMINAL.has(task.status)) { task.status = 'failed'; task.error = 'Editor restarted before completion. Review the recovered editor draft; this task was not restarted.'; }
+      for (const task of this.tasks) if (!TERMINAL.has(task.status)) { task.status = 'failed'; task.error = RESTART_ERROR; }
       await this.save();
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
@@ -139,9 +140,16 @@ export class Orchestration {
   task(threadId, id) { const task = this.tasks.find(t => t.id === id && t.threadId === threadId); if (!task) throw new Error('Task does not belong to this conversation.'); return task; }
   async control(threadId, { taskId, action, instruction, version }) {
     const task = this.task(threadId, taskId);
-    if (task.version !== version || TERMINAL.has(task.status) || task.applied === true) throw new Error('Task version or state changed. Read its current state.');
+    const resume = action === 'revise' && task.status === 'failed' && task.error === RESTART_ERROR;
+    if (task.version !== version || (TERMINAL.has(task.status) && !resume) || task.applied === true) throw new Error('Task version or state changed. Read its current state.');
     text(instruction, 'Instruction');
     if (!['continue', 'revise', 'cancel'].includes(action)) throw new Error('Unknown task action.');
+    if (resume) {
+      this.assertWorker(threadId);
+      task.error = null; task.report = null; task.outcome = null; task.restart = false; task.approvedVersion = null;
+      task.prompt = instruction; task.review = instruction; task.instructionStatus = 'current'; task.status = 'queued';
+      await this.save(); void this.run(); return task;
+    }
     task.instructionStatus = 'current'; task.review = instruction;
     if (action === 'continue') { if (task.status === 'awaiting_approval') task.prompt = instruction; await this.save(); void this.run(); return task; }
     if (action === 'revise') task.prompt = instruction;

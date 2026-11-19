@@ -93,6 +93,13 @@ export class SlideProposals {
   workspace(group, candidate) {
     return join(this.workspaceRoot, ".proposals", group.id, candidate.id);
   }
+  async executionWorkspace(task) {
+    const group = this.group(await this.read(task.root), task.proposal.groupId);
+    const candidate = this.candidate(group, task.proposal.candidateId);
+    if (group.state !== "open" || group.prepared === false || group.preparationError || candidate.taskId !== task.id || candidate.ready)
+      throw new Error("The proposal candidate is no longer available for this task.");
+    return this.workspace(group, candidate);
+  }
   async copyWorkspace(source, destination) {
     await mkdir(destination, { recursive: true });
     for (const entry of await readdir(source, { withFileTypes: true })) {

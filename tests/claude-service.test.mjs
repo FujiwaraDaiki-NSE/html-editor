@@ -207,3 +207,23 @@ test("orchestrator Claude receives read-only tools and a turn-scoped MCP capabil
   assert.equal(closed, 1);
   assert.equal(JSON.stringify(await service.readThread(thread.id)).includes('test-turn-capability'), false);
 });
+
+test("thinking and text in separate assistant envelopes complete the same streamed item", async t => {
+  const { service } = await setup(t);
+  const thread = await service.startThread({ model: "claude:sonnet" });
+  const events = [];
+  service.on("notification", event => events.push(structuredClone(event)));
+  const done = completed(service);
+  await service.startTurn(payload(thread.id, "SPLIT_BLOCKS"));
+  const turn = await done;
+  const messages = turn.items.filter(item => item.type === "agentMessage");
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].text, "DONE");
+  assert.equal(messages[0].status, "completed");
+  const started = events.find(event => event.method === "item/started" && event.params.item.type === "agentMessage");
+  const delta = events.find(event => event.method === "item/agentMessage/delta");
+  const finished = events.find(event => event.method === "item/completed" && event.params.item.type === "agentMessage");
+  assert.equal(started.params.item.id, delta.params.itemId);
+  assert.equal(started.params.item.id, finished.params.item.id);
+  assert.equal((await service.readThread(thread.id)).turns[0].items.filter(item => item.type === "agentMessage").length, 1);
+});
