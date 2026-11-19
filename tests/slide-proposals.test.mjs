@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 const temporary = await mkdtemp(join(tmpdir(), "weave-slide-proposals-"));
@@ -26,7 +26,9 @@ const directions = [
     instruction: "業務の流れを図解する。",
   },
 ];
+const { Orchestration } = await import("../server/orchestration.mjs");
 const tasks = [];
+const noTasksRunning = async (tasks) => { assert.ok(tasks.every(task => ["completed", "failed", "cancelled"].includes(task.status))); };
 async function setup(t) {
   const slug = await project.createProject({
     title: "Original",
@@ -50,7 +52,7 @@ async function setup(t) {
     prompt: "比較する",
     scope: { kind: "deck", slideIds: [], elementId: null },
     directions,
-  });
+  }, tasks, noTasksRunning);
   t.after(async () => {
     await rm(root, { recursive: true, force: true });
     await rm(join(project.workspacesRoot, ".proposals", group.id), {
@@ -82,6 +84,98 @@ async function complete(store, root, group, id) {
   await store.finish(root, group.id, id, task);
   return task;
 }
+async function createComparison(t, store, root, scope, taskList, cancelAndWait) {
+  const group = await store.create(root, {
+    threadId: "parent", prompt: "新しい比較", scope, directions,
+  }, taskList, cancelAndWait);
+  t.after(() => rm(join(project.workspacesRoot, ".proposals", group.id), {
+    recursive: true, force: true,
+  }));
+  return group;
+}
+test("new comparisons remove overlapping open groups and their workspaces, including history", async (t) => {
+  const { store, root, group } = await setup(t);
+  const task = await complete(store, root, group, "a");
+  const next = await createComparison(t, store, root, {
+    kind: "current-slide", slideIds: ["cover"], elementId: null,
+  }, tasks, noTasksRunning);
+  assert.deepEqual((await store.snapshot(root, tasks)).map(g => g.id), [next.id]);
+  await assert.rejects(access(join(project.workspacesRoot, ".proposals", group.id)), { code: "ENOENT" });
+  await assert.doesNotReject(store.finish(root, group.id, "a", task));
+  const deletedTask = { root, proposal: { groupId: group.id, candidateId: "a" } };
+  assert.deepEqual(await store.recoveryRoots([deletedTask]), []);
+});
+test("replacing a running comparison waits for cancellation and settlement before deleting its workspace", async (t) => {
+  const { store, root, group } = await setup(t);
+  let started;
+  const ready = new Promise(resolve => { started = resolve; });
+  let releaseStartup;
+  const startup = new Promise(resolve => { releaseStartup = resolve; });
+  let releaseWorker;
+  const stopped = new Promise(resolve => { releaseWorker = resolve; });
+  const folder = join(project.workspacesRoot, ".proposals", group.id);
+  let manager;
+  manager = new Orchestration({
+    path: join(root, ".weave", "orchestration-test.json"),
+    events: { publish() {} },
+    interruptWorker: async () => {
+      assert.equal(manager.tasks[0].status, "cancelling");
+      await access(folder);
+      assert.equal((await store.read(root))[0].id, group.id);
+      releaseWorker();
+    },
+    execute: async task => {
+      started();
+      await startup;
+      await manager.workerStarted(task.id, "worker", "turn");
+      await stopped;
+      await writeFile(join(folder, "last-write.txt"), "stopped");
+      return { success: false, error: "cancelled" };
+    },
+    onTaskSettled: async task => {
+      await access(folder);
+      await store.finish(root, group.id, "b", task);
+    },
+  });
+  const task = { id: "old-worker", root, threadId: "parent", version: 1, status: "queued", instructionStatus: "current", attempt: 0, proposal: { groupId: group.id, candidateId: "b" } };
+  manager.tasks.push(task);
+  await store.attach(root, group.id, "b", task.id);
+  await manager.run();
+  await ready;
+  const next = await createComparison(t, store, root, {
+    kind: "deck", slideIds: [], elementId: null,
+  }, manager.tasks, async tasks => {
+    const cancellation = manager.cancelAndWait(tasks);
+    releaseStartup();
+    await cancellation;
+  });
+  assert.equal(task.status, "cancelled");
+  assert.equal(manager.runningTasks.size, 0);
+  assert.deepEqual((await store.read(root)).map(g => g.id), [next.id]);
+  await assert.rejects(access(folder), { code: "ENOENT" });
+  await assert.doesNotReject(store.finish(root, group.id, "b", task));
+  assert.equal(task.status, "cancelled");
+});
+test("non-overlapping open groups and adopted or dismissed history remain unchanged", async (t) => {
+  const { store, root, group } = await setup(t);
+  group.scope = { kind: "current-slide", slideIds: ["second"], elementId: null };
+  await store.save(root, [group]);
+  const adopted = await createComparison(t, store, root, {
+    kind: "current-slide", slideIds: ["cover"], elementId: null,
+  }, [], noTasksRunning);
+  adopted.state = "adopted";
+  await store.save(root, [group, adopted]);
+  const dismissed = await createComparison(t, store, root, adopted.scope, [], noTasksRunning);
+  await store.dismiss(root, dismissed.id, []);
+  const previous = await store.read(root);
+  const next = await createComparison(t, store, root, adopted.scope, [], noTasksRunning);
+  const saved = await store.read(root);
+  assert.deepEqual(saved.slice(0, -1), previous);
+  assert.equal(saved.at(-1).id, next.id);
+  for (const existing of previous)
+    await access(join(project.workspacesRoot, ".proposals", existing.id));
+  assert.deepEqual(await store.recoveryRoots([{ root, proposal: { groupId: dismissed.id, candidateId: "a" } }]), [store.workspace(dismissed, dismissed.candidates[0])]);
+});
 test("exactly three distinct directions are required, with no inferred direction fallback", () => {
   assert.throws(() => validateDirections(undefined), /3方向/);
   assert.throws(() => validateDirections(directions.slice(1)), /3方向/);
@@ -319,7 +413,7 @@ test("proposal choices are published before workspace copying starts", async (t)
     prompt: "Create another comparison",
     scope: { kind: "deck", slideIds: [], elementId: null },
     directions,
-  });
+  }, tasks, noTasksRunning);
   assert.equal(checked, true);
   assert.equal(group.prepared, true);
 });

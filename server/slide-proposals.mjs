@@ -2,10 +2,12 @@ import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
   cp,
+  lstat,
   mkdir,
   readFile,
   readdir,
   rename,
+  rm,
   writeFile,
 } from "node:fs/promises";
 import { join, relative } from "node:path";
@@ -23,6 +25,19 @@ import {
 const file = (root) => join(root, ".weave", "slide-proposals.json");
 const requiredText = (value) =>
   typeof value === "string" && value.trim().length > 0;
+const isTaskRunning = (task) =>
+  task && !["completed", "failed", "cancelled"].includes(task.status);
+const hasRunningCandidate = (group, tasks) =>
+  group.candidates.some((candidate) =>
+    tasks.some((task) => task.id === candidate.taskId && isTaskRunning(task)),
+  );
+const targetSlideIds = (group) =>
+  group.baseDeck.slides
+    .filter(
+      (slide) =>
+        group.scope.kind === "deck" || group.scope.slideIds.includes(slide.id),
+    )
+    .map((slide) => slide.id);
 export function validateDirections(directions) {
   if (
     !Array.isArray(directions) ||
@@ -107,56 +122,83 @@ export class SlideProposals {
     ])
       execFileSync("git", args, { cwd: destination, stdio: "pipe" });
   }
-  async create(root, { threadId, prompt, scope, directions }) {
+  async create(root, { threadId, prompt, scope, directions }, tasks, cancelAndWait) {
     validateDirections(directions);
+    if (!Array.isArray(tasks)) throw new TypeError("tasks must be an array");
+    if (typeof cancelAndWait !== "function") throw new TypeError("cancelAndWait is required");
+    // Serialize comparisons separately: finish() must retain access to the project lock while cancellation settles.
     return await runProjectExclusive(async () => {
-      const groups = await this.read(root);
-      const baseDeck = await readProject(root);
-      const group = {
-        id: randomUUID(),
-        threadId,
-        prompt,
-        scope,
-        baseDeck,
-        createdAt: Date.now(),
-        state: "open",
-        prepared: false,
-        preparationError: null,
-        selections: {},
-        candidates: directions.map((direction, index) => ({
-          id: String.fromCharCode(97 + index),
-          title: direction.title,
-          description: direction.description,
-          instruction: direction.instruction,
-          version: 1,
-          taskId: null,
-          ready: false,
-          error: null,
-          result: null,
-        })),
-      };
-      groups.push(group);
-      await this.save(root, groups);
-      // Every candidate starts from the exact same snapshot, including unsaved draft content.
-      const baseline = join(
-        this.workspaceRoot,
-        ".proposals",
-        group.id,
-        "baseline",
+      const slideIds = new Set(targetSlideIds({ scope, baseDeck: await readProject(root) }));
+      const obsolete = (await this.read(root)).filter(existing =>
+        existing.state === "open" && targetSlideIds(existing).some(id => slideIds.has(id)),
       );
-      try {
-        await this.copyWorkspace(root, baseline);
-        for (const candidate of group.candidates)
-          await this.copyWorkspace(baseline, this.workspace(group, candidate));
-        group.prepared = true;
-      } catch (error) {
-        group.preparationError = error.message;
+      for (const existing of obsolete)
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(existing.id))
+          throw new Error("Invalid proposal group ID");
+      const obsoleteIds = new Set(obsolete.map(group => group.id));
+      const obsoleteTasks = tasks.filter(task => task.root === root && task.proposal && obsoleteIds.has(task.proposal.groupId));
+      await cancelAndWait(obsoleteTasks);
+      return await runProjectExclusive(async () => {
+        const saved = await this.read(root);
+        const removed = saved.filter(group => obsoleteIds.has(group.id) && group.state === "open");
+        if (removed.some(group => hasRunningCandidate(group, tasks)))
+          throw new Error("古い比較案の担当がまだ終了していません。");
+        const removedIds = new Set(removed.map(group => group.id));
+        const groups = saved.filter(group => !removedIds.has(group.id));
+        if (removed.length) {
+          if ((await lstat(join(this.workspaceRoot, ".proposals"))).isSymbolicLink())
+            throw new Error("Proposal workspace must not be a symbolic link");
+          await this.save(root, groups);
+          for (const existing of removed)
+            await rm(join(this.workspaceRoot, ".proposals", existing.id), { recursive: true, force: true });
+        }
+        const baseDeck = await readProject(root);
+        const group = {
+          id: randomUUID(),
+          threadId,
+          prompt,
+          scope,
+          baseDeck,
+          createdAt: Date.now(),
+          state: "open",
+          prepared: false,
+          preparationError: null,
+          selections: {},
+          candidates: directions.map((direction, index) => ({
+            id: String.fromCharCode(97 + index),
+            title: direction.title,
+            description: direction.description,
+            instruction: direction.instruction,
+            version: 1,
+            taskId: null,
+            ready: false,
+            error: null,
+            result: null,
+          })),
+        };
+        groups.push(group);
         await this.save(root, groups);
-        throw error;
-      }
-      await this.save(root, groups);
-      return group;
-    }, root);
+        // Every candidate starts from the exact same snapshot, including unsaved draft content.
+        const baseline = join(
+          this.workspaceRoot,
+          ".proposals",
+          group.id,
+          "baseline",
+        );
+        try {
+          await this.copyWorkspace(root, baseline);
+          for (const candidate of group.candidates)
+            await this.copyWorkspace(baseline, this.workspace(group, candidate));
+          group.prepared = true;
+        } catch (error) {
+          group.preparationError = error.message;
+          await this.save(root, groups);
+          throw error;
+        }
+        await this.save(root, groups);
+        return group;
+      }, root);
+    }, join(root, ".weave", "slide-proposals-create"));
   }
   async target(root, { groupId, candidateId, version }) {
     const group = this.group(await this.read(root), groupId);
@@ -199,7 +241,8 @@ export class SlideProposals {
   async finish(root, groupId, candidateId, task) {
     return await runProjectExclusive(async () => {
       const groups = await this.read(root);
-      const group = this.group(groups, groupId);
+      const group = groups.find(group => group.id === groupId);
+      if (!group) return;
       const candidate = this.candidate(group, candidateId);
       if (candidate.taskId !== task.id) return;
       candidate.ready = task.status === "completed";
@@ -215,6 +258,18 @@ export class SlideProposals {
       }
       await this.save(root, groups);
     }, root);
+  }
+  async recoveryRoots(tasks) {
+    const roots = new Set();
+    for (const root of new Set(tasks.filter(task => task.proposal).map(task => task.root))) {
+      const groups = await this.read(root);
+      for (const task of tasks.filter(task => task.root === root && task.proposal)) {
+        const group = groups.find(group => group.id === task.proposal.groupId);
+        const candidate = group?.candidates.find(candidate => candidate.id === task.proposal.candidateId);
+        if (candidate) roots.add(this.workspace(group, candidate));
+      }
+    }
+    return [...roots];
   }
   async recover(root) {
     await runProjectExclusive(async () => {
@@ -241,16 +296,10 @@ export class SlideProposals {
       preparationError:
         group.preparationError === undefined ? null : group.preparationError,
       selections: group.selections,
-      slideIds: group.baseDeck.slides
-        .filter(
-          (s) =>
-            group.scope.kind === "deck" || group.scope.slideIds.includes(s.id),
-        )
-        .map((s) => s.id),
+      slideIds: targetSlideIds(group),
       candidates: group.candidates.map((candidate) => {
         const task = tasks.find((t) => t.id === candidate.taskId);
-        const busy =
-          task && !["completed", "failed", "cancelled"].includes(task.status);
+        const busy = isTaskRunning(task);
         const live = this.livePreview(candidate.taskId);
         const status = group.preparationError
           ? "failed"
@@ -297,12 +346,7 @@ export class SlideProposals {
             revise: adoptable,
             dismiss:
               group.state === "open" &&
-              !group.candidates.some((c) => {
-                const t = tasks.find((t) => t.id === c.taskId);
-                return (
-                  t && !["completed", "failed", "cancelled"].includes(t.status)
-                );
-              }),
+              !hasRunningCandidate(group, tasks),
           },
         };
       }),
@@ -495,15 +539,7 @@ export class SlideProposals {
     return await runProjectExclusive(async () => {
       const groups = await this.read(root);
       const group = this.group(groups, groupId);
-      if (
-        group.candidates.some((c) =>
-          tasks.some(
-            (t) =>
-              t.id === c.taskId &&
-              !["completed", "failed", "cancelled"].includes(t.status),
-          ),
-        )
-      )
+      if (hasRunningCandidate(group, tasks))
         throw new Error("生成中の担当を停止してから提案を終了してください。");
       group.state = "dismissed";
       await this.save(root, groups);

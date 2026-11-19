@@ -10,7 +10,7 @@ export class Orchestration {
   constructor({ path, events, startChat, steerChat, interruptChat, chatActive, execute, interruptWorker, wakePrompt, onTaskSettled }) {
     Object.assign(this, { path, events, startChat, steerChat, interruptChat, chatActive, execute, interruptWorker, wakePrompt, onTaskSettled });
     this.messages = []; this.tasks = []; this.conversations = new Map(); this.payloads = new Map();
-    this.pumping = new Set(); this.runningTasks = new Map(); this.gates = new Map(); this.saves = Promise.resolve(); this.stopping = false;
+    this.pumping = new Set(); this.runningTasks = new Map(); this.taskRuns = new Map(); this.gates = new Map(); this.saves = Promise.resolve(); this.stopping = false;
   }
   async load() {
     try {
@@ -164,6 +164,12 @@ export class Orchestration {
     const gate = this.gates.get(task.id); if (!gate) throw new Error('Review gate is no longer active.'); gate(decision === 'approve');
     return { taskId, status: task.status };
   }
+  async cancelAndWait(tasks) {
+    await Promise.all(tasks.map(task => TERMINAL.has(task.status) ? null : this.control(task.threadId, {
+      taskId: task.id, action: 'cancel', instruction: '新しい比較案を作成するため、古い比較案を破棄します。', version: task.version,
+    })));
+    await Promise.all(tasks.map(task => this.taskRuns.get(task.id)));
+  }
   assertApply(id) {
     const task = this.tasks.find(t => t.id === id);
     if (!task || task.status !== 'applying' || task.approvedVersion !== task.version || task.instructionStatus !== 'current') throw new Error('Instructions changed after review. This edit cannot be applied.');
@@ -176,6 +182,7 @@ export class Orchestration {
   }
   async workerStarted(id, threadId, turnId) {
     const task = this.tasks.find(t => t.id === id); task.workerThreadId = threadId; task.workerTurnId = turnId; task.workerStartedAt = Date.now(); if (task.status === 'running') task.activity = 'Codexが編集しています'; await this.save();
+    if (task.status === 'cancelling') await this.interruptWorker(threadId);
   }
   async workerReady(id, report) {
     const task = this.tasks.find(t => t.id === id);
@@ -197,7 +204,9 @@ export class Orchestration {
     for (const task of this.tasks.filter(t => t.status === 'queued' && t.instructionStatus === 'current')) {
       if (!this.canRun(task)) continue;
       this.runningTasks.set(task.id, task); task.status = 'running'; task.attempt++; task.finishedAt = null; task.workerStartedAt = null; task.workerThreadId = null; task.workerTurnId = null; task.startedAt = Date.now(); task.activity = 'Codexを起動中'; task.activityAt = task.startedAt;
-      void this.runTask(task);
+      const run = this.runTask(task);
+      this.taskRuns.set(task.id, run);
+      void run.finally(() => { if (this.taskRuns.get(task.id) === run) this.taskRuns.delete(task.id); });
     }
   }
   async runTask(task) {
