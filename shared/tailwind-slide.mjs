@@ -261,6 +261,50 @@ export function buildTailwindSlideCss() {
 .weave-slide > * { min-width: 0; }
 .weave-slide :where(h1, h2, h3, p, ul, ol) { margin: 0; font-size: inherit; font-weight: inherit; }
 ${utilities}
+.weave-slide[data-weave-template="nse-presentation"] {
+  padding: 0; color: #000; font-family: Arial, "ＭＳ Ｐゴシック", "Noto Sans CJK JP", "Noto Sans JP", "Yu Gothic", Meiryo, sans-serif;
+  font-size: 42.6667px; line-height: 1.2; letter-spacing: normal;
+}
+.weave-slide[data-weave-template="nse-presentation"] .report-frame { pointer-events: none; }
+.weave-slide[data-weave-template="nse-presentation"] [data-weave-slot="content"] {
+  position: absolute; left: 136px; top: 133.2px; width: 1108.9px; height: 475.2px;
+  display: block; overflow: visible; padding: 4.8px 9.6px;
+}
+.weave-slide[data-weave-template="nse-presentation"] [data-weave-slot="title"] {
+  position: absolute; left: 0; top: -121px; width: 907.1px; height: 53px;
+  display: flex; align-items: center; padding: 4.8px 9.6px; overflow: hidden;
+  font-size: 26.6667px; font-weight: 400; line-height: 1.2; letter-spacing: normal; text-align: left;
+}
+.weave-slide[data-weave-template="nse-presentation"] .report-organization {
+  position: absolute; left: 136px; top: 672px; width: 315px; height: 16px;
+}
+.weave-slide[data-weave-template="nse-presentation"] .report-copyright {
+  position: absolute; left: 1012px; top: 666.6px; width: 263.6px; height: 22.6px;
+  display: flex; align-items: center; justify-content: flex-end; padding: 4.8px 9.6px;
+  font-size: 10.6667px; line-height: 1; white-space: nowrap; text-align: right;
+}
+.weave-slide[data-weave-template="nse-presentation"] .page-number {
+  position: absolute; left: 991.3px; top: 680px; width: 288px; height: 38.3px;
+  display: flex; align-items: center; justify-content: flex-end; color: #999;
+  padding: 4.8px 9.6px; font-size: 16px; line-height: 1.2; text-align: right;
+}
+.weave-slide[data-weave-template="nse-presentation"][data-weave-layout="cover"] [data-weave-slot="content"] {
+  left: 287.1px; top: 451.5px; width: 947.3px; height: 128.5px; font-size: 26.6667px;
+}
+.weave-slide[data-weave-template="nse-presentation"][data-weave-layout="cover"] [data-weave-slot="title"] {
+  top: -155.7px; width: 947.1px; height: 123.8px; font-size: 32px; align-items: center;
+}
+.weave-slide[data-weave-template="nse-presentation"][data-weave-layout="cover"] .report-logo {
+  position: absolute; left: 50.3px; top: 15.4px; width: 126px; height: 184px;
+}
+.weave-slide[data-weave-template="nse-presentation"][data-weave-layout="cover"] .report-tagline {
+  position: absolute; left: 644.9px; top: 34.3px; width: 644.9px; height: 35.5px;
+  padding: 4.8px 9.6px; font-family: "Yu Mincho", "游明朝", "Noto Serif CJK JP", serif;
+  font-size: 21.3333px; font-weight: 700; line-height: 1.2; text-align: right;
+}
+.weave-slide[data-weave-template="nse-presentation"][data-weave-layout="cover"] .report-organization {
+  left: 287.1px; top: 672.7px; width: 300px; height: 16.6px;
+}
 .weave-slide[data-weave-template="year-end-report"] {
   width: 1280px;
   height: 720px;

@@ -200,7 +200,7 @@ export function applyTemplateToSlideHtml(slideInput, templateInput, { position =
   frame = replaceElementInner(frame, nextContent, appendToInner(nextContentElement.inner, movedContent));
 
   const page = framePageNumber(frame);
-  if (page) frame = replaceElementInner(frame, page, `${String(position).padStart(2, "0")} / ${String(total).padStart(2, "0")}`);
+  if (page) frame = replaceElementInner(frame, page, attributeValue(page.opening, "data-weave-page-number") === "position" ? String(position) : `${String(position).padStart(2, "0")} / ${String(total).padStart(2, "0")}`);
   const main = openingTagWithClass(frame, "weave-slide");
   const mainElement = main && elementInner(frame, main);
   return main && mainElement ? frame.slice(main.index, mainElement.closing.end) : slideHtml;
@@ -309,7 +309,7 @@ export function composeSlideHtml({ slideHtml, masterHtml, layoutHtml, templateId
   frame = replaceElementInner(frame, nextContent.opening, appendToInner(nextContent.inner, movedContent));
 
   const page = framePageNumber(frame);
-  if (page) frame = replaceElementInner(frame, page, `${String(position).padStart(2, "0")} / ${String(total).padStart(2, "0")}`);
+  if (page) frame = replaceElementInner(frame, page, attributeValue(page.opening, "data-weave-page-number") === "position" ? String(position) : `${String(position).padStart(2, "0")} / ${String(total).padStart(2, "0")}`);
   const resultRoot = firstMain(frame);
   const resultElement = resultRoot && elementInner(frame, resultRoot);
   if (!resultRoot || !resultElement) throw new Error("Composed slide has no complete <main> root.");
@@ -400,7 +400,7 @@ export function updateSlidePageNumber(input, position, total) {
   const html = String(input);
   const page = framePageNumber(html);
   return page
-    ? replaceElementInner(html, page, `${String(position).padStart(2, "0")} / ${String(total).padStart(2, "0")}`)
+    ? replaceElementInner(html, page, attributeValue(page.opening, "data-weave-page-number") === "position" ? String(position) : `${String(position).padStart(2, "0")} / ${String(total).padStart(2, "0")}`)
     : html;
 }
 

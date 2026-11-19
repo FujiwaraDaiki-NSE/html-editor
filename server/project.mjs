@@ -83,7 +83,7 @@ const templatePackage = ({ id, name, background, text, layouts, defaultFurniture
   id,
   name,
   defaultLayoutId: layouts[0].id,
-  masterHtml: `<main class="${templateRootClasses({ id: id === "year-end-report" ? "plain" : id, background, text })}" data-weave-slide data-weave-template="${id}" data-weave-template-name="${name}">
+  masterHtml: `<main class="${templateRootClasses({ id: ["year-end-report", "nse-presentation"].includes(id) ? "plain" : id, background, text })}" data-weave-slide data-weave-template="${id}" data-weave-template-name="${name}">
     ${defaultFurniture ? '<div class="brand flex items-center gap-2 text-xs font-bold tracking-widest text-slate-400">WEAVE<span class="text-amber-400">●</span></div>' : ""}
     <div data-weave-layout-slot></div>
     ${defaultFurniture ? '<div class="page-number absolute top-0 right-0 p-8 text-xs font-semibold tracking-widest text-slate-400">01 / 01</div>' : ""}
@@ -129,9 +129,40 @@ const yearEndReportTemplate = templatePackage({
   defaultFurniture: false,
 });
 
+const nseAssets = {
+  "image1.jpeg": "db3a79e6107b9fc18fa808b209c1fab6ed9bc84a3e334377203baa3fcba5d5a4.jpeg",
+  "image2.png": "5ecfb33bd11140bd0d8ca6d108dd95580af19029690dfa7cb8c652dadaec9a5d.png",
+  "image3.jpeg": "1ec0fcc89e230b9e7ffcb990bdb43ef960a9fba3d8116fe52153825c5b3317aa.jpeg",
+  "image4.png": "605d0ab71ae23196aee35418286e3dac09d9233d86236c79683810da9b05b11e.png",
+};
+const nseLayout = ({ id, name, lineStart, background }) => ({
+  id,
+  name,
+  html: `<svg data-weave-id="nse-presentation-${id}-frame" class="report-frame absolute inset-0 h-full w-full" viewBox="0 0 1280 720" aria-hidden="true">
+    ${id === "cover" ? `<svg data-weave-id="nse-presentation-${id}-background" x="4.4" y="0" width="1280.9" height="720.7" viewBox="0 0 1748.89024 1312" preserveAspectRatio="none" overflow="hidden"><image href="assets/${background}" width="1856" height="1312"></image></svg>` : `<image href="assets/${background}" x="0" y="0" width="1043.1" height="391.7" preserveAspectRatio="none"></image>`}
+    <line x1="${lineStart}" y1="69.8" x2="1280" y2="69.8" stroke="#CC0000" stroke-width="1.6667"></line>
+    <line x1="${lineStart}" y1="662.3" x2="1280" y2="662.3" stroke="#0033CC" stroke-width="1.6667"></line>
+  </svg>
+  ${id === "cover" ? `<img data-weave-id="nse-presentation-${id}-logo" class="report-logo" src="assets/${nseAssets["image4.png"]}" alt="NIPPON STEEL ENGINEERING"><div data-weave-id="nse-presentation-${id}-tagline" class="report-tagline">未来に、かたちを。社会に、力を。</div>` : `<div data-weave-id="nse-presentation-${id}-page-number" class="page-number" data-weave-page-number="position"></div>`}
+  <img data-weave-id="nse-presentation-${id}-organization" class="report-organization" src="assets/${nseAssets["image2.png"]}" alt="日鉄エンジニアリング株式会社">
+  <div data-weave-id="nse-presentation-${id}-copyright" class="report-copyright">©2026 NIPPON STEEL ENGINEERING CO., LTD.</div>
+  ${contentLayout()}`,
+});
+const nsePresentationTemplate = templatePackage({
+  id: "nse-presentation",
+  name: "日鉄エンジ new",
+  background: "bg-white",
+  text: "text-slate-950",
+  defaultFurniture: false,
+  layouts: [
+    nseLayout({ id: "cover", name: "表紙", lineStart: 287.1, background: nseAssets["image3.jpeg"] }),
+    nseLayout({ id: "content", name: "本文", lineStart: 136, background: nseAssets["image1.jpeg"] }),
+  ],
+});
+
 /* These are kept as distinct layout geometry in the package. The report master owns the
    common frame and each layout owns only its slot arrangement; all three share one template. */
-export const builtInTemplates = [...defaultTemplates, yearEndReportTemplate];
+export const builtInTemplates = [...defaultTemplates, yearEndReportTemplate, nsePresentationTemplate];
 
 export const agentInstructions = `You are the editing agent embedded in Weave, a visual HTML slide editor.
 ${applicationSkillInstructions}
@@ -689,14 +720,16 @@ export async function ensureTemplates(root = currentProjectRoot) {
       touched.push(filePath.slice(root.length + 1));
     }
   }
-  const logoSource = join(repoRoot, "shared", "assets", reportLogoAssetFilename);
-  const logoDestination = join(assetsRoot(root), reportLogoAssetFilename);
-  const logoBytes = await readFile(logoSource);
-  const existingLogo = await readFile(logoDestination).catch(() => null);
-  if (!existingLogo || !existingLogo.equals(logoBytes)) {
-    await mkdir(assetsRoot(root), { recursive: true });
-    await writeFile(logoDestination, logoBytes);
-    touched.push(`assets/${reportLogoAssetFilename}`);
+  for (const filename of new Set([reportLogoAssetFilename, ...Object.values(nseAssets)])) {
+    const source = join(repoRoot, "shared", "assets", filename);
+    const destination = join(assetsRoot(root), filename);
+    const bytes = await readFile(source);
+    const existing = await readFile(destination).catch(() => null);
+    if (!existing || !existing.equals(bytes)) {
+      await mkdir(assetsRoot(root), { recursive: true });
+      await writeFile(destination, bytes);
+      touched.push(`assets/${filename}`);
+    }
   }
   return touched;
 }

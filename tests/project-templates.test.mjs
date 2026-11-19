@@ -7,6 +7,7 @@ import test from "node:test";
 
 import { auditContentPolicy } from "../shared/content-policy.mjs";
 import { auditTailwindSlideHtml, buildTailwindSlideCss, defaultSlideClasses } from "../shared/tailwind-slide.mjs";
+import { composeSlideHtml, updateSlidePageNumber } from "../shared/slide-slots.mjs";
 import { agentInstructions, builtInTemplates } from "../server/project.mjs";
 
 test("agent instructions describe the template and slot vocabulary", () => {
@@ -22,13 +23,14 @@ test("agent instructions describe the template and slot vocabulary", () => {
 });
 
 test("built-in templates are valid empty frames with the title first inside content", () => {
-  assert.deepEqual(builtInTemplates.map(({ id }) => id), ["orbit", "grid", "plain", "year-end-report"]);
+  assert.deepEqual(builtInTemplates.map(({ id }) => id), ["orbit", "grid", "plain", "year-end-report", "nse-presentation"]);
   const baseClasses = defaultSlideClasses.split(" ").filter((name) => name !== "bg-slate-950" && name !== "text-slate-50");
   const pairs = {
     orbit: ["theme-orbit", "bg-slate-950", "text-slate-50"],
     grid: ["theme-grid", "bg-slate-900", "text-slate-50"],
     plain: ["theme-plain", "bg-white", "text-slate-950"],
     "year-end-report": ["theme-plain", "bg-white", "text-slate-950"],
+    "nse-presentation": ["theme-plain", "bg-white", "text-slate-950"],
   };
   for (const template of builtInTemplates) {
     assert.equal(auditContentPolicy({ html: [template.masterHtml, ...template.layouts.map(({ html }) => html)].join("\n") }).ok, true, template.id);
@@ -90,7 +92,13 @@ test("template seeding is idempotent and discovery skips bad files with sensible
   try {
     const project = await import(`../server/project.mjs?templates=${Date.now()}`);
     const logoAsset = "assets/9442acd1fa8abd6f7e4eeac678dad653a43d2d63663c45c1c09775bbc0dcf0ee.png";
-    assert.deepEqual(await project.ensureTemplates(), ["templates/orbit/template.json", "templates/orbit/master.html", "templates/orbit/layouts/content.html", "templates/grid/template.json", "templates/grid/master.html", "templates/grid/layouts/content.html", "templates/plain/template.json", "templates/plain/master.html", "templates/plain/layouts/content.html", "templates/year-end-report/template.json", "templates/year-end-report/master.html", "templates/year-end-report/layouts/cover.html", "templates/year-end-report/layouts/content.html", "templates/year-end-report/layouts/agenda.html", logoAsset]);
+    const nse = builtInTemplates.find(({ id }) => id === "nse-presentation");
+    const nseAssets = [...new Set([...nse.layouts.map(({ html }) => html).join("\n").matchAll(/(?:src|href)="(assets\/[^"]+)"/g)].map((match) => match[1]))];
+    assert.deepEqual(await project.ensureTemplates(), ["templates/orbit/template.json", "templates/orbit/master.html", "templates/orbit/layouts/content.html", "templates/grid/template.json", "templates/grid/master.html", "templates/grid/layouts/content.html", "templates/plain/template.json", "templates/plain/master.html", "templates/plain/layouts/content.html", "templates/year-end-report/template.json", "templates/year-end-report/master.html", "templates/year-end-report/layouts/cover.html", "templates/year-end-report/layouts/content.html", "templates/year-end-report/layouts/agenda.html", "templates/nse-presentation/template.json", "templates/nse-presentation/master.html", "templates/nse-presentation/layouts/cover.html", "templates/nse-presentation/layouts/content.html", logoAsset, "assets/db3a79e6107b9fc18fa808b209c1fab6ed9bc84a3e334377203baa3fcba5d5a4.jpeg", "assets/5ecfb33bd11140bd0d8ca6d108dd95580af19029690dfa7cb8c652dadaec9a5d.png", "assets/1ec0fcc89e230b9e7ffcb990bdb43ef960a9fba3d8116fe52153825c5b3317aa.jpeg", "assets/605d0ab71ae23196aee35418286e3dac09d9233d86236c79683810da9b05b11e.png"]);
+    for (const asset of nseAssets) {
+      const bytes = await readFile(join(root, asset));
+      assert.equal(createHash("sha256").update(bytes).digest("hex"), asset.slice(7).split(".")[0]);
+    }
     const firstOrbit = await readFile(join(root, "templates", "orbit", "master.html"), "utf8");
     const firstLogo = await readFile(join(root, logoAsset));
     assert.equal(firstLogo.length, 71263);
@@ -110,7 +118,7 @@ test("template seeding is idempotent and discovery skips bad files with sensible
     await writeFile(join(root, "templates", "bad.html"), '<main class="weave-slide" data-weave-slide><script>alert(1)</script></main>');
     await writeFile(join(root, "templates", "fallback-card.html"), '<main class="weave-slide" data-weave-slide></main>');
     const templates = await project.readTemplates();
-    assert.deepEqual(templates.map(({ id }) => id), ["grid", "orbit", "plain", "year-end-report"]);
+    assert.deepEqual(templates.map(({ id }) => id), ["grid", "nse-presentation", "orbit", "plain", "year-end-report"]);
     assert.equal(templates.some(({ id }) => id === "fallback-card" || id === "bad"), false);
   } finally {
     if (previousRoot === undefined) delete process.env.WEAVE_PROJECT_ROOT;
@@ -134,4 +142,24 @@ test("year-end report variants expose the source-derived CSS geometry", () => {
   assert.match(css, /data-weave-template="year-end-report"\]\[data-weave-layout="cover"[\s\S]*letter-spacing: normal/);
   assert.match(css, /data-weave-template="year-end-report"\]\[data-weave-layout="agenda"[\s\S]*letter-spacing: normal/);
   assert.match(css, /data-weave-template="year-end-report"\]\[data-weave-layout="agenda"[\s\S]*justify-content: center[\s\S]*overflow: hidden/);
+});
+
+test("NSE presentation has empty cover and content layouts with source images", () => {
+  const template = builtInTemplates.find(({ id }) => id === "nse-presentation");
+  assert.equal(template.name, "日鉄エンジ new");
+  assert.deepEqual(template.layouts.map(({ id }) => id), ["cover", "content"]);
+  assert.equal(template.defaultLayoutId, "cover");
+  const [cover, content] = template.layouts;
+  assert.match(cover.html, /未来に、かたちを。社会に、力を。/);
+  assert.doesNotMatch(cover.html, /page-number/);
+  assert.match(content.html, /data-weave-page-number="position"/);
+  const composed = composeSlideHtml({
+    slideHtml: '<main><section data-weave-slot="content"><h1 data-weave-slot="title"></h1></section></main>',
+    masterHtml: template.masterHtml, layoutHtml: content.html,
+    templateId: template.id, layoutId: content.id, position: 2, total: 20, accent: "#fbbf24", instanceId: null,
+  });
+  assert.match(composed, /data-weave-page-number="position">2<\/div>/);
+  assert.match(updateSlidePageNumber(composed, 3, 20), /data-weave-page-number="position">3<\/div>/);
+  assert.equal([...cover.html.matchAll(/(?:src|href)="assets\/[^"]+"/g)].length, 3);
+  assert.equal([...content.html.matchAll(/(?:src|href)="assets\/[^"]+"/g)].length, 2);
 });
