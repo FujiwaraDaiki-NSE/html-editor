@@ -3019,6 +3019,10 @@ export default function Home() {
       }
       applyServerState(result as ServerState);
       resetProjectEditor(preserveUiRequest);
+      if (!preserveUiRequest && claudeThread && activeThread?.raw?.cwd !== result.project.root) {
+        autoOpenThreadRef.current = false;
+        dispatchCodex({ type: "activateThread", threadId: null });
+      }
       closeGallery();
       setApiError(null);
     } catch (error) { setApiError(error instanceof Error ? error.message : String(error)); }
