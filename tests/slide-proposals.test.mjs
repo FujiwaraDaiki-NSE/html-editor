@@ -448,6 +448,7 @@ test("working previews use stable snapshots and remain unadoptable until reviewe
   assert.equal(initial.phase, "baseline");
   assert.equal(initial.reviewed, false);
   assert.deepEqual(initial.deck, deck);
+  assert.equal((await store.snapshot(root, tasks))[0].candidates[0].addedSlideCount, 0);
   let live = null;
   const reader = new SlideProposals({
     workspaceRoot: project.workspacesRoot,
@@ -469,6 +470,10 @@ test("working previews use stable snapshots and remain unadoptable until reviewe
     "Original",
     "Work in progress",
   );
+  changed.slides.push(
+    { ...changed.slides[0], id: "pptx-02" },
+    { ...changed.slides[0], id: "pptx-03" },
+  );
   live = {
     deck: changed,
     css: initial.css,
@@ -487,6 +492,10 @@ test("working previews use stable snapshots and remain unadoptable until reviewe
   assert.equal(candidate.available.view, true);
   assert.equal(candidate.available.adopt, false);
   assert.equal(candidate.previewRevision, preview.previewRevision);
+  assert.equal(candidate.addedSlideCount, 2);
+  // Replacing a base slide must count the new ID, rather than the net deck growth.
+  live = { ...live, deck: { ...changed, slides: changed.slides.filter((s) => s.id !== "second") } };
+  assert.equal((await reader.snapshot(root, tasks))[0].candidates[0].addedSlideCount, 2);
   live = { ...live, revision: "worker:2" };
   assert.notEqual(
     (await reader.preview(root, group.id, "a", 1)).previewRevision,
@@ -539,6 +548,7 @@ test("proposal adoption is offered per slide without the bulk adoption button", 
     "utf8",
   );
   assert.doesNotMatch(source, /未採用の対象すべてに採用/);
+  assert.match(source, /onAdopt\(group, selected, \[previewSlideId\]\)/);
 });
 
 test("proposal descriptions are shown in an accessible overlay outside the action bar flow", async () => {

@@ -318,7 +318,16 @@ export class SlideProposals {
                 ? task.status
                 : "queued";
         const adoptable = group.state === "open" && candidate.ready && !busy;
+        const previewDeck = candidate.ready && candidate.result
+          ? candidate.result.deck
+          : live !== null
+            ? live.deck
+            : candidate.result ? candidate.result.deck : group.baseDeck;
+        const baseSlideIds = new Set(group.baseDeck.slides.map((slide) => slide.id));
         return {
+          addedSlideCount: group.scope.kind === "deck"
+            ? previewDeck.slides.filter((slide) => !baseSlideIds.has(slide.id)).length
+            : 0,
           targetSlideIds:
             group.scope.kind === "deck"
               ? [

@@ -20,6 +20,7 @@ export type ProposalCandidate = {
   taskId: string | null;
   status: string;
   previewRevision: string;
+  addedSlideCount: number;
   activity: string | null;
   startedAt: number | null;
   stale: boolean;
@@ -174,6 +175,11 @@ export function SlideProposals({
     candidateId: string;
   } | null>(null);
   const [descriptionOpen, setDescriptionOpen] = useState(false);
+  const [previewSlide, setPreviewSlide] = useState<{
+    candidateKey: string;
+    anchorSlideId: string;
+    slideId: string;
+  } | null>(null);
   const descriptionId = useId();
   useEffect(() => {
     if (!descriptionOpen) return;
@@ -198,6 +204,15 @@ export function SlideProposals({
   );
   const key = (g: ProposalGroup, c: ProposalCandidate) =>
     `${g.id}:${c.id}:${c.version}`;
+  const selectedPreview = group && selected ? previews[key(group, selected)] : null;
+  const previewSlideId = group && selected && group.scope.kind === "deck" &&
+    previewSlide?.candidateKey === key(group, selected) &&
+    previewSlide.anchorSlideId === slideId
+      ? previewSlide.slideId
+      : slideId;
+  const previewSlideIndex = selectedPreview
+    ? selectedPreview.deck.slides.findIndex((slide) => slide.id === previewSlideId)
+    : -1;
   const reviewedPreviewVisible =
     !!group &&
     !!selected &&
@@ -255,6 +270,7 @@ export function SlideProposals({
     )
       return;
     setDescriptionOpen(false);
+    setPreviewSlide(null);
     setSelection({ groupId: g.id, candidateId: c.id });
     setCompare(false);
     setError(null);
@@ -322,6 +338,9 @@ export function SlideProposals({
                   >
                     <span className="proposal-choice-badge">
                       {c.id.toUpperCase()}案
+                      {g.scope.kind === "deck" && c.addedSlideCount > 0 && (
+                        <span className="proposal-added-count">+{c.addedSlideCount}枚</span>
+                      )}
                     </span>
                     <span className="proposal-choice-title">{c.title}</span>
                     <span className="proposal-choice-status">
@@ -395,7 +414,7 @@ export function SlideProposals({
               {previews[key(group, selected)] ? (
                 <SlideFrame
                   preview={previews[key(group, selected)]}
-                  slideId={slideId}
+                  slideId={previewSlideId}
                   apiBase={apiBase}
                 />
               ) : (
@@ -430,6 +449,33 @@ export function SlideProposals({
                   <small>編集中の内容を同期してから採用できます。</small>
                 )}
               </div>
+              {group.scope.kind === "deck" && selectedPreview && (
+                <div className="proposal-slide-navigation" role="group" aria-label="案のスライド切り替え">
+                  <button
+                    type="button"
+                    aria-label="案の前のスライド"
+                    disabled={previewSlideIndex <= 0}
+                    onClick={() => setPreviewSlide({
+                      candidateKey: key(group, selected),
+                      anchorSlideId: slideId,
+                      slideId: selectedPreview.deck.slides[previewSlideIndex - 1].id,
+                    })}
+                  >前へ</button>
+                  <span aria-live="polite">
+                    {previewSlideIndex < 0 ? "削除済み" : `${previewSlideIndex + 1}枚目`}
+                  </span>
+                  <button
+                    type="button"
+                    aria-label="案の次のスライド"
+                    disabled={previewSlideIndex + 1 >= selectedPreview.deck.slides.length}
+                    onClick={() => setPreviewSlide({
+                      candidateKey: key(group, selected),
+                      anchorSlideId: slideId,
+                      slideId: selectedPreview.deck.slides[previewSlideIndex + 1].id,
+                    })}
+                  >次へ</button>
+                </div>
+              )}
               <button
                 type="button"
                 className="proposal-description-toggle"
@@ -446,10 +492,10 @@ export function SlideProposals({
                   !syncReady ||
                   !selected.available.adopt ||
                   !reviewedPreviewVisible ||
-                  !!group.selections[slideId]
+                  !!group.selections[previewSlideId]
                 }
                 onClick={() =>
-                  void perform(() => onAdopt(group, selected, [slideId]))
+                  void perform(() => onAdopt(group, selected, [previewSlideId]))
                 }
               >
                 このスライドに採用
@@ -474,7 +520,7 @@ export function SlideProposals({
                   {selected.stale
                     ? "提案作成後に資料が更新されています。採用時に最新の編集と照合します。"
                     : "編集中の資料は変更されていません。"}
-                  {group.selections[slideId]
+                  {group.selections[previewSlideId]
                     ? " このスライドは採用済みです。"
                     : ""}
                 </small>
