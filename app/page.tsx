@@ -559,14 +559,14 @@ export default function Home() {
   const [agentPreview, setAgentPreview] = useState<AgentPreviewState | null>(null);
   const [agentCompletion, setAgentCompletion] = useState<number | null>(null);
   const [previewHighlightSlideId, setPreviewHighlightSlideId] = useState<string | null>(null);
-  const [changeScope, setChangeScope] = useState<ChangeScope>("current-slide");
+  const [changeScope, setChangeScope] = useState<ChangeScope>("deck");
   const [proposalGroups, setProposalGroups] = useState<ProposalGroup[]>([]);
   const [proposalTarget, setProposalTarget] = useState<ProposalTarget | null>(null);
   const [orchestration, setOrchestration] = useState<OrchestrationSnapshot>({ tasks: [], messages: [], executionModeChoices: [] });
   const workerModel = useSyncExternalStore(workerModelStore.subscribe, workerModelStore.read, workerModelStore.serverRead);
   const [workerEffort, setWorkerEffort] = useState("medium");
   const activeProjectRootRef = useRef<string | null>(null);
-  const [executionMode, setExecutionMode] = useState<ExecutionMode>("apply");
+  const [executionMode, setExecutionMode] = useState<ExecutionMode>("compare");
   const [executionModeBusy, setExecutionModeBusy] = useState(false);
   const executionModeBusyRef = useRef(false);
   const executionModeSelectedBeforeThreadRef = useRef(false);
