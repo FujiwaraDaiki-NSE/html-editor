@@ -1335,7 +1335,9 @@ export default function Home() {
   uiEditorContextRef.current = project ? { root: project.root, contextEnvelope: contextEnvelope() } : null;
 
   useEffect(() => {
-    if (!proposalTarget || promptDraft.trim()) return;
+    if (!proposalTarget) return;
+    if (!proposalGroups.some(group => group.id === proposalTarget.groupId)) { const timer = window.setTimeout(() => setProposalTarget(null), 0); return () => window.clearTimeout(timer); }
+    if (promptDraft.trim()) return;
     if (proposalTarget.slideId !== activeSlideId) { const timer = window.setTimeout(() => setProposalTarget(null), 0); return () => window.clearTimeout(timer); }
     const candidate = proposalGroups.find(group => group.id === proposalTarget.groupId)?.candidates.find(candidate => candidate.id === proposalTarget.candidateId);
     if (!candidate?.available.revise || candidate.version === proposalTarget.version) return;
@@ -1472,6 +1474,7 @@ export default function Home() {
     setSkills(state.skills ?? []);
     setSkillProposals(state.skillProposals ?? []);
     setVariations(state.variations ?? []);
+    if (activeProjectRootRef.current !== state.project.root) setProposalTarget(null);
     setProject(state.project);
     activeProjectRootRef.current = state.project.root;
     setOrchestration(state.orchestration);

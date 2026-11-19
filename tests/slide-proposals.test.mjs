@@ -542,6 +542,13 @@ test("a restart marks interrupted preparation as failed without resuming or edit
   assert.deepEqual(await project.readProject(root), deck);
 });
 
+test("proposal targets are cleared on project changes or missing groups, including while drafting", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+  assert.match(page, /if \(activeProjectRootRef\.current !== state\.project\.root\) setProposalTarget\(null\);\s*setProject\(state\.project\);\s*activeProjectRootRef\.current = state\.project\.root;/);
+  assert.match(page, /if \(!proposalTarget\) return;\s*if \(!proposalGroups\.some\(group => group\.id === proposalTarget\.groupId\)\) \{ const timer = window\.setTimeout\(\(\) => setProposalTarget\(null\), 0\); return \(\) => window\.clearTimeout\(timer\); \}\s*if \(promptDraft\.trim\(\)\) return;/);
+  assert.match(page, /\}, \[proposalGroups, proposalTarget, promptDraft, activeSlideId\]\);/);
+});
+
 test("proposal adoption is offered per slide without the bulk adoption button", async () => {
   const source = await readFile(
     new URL("../app/components/SlideProposals.tsx", import.meta.url),
