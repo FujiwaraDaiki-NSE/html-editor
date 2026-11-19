@@ -11,8 +11,13 @@ else if (input === "EXIT") { process.exitCode = 1; }
 else {
   if (input === "EDIT") await writeFile("slide.html", (await readFile("slide.html", "utf8")).replace("Before", "After"));
   send({ type: "stream_event", event: { type: "message_start", message: { id: "answer" } } });
-  send({ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "text" } } });
-  send({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "DONE" } } });
+  if (input === "SPLIT_BLOCKS") {
+    send({ type: "stream_event", event: { type: "content_block_start", index: 0, content_block: { type: "thinking" } } });
+    send({ type: "assistant", message: { id: "answer", content: [{ type: "thinking", thinking: "Planning" }] } });
+  }
+  const textIndex = input === "SPLIT_BLOCKS" ? 1 : 0;
+  send({ type: "stream_event", event: { type: "content_block_start", index: textIndex, content_block: { type: "text" } } });
+  send({ type: "stream_event", event: { type: "content_block_delta", index: textIndex, delta: { type: "text_delta", text: "DONE" } } });
   send({ type: "assistant", message: { id: "answer", content: [{ type: "text", text: "DONE" }, { type: "tool_use", id: "tool-1", name: "Read", input: { file_path: "slide.html" } }] } });
   send({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: "tool-1", content: "file content" }] } });
   send({ type: "result", subtype: "success", is_error: false, permission_denials: input === "DENIED" ? [{ tool_name: "Bash" }] : [], result: "DONE" });

@@ -356,3 +356,35 @@ test('task cards render at their origin turn with legacy cards first and receipt
   assert.ok(cards.includes('key={task.id}') && cards.includes("onAction(task, 'cancel')"));
   assert.ok(page.includes('}, [codexState.items, agentRunning]);'));
 });
+
+test('only restart failures can be explicitly revised, retaining all three proposal identities and original scope', async t => {
+  const { manager, root, params } = await setup(t);
+  await manager.receive({ ...input('one', 'compare'), contextEnvelope: { modificationScope: { kind: 'deck', slideIds: [], elementId: null }, executionMode: 'compare' } });
+  const receipts = await Promise.all(['a', 'b', 'c'].map(candidateId => manager.create('parent', { ...args, scope: { kind: 'deck', slideIds: [], elementId: null }, proposal: { groupId: 'group', candidateId } })));
+  await until(() => receipts.every(receipt => manager.task('parent', receipt.taskId).status === 'reviewing'));
+  const path = join(root, 'resume.json'); await copyFile(params.path, path);
+  const executions = [];
+  const restarted = new Orchestration({ ...params, path, execute: async task => { executions.push(structuredClone(task)); return { success: true }; } });
+  await restarted.load();
+  await restarted.receive(input('resume'));
+  const tasks = receipts.map(receipt => restarted.task('parent', receipt.taskId));
+  for (const task of tasks) {
+    await assert.rejects(restarted.control('parent', { taskId: task.id, version: task.version, action: 'continue', instruction: 'Resume' }), /state changed/);
+    await assert.rejects(restarted.control('parent', { taskId: task.id, version: task.version + 1, action: 'revise', instruction: 'Resume' }), /state changed/);
+    await restarted.control('parent', { taskId: task.id, version: task.version, action: 'revise', instruction: task.prompt });
+  }
+  await until(() => tasks.every(task => task.status === 'completed'));
+  assert.equal(executions.length, 3);
+  for (const task of executions) {
+    assert.equal(task.status, 'running'); assert.equal(task.attempt, 2);
+    assert.equal(task.scope.kind, 'deck'); assert.equal(task.contextEnvelope.executionMode, 'compare');
+    assert.equal(task.error, null); assert.equal(task.report, null);
+    assert.equal(task.proposal.groupId, 'group');
+  }
+  assert.deepEqual(executions.map(task => task.proposal.candidateId).sort(), ['a', 'b', 'c']);
+  for (const [status, error, applied] of [['failed', 'Worker failed', false], ['completed', null, false], ['cancelled', null, false], ['failed', 'Editor restarted before completion. Review the recovered editor draft; this task was not restarted.', true]]) {
+    const task = tasks[0]; Object.assign(task, { status, error, applied });
+    await assert.rejects(restarted.control('parent', { taskId: task.id, version: task.version, action: 'revise', instruction: 'Resume' }), /state changed/);
+  }
+  await restarted.stop();
+});

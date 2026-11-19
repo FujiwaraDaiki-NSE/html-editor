@@ -126,8 +126,7 @@ const orchestrator = new Orchestration({
     if (!task.proposal && task.root !== projectRoot()) throw new Error("The project changed before the delegated edit started. Send the request in the current project.");
     let executionRoot = task.root;
     if (task.proposal) {
-      const group = proposals.group(await proposals.read(task.root), task.proposal.groupId);
-      executionRoot = proposals.workspace(group, proposals.candidate(group, task.proposal.candidateId));
+      executionRoot = await proposals.executionWorkspace(task);
     }
     const deck = await readProject(executionRoot);
     const contextEnvelope = { ...task.contextEnvelope, modificationScope: task.scope, executionMode: "apply", allowSkillChanges: task.allowSkillChanges };

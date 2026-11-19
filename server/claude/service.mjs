@@ -188,12 +188,17 @@ export class ClaudeService extends EventEmitter {
     let protocolError = null;
     let stderr = "";
     const blocks = new Map();
+    const completedTextCounts = new Map();
+    let streamedTextCount = 0;
     const itemEvent = (method, item) => this.notify(method, { threadId, turnId: turn.id, item });
     const completeMessage = (message) => {
       if (message.parent_tool_use_id) return;
-      for (const [index, block] of (message.message?.content ?? []).entries()) {
+      for (const block of message.message?.content ?? []) {
         if (block.type !== "text" && block.type !== "tool_use") continue;
-        const id = block.type === "tool_use" ? block.id : `${message.message.id}:${index}`;
+        // Claude emits assistant envelopes per block; their array index is not the stream index.
+        const textIndex = completedTextCounts.get(message.message.id) ?? 0;
+        const id = block.type === "tool_use" ? block.id : `${message.message.id}:text:${textIndex}`;
+        if (block.type === "text") completedTextCounts.set(message.message.id, textIndex + 1);
         let item = turn.items.find((entry) => entry.id === id);
         if (!item) { item = { id, type: block.type === "text" ? "agentMessage" : "mcpToolCall", status: "running" }; turn.items.push(item); }
         Object.assign(item, block.type === "text" ? { text: block.text } : { server: "Claude Code", tool: block.name, arguments: block.input });
@@ -225,9 +230,9 @@ export class ClaudeService extends EventEmitter {
         if (message.type === "result") result = message;
         if (message.type === "stream_event" && !message.parent_tool_use_id) {
           const event = message.event;
-          if (event.type === "message_start") { blocks.clear(); blocks.set("message", event.message.id); }
+          if (event.type === "message_start") { blocks.clear(); blocks.set("message", event.message.id); streamedTextCount = 0; }
           if (event.type === "content_block_start" && event.content_block.type === "text") {
-            const item = { id: `${blocks.get("message")}:${event.index}`, type: "agentMessage", text: "", status: "running" };
+            const item = { id: `${blocks.get("message")}:text:${streamedTextCount++}`, type: "agentMessage", text: "", status: "running" };
             turn.items.push(item); blocks.set(event.index, item); itemEvent("item/started", item);
           }
           if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
