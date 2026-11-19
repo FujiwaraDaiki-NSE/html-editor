@@ -14,6 +14,7 @@ import {
   acceptVariation,
   agentInstructions,
   assertCommittable,
+  assertAgentAssetsExist,
   archiveVariation,
   checkoutHistory,
   checkoutMain,
@@ -688,6 +689,7 @@ codex.on("notification", (message) => {
         const applyResult = pending.workflow.execution === "apply";
         const merged = applyResult ? await mergeEditorDecks({ base: pending.baseDeck, agent: agentDeck, current: currentDraft, scope: pending.workflow.scope.kind }) : { deck: currentDraft, conflicts: [], ok: true };
         await restoreAgentManagedFiles(pending, { preserveSkills: pending.workflow.allowSkillChanges });
+        await assertAgentAssetsExist(agentDeck, pending.baseDeck, pending.preTurnCss, pending.root);
         await writeProjectUnlocked(merged.deck, null, pending.root);
         if (!pending.workflow.allowSkillChanges) await restoreProjectSkillSnapshot(pending.root, pending.projectSkillSnapshot);
         pending.changeSet = scopeCheck.changeSet;
@@ -1325,7 +1327,7 @@ const server = createServer(async (request, response) => {
       : ["WEAVE_SKILL_INVALID", "WEAVE_LEARNING_INVALID"].includes(error?.code) ? 400
       : error?.code === "WEAVE_REQUEST_TOO_LARGE" ? 413
       : error?.code === "WEAVE_INVALID_JSON" ? 400
-      : ["WEAVE_QUALITY_FAILED", "WEAVE_CONTENT_POLICY", "WEAVE_SCOPE_VIOLATION"].includes(error?.code) ? 422
+      : ["WEAVE_QUALITY_FAILED", "WEAVE_CONTENT_POLICY", "WEAVE_SCOPE_VIOLATION", "WEAVE_MISSING_ASSET"].includes(error?.code) ? 422
       : ["WEAVE_PROJECT_DIRTY", "WEAVE_PROJECT_BLOCKED"].includes(error?.code) ? 409
       : /required|invalid|unknown|not offered|exceeds|already exists/i.test(message) ? 400
       : /owned|running|save|proposal branch|cannot be archived/i.test(message) ? 409 : 500;

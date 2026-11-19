@@ -14,6 +14,10 @@ export function assetPathsInHtml(html) {
   return [...html.matchAll(assetReferencePattern)].map((match) => match[3]).filter(isAssetPath);
 }
 
+export function assetPathsInCss(css) {
+  return [...css.matchAll(/url\(\s*(['"]?)(assets\/[^\s'"()]+)\1\s*\)/gi)].map((match) => match[2]).filter(isAssetPath);
+}
+
 export function replaceAssetReferences(html, replace) {
   return html.replace(assetReferencePattern, (match, prefix, quote, path) => isAssetPath(path) ? `${prefix}${quote}${replace(path)}${quote}` : match);
 }

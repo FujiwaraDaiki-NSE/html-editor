@@ -13,7 +13,7 @@ import { auditContentPolicy, auditHtmlSafety } from "../shared/content-policy.mj
 import { defaultSlideClasses, migrateSlideHtmlToTailwind } from "../shared/tailwind-slide.mjs";
 import { projectSlug } from "../shared/project-slug.mjs";
 import { isReferencePath } from "../shared/context.mjs";
-import { assetFilenamePattern, replaceAssetReferences } from "../shared/asset-path.mjs";
+import { assetFilenamePattern, assetPathsInHtml, assetPathsInCss, replaceAssetReferences } from "../shared/asset-path.mjs";
 import { composeSlideHtml, extractLayoutSnapshotHtml, extractSlideSourceHtml, hasLegacyFurnitureOutsideContent } from "../shared/slide-slots.mjs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -601,6 +601,24 @@ export function assertRevision(expectedRevision, root = currentProjectRoot) {
     error.actualRevision = actualRevision;
     throw error;
   }
+}
+
+export async function assertAgentAssetsExist(deck, baseDeck, preTurnCss, root) {
+  const baseFragments = [...baseDeck.slides.map(slide => slide.html), preTurnCss];
+  const basePaths = new Set(baseFragments.flatMap(fragment => [...assetPathsInHtml(fragment), ...assetPathsInCss(fragment)]));
+  const fragments = [...deck.slides.map(slide => slide.html), await readDeckCss(root)];
+  const paths = new Set(fragments.flatMap(fragment => [...assetPathsInHtml(fragment), ...assetPathsInCss(fragment)]));
+  const missing = [];
+  for (const path of paths) {
+    if (basePaths.has(path)) continue;
+    try {
+      if (!(await stat(join(root, path))).isFile()) missing.push(path);
+    } catch (error) {
+      if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error;
+      missing.push(path);
+    }
+  }
+  if (missing.length) throw Object.assign(new Error(`参照先の画像が存在しません: ${missing.join("、")}。エージェントは画像を追加できません。人が取り込んだ画像だけを参照してください。`), { code: "WEAVE_MISSING_ASSET", diagnostics: missing });
 }
 
 /* deck.css is authored directly (human via inspector overrides, agent via this file). It is never

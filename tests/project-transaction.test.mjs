@@ -7,6 +7,63 @@ import test from "node:test";
 
 const git = (root, args) => execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
 
+test("Agent asset validation rejects restored-away images and accepts existing and human-imported images", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weave-agent-assets-"));
+  const project = await import("../server/project.mjs");
+  const baseDeck = { slides: [] };
+  const preTurnCss = "";
+  try {
+    await mkdir(join(root, "assets"));
+    await mkdir(join(root, "styles"));
+    await writeFile(join(root, "assets", "existing.png"), "existing");
+    await writeFile(join(root, "styles", "deck.css"), "");
+    const snapshot = await project.createAgentFileSnapshot(root);
+    const humanAsset = `assets/${"a".repeat(64)}.png`;
+    await writeFile(join(root, humanAsset), "human");
+    await project.captureAgentFilePreservation(snapshot, humanAsset, root);
+    await writeFile(join(root, "assets", "agent.png"), "agent");
+    const deck = { slides: [{ html: '<img src="assets/agent.png">' }] };
+    await project.assertAgentAssetsExist(deck, baseDeck, preTurnCss, root);
+    await project.restoreAgentFileSnapshot(snapshot, root, { preserve: [humanAsset] });
+    await assert.rejects(project.assertAgentAssetsExist(deck, baseDeck, preTurnCss, root), error => {
+      assert.equal(error.code, "WEAVE_MISSING_ASSET");
+      assert.deepEqual(error.diagnostics, ["assets/agent.png"]);
+      assert.match(error.message, /エージェントは画像を追加できません/);
+      return true;
+    });
+    await project.assertAgentAssetsExist({ slides: [{ html: `<img src="assets/existing.png"><svg><image href="${humanAsset}"></svg>` }] }, baseDeck, preTurnCss, root);
+    const css = 'url("assets/agent.png")';
+    await assert.rejects(project.assertAgentAssetsExist({ slides: [{ html: `<div style='background:${css}'></div>` }] }, baseDeck, preTurnCss, root), { code: "WEAVE_MISSING_ASSET" });
+    await writeFile(join(root, "styles", "deck.css"), `.cover { background: ${css}; }`);
+    await assert.rejects(project.assertAgentAssetsExist({ slides: [] }, baseDeck, preTurnCss, root), { code: "WEAVE_MISSING_ASSET" });
+    await writeFile(join(root, "styles", "deck.css"), `.cover { background: url(${humanAsset}); }`);
+    await project.assertAgentAssetsExist({ slides: [] }, baseDeck, preTurnCss, root);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Agent asset validation permits missing references already present in the base HTML and CSS", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weave-agent-existing-missing-assets-"));
+  const project = await import("../server/project.mjs");
+  const baseDeck = { slides: [{ html: '<img src="assets/cover-cat.png">' }] };
+  const preTurnCss = '.cover { background: url("assets/missing-background.png"); }';
+  try {
+    await mkdir(join(root, "styles"));
+    await writeFile(join(root, "styles", "deck.css"), preTurnCss);
+    const agentDeck = { slides: [{ html: `${baseDeck.slides[0].html}<p>Edited text</p>` }] };
+    await project.assertAgentAssetsExist(agentDeck, baseDeck, preTurnCss, root);
+    agentDeck.slides[0].html += '<img src="assets/new-missing.png">';
+    await assert.rejects(project.assertAgentAssetsExist(agentDeck, baseDeck, preTurnCss, root), error => {
+      assert.equal(error.code, "WEAVE_MISSING_ASSET");
+      assert.deepEqual(error.diagnostics, ["assets/new-missing.png"]);
+      return true;
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("deck saves are revision-guarded, replace slide files, and restore history on main", async () => {
   const root = await mkdtemp(join(tmpdir(), "weave-project-"));
   const previousRoot = process.env.WEAVE_PROJECT_ROOT;
