@@ -782,7 +782,7 @@ async function delegateEdit(threadId, args, turnId) {
   }
   if (chat.contextEnvelope.executionMode === "compare") {
     validateDirections(args.directions);
-    const group = await proposals.create(root, { threadId, prompt: args.prompt, scope: args.scope, directions: args.directions });
+    const group = await proposals.create(root, { threadId, prompt: args.prompt, scope: args.scope, directions: args.directions }, orchestrator.tasks);
     const receipts = [];
     for (const candidate of group.candidates) {
       const receipt = await orchestrator.create(threadId, { ...args, prompt: `${args.prompt}\n\n比較案${candidate.id.toUpperCase()}: ${candidate.title}\n${candidate.instruction}\n全対象スライドでこの方向を一貫させてください。他の案や元の資料は編集しないでください。`, variation: false, deferStart: true, proposal: { groupId: group.id, candidateId: candidate.id } }, turnId);

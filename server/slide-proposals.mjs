@@ -23,6 +23,19 @@ import {
 const file = (root) => join(root, ".weave", "slide-proposals.json");
 const requiredText = (value) =>
   typeof value === "string" && value.trim().length > 0;
+const isTaskRunning = (task) =>
+  task && !["completed", "failed", "cancelled"].includes(task.status);
+const hasRunningCandidate = (group, tasks) =>
+  group.candidates.some((candidate) =>
+    tasks.some((task) => task.id === candidate.taskId && isTaskRunning(task)),
+  );
+const targetSlideIds = (group) =>
+  group.baseDeck.slides
+    .filter(
+      (slide) =>
+        group.scope.kind === "deck" || group.scope.slideIds.includes(slide.id),
+    )
+    .map((slide) => slide.id);
 export function validateDirections(directions) {
   if (
     !Array.isArray(directions) ||
@@ -107,8 +120,9 @@ export class SlideProposals {
     ])
       execFileSync("git", args, { cwd: destination, stdio: "pipe" });
   }
-  async create(root, { threadId, prompt, scope, directions }) {
+  async create(root, { threadId, prompt, scope, directions }, tasks) {
     validateDirections(directions);
+    if (!Array.isArray(tasks)) throw new TypeError("tasks must be an array");
     return await runProjectExclusive(async () => {
       const groups = await this.read(root);
       const baseDeck = await readProject(root);
@@ -135,6 +149,14 @@ export class SlideProposals {
           result: null,
         })),
       };
+      const slideIds = new Set(targetSlideIds(group));
+      for (const existing of groups)
+        if (
+          existing.state === "open" &&
+          targetSlideIds(existing).some((id) => slideIds.has(id)) &&
+          !hasRunningCandidate(existing, tasks)
+        )
+          existing.state = "dismissed";
       groups.push(group);
       await this.save(root, groups);
       // Every candidate starts from the exact same snapshot, including unsaved draft content.
@@ -241,16 +263,10 @@ export class SlideProposals {
       preparationError:
         group.preparationError === undefined ? null : group.preparationError,
       selections: group.selections,
-      slideIds: group.baseDeck.slides
-        .filter(
-          (s) =>
-            group.scope.kind === "deck" || group.scope.slideIds.includes(s.id),
-        )
-        .map((s) => s.id),
+      slideIds: targetSlideIds(group),
       candidates: group.candidates.map((candidate) => {
         const task = tasks.find((t) => t.id === candidate.taskId);
-        const busy =
-          task && !["completed", "failed", "cancelled"].includes(task.status);
+        const busy = isTaskRunning(task);
         const live = this.livePreview(candidate.taskId);
         const status = group.preparationError
           ? "failed"
@@ -297,12 +313,7 @@ export class SlideProposals {
             revise: adoptable,
             dismiss:
               group.state === "open" &&
-              !group.candidates.some((c) => {
-                const t = tasks.find((t) => t.id === c.taskId);
-                return (
-                  t && !["completed", "failed", "cancelled"].includes(t.status)
-                );
-              }),
+              !hasRunningCandidate(group, tasks),
           },
         };
       }),
@@ -495,15 +506,7 @@ export class SlideProposals {
     return await runProjectExclusive(async () => {
       const groups = await this.read(root);
       const group = this.group(groups, groupId);
-      if (
-        group.candidates.some((c) =>
-          tasks.some(
-            (t) =>
-              t.id === c.taskId &&
-              !["completed", "failed", "cancelled"].includes(t.status),
-          ),
-        )
-      )
+      if (hasRunningCandidate(group, tasks))
         throw new Error("生成中の担当を停止してから提案を終了してください。");
       group.state = "dismissed";
       await this.save(root, groups);

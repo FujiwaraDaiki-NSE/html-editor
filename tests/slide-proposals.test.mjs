@@ -50,7 +50,7 @@ async function setup(t) {
     prompt: "比較する",
     scope: { kind: "deck", slideIds: [], elementId: null },
     directions,
-  });
+  }, tasks);
   t.after(async () => {
     await rm(root, { recursive: true, force: true });
     await rm(join(project.workspacesRoot, ".proposals", group.id), {
@@ -82,6 +82,63 @@ async function complete(store, root, group, id) {
   await store.finish(root, group.id, id, task);
   return task;
 }
+async function createComparison(t, store, root, scope, taskList) {
+  const group = await store.create(root, {
+    threadId: "parent",
+    prompt: "新しい比較",
+    scope,
+    directions,
+  }, taskList);
+  t.after(() => rm(join(project.workspacesRoot, ".proposals", group.id), {
+    recursive: true,
+    force: true,
+  }));
+  return group;
+}
+test("creating an overlapping comparison dismisses inactive open groups and retains their history", async (t) => {
+  for (const statuses of [[], ["failed", "failed", "failed"], ["completed", "failed", "cancelled"]]) {
+    await t.test(statuses.join(",") || "no tasks", async (t) => {
+      const { store, root, group } = await setup(t);
+      const inactiveTasks = statuses.map((status, index) => ({
+        id: `${group.id}-${index}`,
+        status,
+      }));
+      for (const [index, task] of inactiveTasks.entries())
+        await store.attach(root, group.id, group.candidates[index].id, task.id);
+      const previous = (await store.read(root))[0];
+      const next = await createComparison(t, store, root, {
+        kind: "slides", slideIds: ["cover"], elementId: null,
+      }, inactiveTasks);
+      const saved = await store.read(root);
+      assert.deepEqual(saved[0], { ...previous, state: "dismissed" });
+      assert.deepEqual(saved.filter((g) => g.state === "open").map((g) => g.id), [next.id]);
+    });
+  }
+});
+test("creating an overlapping comparison leaves groups with a running candidate open", async (t) => {
+  const { store, root, group } = await setup(t);
+  const activeTasks = [{ id: `${group.id}-active`, status: "running" }];
+  await store.attach(root, group.id, "b", activeTasks[0].id);
+  const previous = (await store.read(root))[0];
+  const next = await createComparison(t, store, root, {
+    kind: "slides", slideIds: ["cover"], elementId: null,
+  }, activeTasks);
+  const saved = await store.read(root);
+  assert.deepEqual(saved[0], previous);
+  assert.deepEqual(saved.filter((g) => g.state === "open").map((g) => g.id), [group.id, next.id]);
+  assert.equal(activeTasks[0].status, "running");
+});
+test("creating a comparison leaves non-overlapping groups unchanged", async (t) => {
+  const { store, root, group } = await setup(t);
+  group.scope = { kind: "slides", slideIds: ["second"], elementId: null };
+  await store.save(root, [group]);
+  const next = await createComparison(t, store, root, {
+    kind: "slides", slideIds: ["cover"], elementId: null,
+  }, []);
+  const saved = await store.read(root);
+  assert.deepEqual(saved[0], group);
+  assert.deepEqual(saved.filter((g) => g.state === "open").map((g) => g.id), [group.id, next.id]);
+});
 test("exactly three distinct directions are required, with no inferred direction fallback", () => {
   assert.throws(() => validateDirections(undefined), /3方向/);
   assert.throws(() => validateDirections(directions.slice(1)), /3方向/);
@@ -319,7 +376,7 @@ test("proposal choices are published before workspace copying starts", async (t)
     prompt: "Create another comparison",
     scope: { kind: "deck", slideIds: [], elementId: null },
     directions,
-  });
+  }, tasks);
   assert.equal(checked, true);
   assert.equal(group.prepared, true);
 });
