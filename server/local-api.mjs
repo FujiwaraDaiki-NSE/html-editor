@@ -387,9 +387,9 @@ function recoveryReferenceEntry(entry) {
   return stored;
 }
 
-async function restoreAgentManagedFiles(task, { preserveSkills = false } = {}) {
+async function restoreAgentManagedFiles(task, { preserveSkills = false, deck = null } = {}) {
   const preserve = [...new Set([...(task.humanFilePaths ?? task.humanAssetPaths ?? []), ...(preserveSkills ? [".codex/skills"] : [])])];
-  await restoreAgentFileSnapshot(task.agentFileSnapshot, task.root, { preserve });
+  await restoreAgentFileSnapshot(task.agentFileSnapshot, task.root, { preserve, deck });
   if (!(task.humanReferenceEntries?.length || task.humanReferenceRemovals?.length)) return;
   const indexPath = join(task.root, "references", "index.json");
   const base = JSON.parse(await readFile(indexPath, "utf8").catch(() => "{\"entries\":[]}"));
@@ -687,7 +687,7 @@ codex.on("notification", (message) => {
         const currentDraft = pending.humanDraft ?? pending.baseDeck;
         const applyResult = pending.workflow.execution === "apply";
         const merged = applyResult ? await mergeEditorDecks({ base: pending.baseDeck, agent: agentDeck, current: currentDraft, scope: pending.workflow.scope.kind }) : { deck: currentDraft, conflicts: [], ok: true };
-        await restoreAgentManagedFiles(pending, { preserveSkills: pending.workflow.allowSkillChanges });
+        await restoreAgentManagedFiles(pending, { preserveSkills: pending.workflow.allowSkillChanges, deck: agentDeck });
         await assertAgentAssetsExist(agentDeck, pending.baseDeck, pending.preTurnCss, pending.root);
         await writeProjectUnlocked(merged.deck, null, pending.root);
         if (!pending.workflow.allowSkillChanges) await restoreProjectSkillSnapshot(pending.root, pending.projectSkillSnapshot);

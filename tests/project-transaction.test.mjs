@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -28,7 +29,7 @@ test("Agent asset validation rejects restored-away images and accepts existing a
     await assert.rejects(project.assertAgentAssetsExist(deck, baseDeck, preTurnCss, root), error => {
       assert.equal(error.code, "WEAVE_MISSING_ASSET");
       assert.deepEqual(error.diagnostics, ["assets/agent.png"]);
-      assert.match(error.message, /エージェントは画像を追加できません/);
+      assert.match(error.message, /内容と一致するハッシュ/);
       return true;
     });
     await project.assertAgentAssetsExist({ slides: [{ html: `<img src="assets/existing.png"><svg><image href="${humanAsset}"></svg>` }] }, baseDeck, preTurnCss, root);
@@ -39,6 +40,49 @@ test("Agent asset validation rejects restored-away images and accepts existing a
     await writeFile(join(root, "styles", "deck.css"), `.cover { background: url(${humanAsset}); }`);
     await project.assertAgentAssetsExist({ slides: [] }, baseDeck, preTurnCss, root);
   } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Agent restoration retains only referenced new hashed images and restores existing assets", async () => {
+  const root = await mkdtemp(join(tmpdir(), "weave-agent-extracted-"));
+  const project = await import("../server/project.mjs");
+  const pathFor = bytes => `assets/${createHash("sha256").update(bytes).digest("hex")}.png`;
+  const original = Buffer.from("human image");
+  const extracted = Buffer.from("extracted original image");
+  const cssImage = Buffer.from("css image");
+  let snapshot;
+  try {
+    await mkdir(join(root, "assets"));
+    await mkdir(join(root, "styles"));
+    await writeFile(join(root, pathFor(original)), original);
+    await writeFile(join(root, "assets/deleted.png"), "restore deleted");
+    snapshot = await project.createAgentFileSnapshot(root);
+    await writeFile(join(root, pathFor(original)), "overwritten by agent");
+    await rm(join(root, "assets/deleted.png"));
+    await writeFile(join(root, pathFor(extracted)), extracted);
+    await writeFile(join(root, pathFor(cssImage)), cssImage);
+    await writeFile(join(root, pathFor(Buffer.from("unused"))), "unused");
+    const invalid = `assets/${"a".repeat(64)}.png`;
+    await writeFile(join(root, invalid), "hash mismatch");
+    await writeFile(join(root, "assets/wrong-name.png"), "wrong name");
+    const deck = { slides: [{ html: `<img src="${pathFor(extracted)}"><img src="${pathFor(original)}"><img src="${invalid}"><img src="assets/wrong-name.png">` }] };
+    await writeFile(join(root, "styles/deck.css"), `.cover { background: url(${pathFor(cssImage)}); }`);
+    await project.restoreAgentFileSnapshot(snapshot, root, { deck });
+    assert.deepEqual(await readFile(join(root, pathFor(extracted))), extracted);
+    assert.deepEqual(await readFile(join(root, pathFor(cssImage))), cssImage);
+    assert.deepEqual(await readFile(join(root, pathFor(original))), original);
+    assert.equal(await readFile(join(root, "assets/deleted.png"), "utf8"), "restore deleted");
+    await assert.rejects(readFile(join(root, pathFor(Buffer.from("unused")))), { code: "ENOENT" });
+    await assert.rejects(project.assertAgentAssetsExist(deck, { slides: [] }, "", root), error => {
+      assert.equal(error.code, "WEAVE_MISSING_ASSET");
+      assert.deepEqual(error.diagnostics, [invalid, "assets/wrong-name.png"]);
+      return true;
+    });
+    deck.slides[0].html = `<img src="${pathFor(extracted)}"><img src="${pathFor(original)}">`;
+    await project.assertAgentAssetsExist(deck, { slides: [] }, "", root);
+  } finally {
+    if (snapshot) await project.discardAgentFileSnapshot(snapshot, root);
     await rm(root, { recursive: true, force: true });
   }
 });
