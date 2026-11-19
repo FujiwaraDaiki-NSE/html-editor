@@ -134,7 +134,7 @@ const SlideFrame = memo(function SlideFrame({
       style={{ aspectRatio: `${designWidth}/${designHeight}` }}
     >
       <iframe
-        sandbox=""
+        sandbox="allow-same-origin"
         title={`${preview.candidateId.toUpperCase()}案のスライド`}
         srcDoc={src}
         style={{
