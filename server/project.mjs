@@ -190,7 +190,11 @@ project. Use standard Tailwind scale values and existing classes; never use inli
 arbitrary-value classes such as [...], or edit styles/deck.css — read that file when you need the
 registry of classes the project supports. Prefer flex/grid flow layout. Keep a unique, stable
 data-weave-id on every independently editable element. Represent line breaks as <br>, not literal newlines.
-Reference imported images with relative assets/<hash>.<ext> paths. Lists use ul.list with li children;
+Reference imported images with relative assets/<hash>.<ext> paths. You may also extract original
+images from reference materials (including PPTX) and save them as assets/<sha256>.<ext>, where
+sha256 is the file contents' 64-character SHA-256 hex digest and ext is png, jpg, jpeg, webp, svg,
+or gif. Reference the saved files in slide HTML. Existing assets must not be overwritten or deleted;
+only newly added images referenced by the final deck are retained. Lists use ul.list with li children;
 tables use table.table and keep data-weave-id on the table rather than individual cells.
 
 New slides must support human text editing in the canvas, not only source-code editing. Author
@@ -649,7 +653,7 @@ export async function assertAgentAssetsExist(deck, baseDeck, preTurnCss, root) {
       missing.push(path);
     }
   }
-  if (missing.length) throw Object.assign(new Error(`参照先の画像が存在しません: ${missing.join("、")}。エージェントは画像を追加できません。人が取り込んだ画像だけを参照してください。`), { code: "WEAVE_MISSING_ASSET", diagnostics: missing });
+  if (missing.length) throw Object.assign(new Error(`参照先の画像が存在しないか、追加画像の形式が不正です: ${missing.join("、")}。参照資料から抽出した画像は assets/<sha256 64桁>.<画像拡張子> に内容と一致するハッシュで保存してください。`), { code: "WEAVE_MISSING_ASSET", diagnostics: missing });
 }
 
 /* deck.css is authored directly (human via inspector overrides, agent via this file). It is never
@@ -1035,10 +1039,29 @@ export async function captureAgentFilePreservation(snapshot, name, root = curren
   await cp(source, destination, { recursive: true });
 }
 
-export async function restoreAgentFileSnapshot(snapshot, root = currentProjectRoot, { preserve = [] } = {}) {
+export async function restoreAgentFileSnapshot(snapshot, root = currentProjectRoot, { preserve = [], deck = null } = {}) {
   if (!snapshot?.directory || !pathInside(agentSnapshotRoot(root), resolve(snapshot.directory))) throw new Error("Agent file snapshot path is invalid.");
+  const agentAssets = [];
+  if (deck !== null) {
+    const fragments = [...deck.slides.map(slide => slide.html), await readDeckCss(root)];
+    const paths = new Set(fragments.flatMap(fragment => [...assetPathsInHtml(fragment), ...assetPathsInCss(fragment)]));
+    for (const name of paths) {
+      const match = /^assets\/([a-f0-9]{64})\.([a-z]+)$/i.exec(name);
+      if (!match || !assetMimeTypes.has(match[2].toLowerCase())) continue;
+      // Existing human assets always come from the pre-turn snapshot.
+      try { await lstat(join(snapshot.directory, name)); continue; }
+      catch (error) { if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error; }
+      try {
+        if (!(await lstat(join(root, name))).isFile()) continue;
+        const bytes = await readFile(join(root, name));
+        if (createHash("sha256").update(bytes).digest("hex") !== match[1].toLowerCase()) continue;
+        if (match[2].toLowerCase() === "svg" && !auditHtmlSafety(bytes.toString("utf8")).ok) continue;
+        agentAssets.push(name);
+      } catch (error) { if (error.code !== "ENOENT" && error.code !== "ENOTDIR") throw error; }
+    }
+  }
   const preserved = [];
-  for (const name of preserve) {
+  for (const name of new Set([...preserve, ...agentAssets])) {
     if (!/^assets\/[a-f0-9]{64}\.[a-z0-9]+$/i.test(name) && !isReferencePath(name) && name !== ".codex/skills") throw new Error("Invalid Agent snapshot preservation path.");
     const source = join(root, name);
     const captured = join(snapshot.directory, "preserved", name);

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -206,6 +207,29 @@ test("candidates have independent identical baselines and remain discoverable af
     deck,
   );
 });
+test("adoption copies a referenced extracted image retained in the candidate workspace", async (t) => {
+  const { store, root, group } = await setup(t);
+  const task = await complete(store, root, group, "a");
+  const work = store.workspace(group, store.candidate(group, "a"));
+  const deck = await project.readProject(work);
+  const snapshot = await project.createAgentFileSnapshot(work);
+  const bytes = Buffer.from("original extracted image");
+  const asset = `assets/${createHash("sha256").update(bytes).digest("hex")}.png`;
+  try {
+    await writeFile(join(work, asset), bytes);
+    deck.slides[0].html += `<img src="${asset}" data-weave-id="extracted-image">`;
+    await project.restoreAgentFileSnapshot(snapshot, work, { deck });
+    await project.writeProject(deck, null, work);
+    await store.finish(root, group.id, "a", task);
+    await store.adopt(root, {
+      groupId: group.id, candidateId: "a", version: 1,
+      slideIds: [deck.slides[0].id], expectedRevision: project.getRevision(root),
+    }, tasks);
+    assert.deepEqual(await readFile(join(root, asset)), bytes);
+    assert.ok((await project.readProject(root)).slides[0].html.includes(asset));
+  } finally { await project.discardAgentFileSnapshot(snapshot, work); }
+});
+
 test("partial adoption preserves concurrent edits and keeps remaining slide proposals selectable", async (t) => {
   const { store, root, group, deck } = await setup(t);
   await complete(store, root, group, "a");
