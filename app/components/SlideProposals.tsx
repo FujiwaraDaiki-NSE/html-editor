@@ -176,7 +176,7 @@ export function SlideProposals({
   } | null>(null);
   const [descriptionOpen, setDescriptionOpen] = useState(false);
   const [previewSlide, setPreviewSlide] = useState<{
-    candidateKey: string;
+    groupId: string;
     anchorSlideId: string;
     slideId: string;
   } | null>(null);
@@ -205,14 +205,42 @@ export function SlideProposals({
   const key = (g: ProposalGroup, c: ProposalCandidate) =>
     `${g.id}:${c.id}:${c.version}`;
   const selectedPreview = group && selected ? previews[key(group, selected)] : null;
-  const previewSlideId = group && selected && group.scope.kind === "deck" &&
-    previewSlide?.candidateKey === key(group, selected) &&
+  const displayedSlideId = (g: ProposalGroup) => g.scope.kind === "deck" &&
+    previewSlide?.groupId === g.id &&
     previewSlide.anchorSlideId === slideId
       ? previewSlide.slideId
       : slideId;
-  const previewSlideIndex = selectedPreview
-    ? selectedPreview.deck.slides.findIndex((slide) => slide.id === previewSlideId)
-    : -1;
+  const previewSlideId = group ? displayedSlideId(group) : slideId;
+  const slideNavigation = (g: ProposalGroup, preview: Preview) => {
+    const index = preview.deck.slides.findIndex((slide) => slide.id === displayedSlideId(g));
+    return (
+      <div className="proposal-slide-navigation" role="group" aria-label="案のスライド切り替え">
+        <button
+          type="button"
+          aria-label="案の前のスライド"
+          disabled={index <= 0}
+          onClick={() => setPreviewSlide({
+            groupId: g.id,
+            anchorSlideId: slideId,
+            slideId: preview.deck.slides[index - 1].id,
+          })}
+        >前へ</button>
+        <span aria-live="polite">
+          {index < 0 ? "削除済み" : `${index + 1}枚目`}
+        </span>
+        <button
+          type="button"
+          aria-label="案の次のスライド"
+          disabled={index + 1 >= preview.deck.slides.length}
+          onClick={() => setPreviewSlide({
+            groupId: g.id,
+            anchorSlideId: slideId,
+            slideId: preview.deck.slides[index + 1].id,
+          })}
+        >次へ</button>
+      </div>
+    );
+  };
   const reviewedPreviewVisible =
     !!group &&
     !!selected &&
@@ -270,7 +298,6 @@ export function SlideProposals({
     )
       return;
     setDescriptionOpen(false);
-    setPreviewSlide(null);
     setSelection({ groupId: g.id, candidateId: c.id });
     setCompare(false);
     setError(null);
@@ -449,33 +476,8 @@ export function SlideProposals({
                   <small>編集中の内容を同期してから採用できます。</small>
                 )}
               </div>
-              {group.scope.kind === "deck" && selectedPreview && (
-                <div className="proposal-slide-navigation" role="group" aria-label="案のスライド切り替え">
-                  <button
-                    type="button"
-                    aria-label="案の前のスライド"
-                    disabled={previewSlideIndex <= 0}
-                    onClick={() => setPreviewSlide({
-                      candidateKey: key(group, selected),
-                      anchorSlideId: slideId,
-                      slideId: selectedPreview.deck.slides[previewSlideIndex - 1].id,
-                    })}
-                  >前へ</button>
-                  <span aria-live="polite">
-                    {previewSlideIndex < 0 ? "削除済み" : `${previewSlideIndex + 1}枚目`}
-                  </span>
-                  <button
-                    type="button"
-                    aria-label="案の次のスライド"
-                    disabled={previewSlideIndex + 1 >= selectedPreview.deck.slides.length}
-                    onClick={() => setPreviewSlide({
-                      candidateKey: key(group, selected),
-                      anchorSlideId: slideId,
-                      slideId: selectedPreview.deck.slides[previewSlideIndex + 1].id,
-                    })}
-                  >次へ</button>
-                </div>
-              )}
+              {group.scope.kind === "deck" && selectedPreview &&
+                slideNavigation(group, selectedPreview)}
               <button
                 type="button"
                 className="proposal-description-toggle"
@@ -531,6 +533,16 @@ export function SlideProposals({
         )}
       {compare && (
         <section className="variation-compare" aria-label="提案の比較">
+          {visible.some((g) => g.scope.kind === "deck") && <header>
+            {visible.filter((g) => g.scope.kind === "deck").map((g) => {
+              // Use the first viewable candidate's deck order, independent of load order.
+              const candidate = g.candidates.find((c) => c.available.view);
+              const preview = candidate ? previews[key(g, candidate)] : null;
+              return preview ? (
+                <div key={g.id}>{slideNavigation(g, preview)}</div>
+              ) : null;
+            })}
+          </header>}
           <div className="variation-compare-grid" data-mode="side-by-side">
             {visible.flatMap((g) =>
               g.candidates
@@ -543,7 +555,7 @@ export function SlideProposals({
                     {previews[key(g, c)] ? (
                       <SlideFrame
                         preview={previews[key(g, c)]}
-                        slideId={slideId}
+                        slideId={displayedSlideId(g)}
                         apiBase={apiBase}
                       />
                     ) : (
