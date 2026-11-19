@@ -632,3 +632,16 @@ test("resumed tasks use the same proposal workspace and publish readiness, while
   await assert.rejects(store.executionWorkspace(task), /提案が見つかりません/);
   await assert.rejects(access(work));
 });
+
+test("deck proposals share the displayed slide ID across candidates and comparison", async () => {
+  const source = await readFile(
+    new URL("../app/components/SlideProposals.tsx", import.meta.url), "utf8",
+  );
+  assert.doesNotMatch(source, /setPreviewSlide\(null\)/);
+  const comparison = source.slice(source.indexOf('{compare && ('));
+  assert.ok(
+    /<SlideFrame\b[^>]*slideId=\{displayedSlideId\(g\)\}/.test(comparison) &&
+    /slideNavigation\(/.test(comparison),
+    "比較画面は表示中のスライドを各案で表示し、スライド移動を提供する",
+  );
+});
