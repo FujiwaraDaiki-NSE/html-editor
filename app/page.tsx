@@ -668,7 +668,20 @@ export default function Home() {
   const conversationWorking = agentRunning || orchestration.tasks.some(task => task.threadId === codexState.activeThreadId && !["completed", "cancelled", "failed"].includes(task.status));
   const slideScale = manualZoom ?? fitScale;
   const zoomMode = manualZoom === null ? "fit" : "manual";
-  const activeSlideId = slides[activeSlide - 1]?.id;
+  const [placeholderSelection, setPlaceholderSelection] = useState<string | null>(null);
+  const navigatorIds = slides.map(slide => slide.id);
+  for (const group of proposalGroups) {
+    if (group.state !== "open" || group.scope.kind !== "deck") continue;
+    for (const candidate of group.candidates) {
+      for (const [index, id] of candidate.slideOrder.entries()) {
+        if (navigatorIds.includes(id) || !candidate.addedSlideIds.includes(id) || group.selections[id]) continue;
+        const predecessor = candidate.slideOrder.slice(0, index).reverse().find(previous => navigatorIds.includes(previous));
+        navigatorIds.splice(predecessor === undefined ? 0 : navigatorIds.indexOf(predecessor) + 1, 0, id);
+      }
+    }
+  }
+  const activePlaceholderId = placeholderSelection !== null && navigatorIds.includes(placeholderSelection) && !slides.some(slide => slide.id === placeholderSelection) ? placeholderSelection : null;
+  const activeSlideId = activePlaceholderId ?? slides[activeSlide - 1]?.id;
   const liveChangedSlideIds = new Set(agentPreview?.changedSlideIds ?? []);
   const activeAnnotations = annotations.filter((annotation) => annotation.slideId === activeSlideId);
   const activeRegionAnnotations = activeAnnotations.filter((annotation) => annotation.target.kind === "region");
@@ -1004,7 +1017,7 @@ export default function Home() {
     slidesRef.current = numbered;
     setSlides(numbered);
   };
-  const setActiveSlideSynced = (next: number) => { templatePreviewHtmlRef.current = null; templatePreviewSourceHtmlRef.current = null; setTitleDraft(null); setPointerPicking(false); setActiveSlide(next); };
+  const setActiveSlideSynced = (next: number) => { setPlaceholderSelection(null); templatePreviewHtmlRef.current = null; templatePreviewSourceHtmlRef.current = null; setTitleDraft(null); setPointerPicking(false); setActiveSlide(next); };
   const reinject = useCallback(() => setInjectKey((value) => value + 1), []);
   const cancelTemplatePreview = useCallback(() => {
     if (templatePreviewHtmlRef.current == null && templatePreviewSourceHtmlRef.current == null) return;
@@ -1081,7 +1094,7 @@ export default function Home() {
       focusable[nextIndex]?.focus();
     }
   };
-  const slideRoot = () => canvasRef.current?.querySelector<HTMLElement>(".weave-slide") ?? null;
+  const slideRoot = () => activePlaceholderId !== null ? null : canvasRef.current?.querySelector<HTMLElement>(".weave-slide") ?? null;
   const contentSlot = () => canvasRef.current?.querySelector<HTMLElement>(contentSlotSelector) ?? null;
   const isEditableSlideNode = (node: Element | null) => {
     const content = node?.closest(contentSlotSelector);
@@ -1167,6 +1180,7 @@ export default function Home() {
   };
 
   const captureActive = (list: SlideDoc[] = slidesRef.current): SlideDoc[] => {
+    if (activePlaceholderId !== null) return list;
     if (templatePreviewHtmlRef.current != null) {
       const html = templatePreviewSourceHtmlRef.current;
       if (html == null) return list;
@@ -2796,6 +2810,7 @@ export default function Home() {
     syncFromDom();
   };
   const setSlideNotes = (notes: string) => {
+    if (activePlaceholderId !== null) return;
     checkpoint();
     setSlidesSynced(captureActive().map((slide, index) => (index === activeRef.current - 1 ? { ...slide, notes } : slide)));
     markDirty();
@@ -2822,6 +2837,7 @@ export default function Home() {
   };
 
   const duplicateSlide = () => {
+    if (activePlaceholderId !== null) return;
     checkpoint();
     const captured = captureActive();
     const source = captured[activeRef.current - 1];
@@ -2838,6 +2854,7 @@ export default function Home() {
   };
 
   const deleteSlide = () => {
+    if (activePlaceholderId !== null) return;
     if (slidesRef.current.length <= 1) return;
     const deletedSlideId = slidesRef.current[activeRef.current - 1]?.id;
     checkpoint();
@@ -2886,6 +2903,7 @@ export default function Home() {
   });
 
   const moveSlide = (direction: -1 | 1) => {
+    if (activePlaceholderId !== null) return;
     const target = activeRef.current - 1 + direction;
     if (target < 0 || target >= slidesRef.current.length) return;
     checkpoint();
@@ -3276,10 +3294,10 @@ export default function Home() {
     const response = await fetch(`${apiBase}/proposals/adopt`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ groupId: group.id, candidateId: candidate.id, version: candidate.version, slideIds, expectedRevision: serverRevision, uiSession: await proposalSession() }) });
     const result = await response.json(); if (!response.ok) throw new Error(result.error);
     if (root !== activeProjectRootRef.current) return;
-    if (generation === editGenerationRef.current) applyServerState(result as ServerState, true, true);
+    if (generation === editGenerationRef.current) applyServerState(result as ServerState, true, true, activePlaceholderId);
     else {
       const merged = await mergeEditorDecks({ base: baseline, agent: result.deck, current: deckPayload(), scope: group.scope.kind });
-      applyServerState({ ...result, deck: merged.deck } as ServerState, true, true); setMergeConflicts(merged.conflicts); markDirty();
+      applyServerState({ ...result, deck: merged.deck } as ServerState, true, true, activePlaceholderId); setMergeConflicts(merged.conflicts); markDirty();
     }
     setProposalTarget(null); setApiError(null); reinject(); setAnnouncement("選択した案を採用しました");
   };
@@ -3874,17 +3892,42 @@ export default function Home() {
     }
   };
 
+  const activeNavigatorIndex = navigatorIds.findIndex(id => id === activeSlideId);
+  const openNavigatorSlide = (id: string) => {
+    const index = slides.findIndex(slide => slide.id === id);
+    if (index >= 0) { switchSlide(index + 1); return; }
+    if (activePlaceholderId === null) setSlidesSynced(captureActive());
+    setPlaceholderSelection(id);
+    setSelectedId(null);
+    setSelectedAnnotationId(null);
+    setMode("preview");
+    dismissPopover(false);
+  };
+
   const slideNavigator = (
     <>
-      {slides.map((slide, index) => ({ slide, index })).filter(({ index }) => slides.length <= 60 || index === 0 || index === slides.length - 1 || Math.abs(index - (activeSlide - 1)) <= 20).map(({ slide, index }, visibleIndex, visibleEntries) => {
+      {navigatorIds.map((id, navigatorIndex) => ({ id, navigatorIndex })).filter(({ navigatorIndex }) => navigatorIds.length <= 60 || navigatorIndex === 0 || navigatorIndex === navigatorIds.length - 1 || Math.abs(navigatorIndex - activeNavigatorIndex) <= 20).map(({ id, navigatorIndex }, visibleIndex, visibleEntries) => {
+        const gap = visibleIndex > 0 && navigatorIndex - visibleEntries[visibleIndex - 1].navigatorIndex > 1
+          ? <button className="slide-gap" aria-label="前のスライドを表示" onClick={() => openNavigatorSlide(navigatorIds[Math.max(0, navigatorIndex - 20)])}>…</button>
+          : null;
+        const index = slides.findIndex(slide => slide.id === id);
+        if (index < 0) return <div className="slide-entry" key={id}>
+          {gap}
+          <button className={`slide-item ${activePlaceholderId === id ? "active" : ""}`} data-ui-id={`slide-${id}`} data-ui-role="slide" onClick={() => openNavigatorSlide(id)} title={`未採用の白紙スライド: ${id}`}>
+            <span className="slide-number">{String(navigatorIndex + 1).padStart(2, "0")}</span>
+            <span className="slide-thumbnail slide-thumbnail-empty" aria-hidden="true" />
+            <span className="slide-name">{id} · 未採用</span>
+          </button>
+        </div>;
+        const slide = slides[index];
         const slideNumber = index + 1;
         const slideDiagnostics = quality.diagnostics.filter((item) => item.slideId === slide.id);
         const slideSeverity = slideDiagnostics.some((item) => item.severity === "error") ? "error" : slideDiagnostics.some((item) => item.severity === "warning") ? "warning" : slideDiagnostics.length > 0 ? "suggestion" : null;
         return (
           <div className="slide-entry" key={slide.id}>
-            {visibleIndex > 0 && index - visibleEntries[visibleIndex - 1].index > 1 && <button className="slide-gap" aria-label="前のスライドを表示" onClick={() => switchSlide(Math.max(1, slideNumber - 20))}>…</button>}
+            {gap}
             <button
-              className={`slide-item ${activeSlide === slideNumber ? "active" : ""} ${selectedSlideIds.has(slide.id) ? "selected" : ""} ${liveChangedSlideIds.has(slide.id) ? "agent-updated" : ""}`}
+              className={`slide-item ${activePlaceholderId === null && activeSlide === slideNumber ? "active" : ""} ${selectedSlideIds.has(slide.id) ? "selected" : ""} ${liveChangedSlideIds.has(slide.id) ? "agent-updated" : ""}`}
               data-ui-id={`slide-${slide.id}`}
               data-ui-role="slide"
               aria-pressed={selectedSlideIds.has(slide.id)}
@@ -3907,7 +3950,7 @@ export default function Home() {
                 reinject();
               }}
             >
-              <span className="slide-number">{String(slideNumber).padStart(2, "0")}</span>
+              <span className="slide-number">{String(navigatorIndex + 1).padStart(2, "0")}</span>
               {slideThumbnail(slide, index)}
               <span className="slide-name">{slide.title || "無題"}</span>
               {slideSeverity && <span className={`slide-diagnostic-badge ${slideSeverity}`} aria-label={`${slideSeverity === "error" ? "エラー" : slideSeverity === "warning" ? "警告" : "提案"} ${slideDiagnostics.length}件`}>{slideSeverity === "error" ? "!" : slideSeverity === "warning" ? "△" : "○"} {slideDiagnostics.length}</span>}
@@ -4382,8 +4425,8 @@ export default function Home() {
               )}
               <div className="view-toggle" data-mode={mode} role="group" aria-label="編集表示">
                 <button className={mode === "preview" ? "active" : ""} aria-pressed={mode === "preview"} onClick={() => { if (mode !== "preview") reinject(); setMode("preview"); }}>▣ <span>ビジュアル</span></button>
-                <button className={mode === "split" ? "active" : ""} aria-pressed={mode === "split"} onClick={() => openSourceEditor("split")}>◫ <span>分割</span></button>
-                <button className={mode === "source" ? "active" : ""} aria-pressed={mode === "source"} onClick={() => openSourceEditor("source")}>‹› <span>HTML編集</span></button>
+                <button className={mode === "split" ? "active" : ""} aria-pressed={mode === "split"} disabled={activePlaceholderId !== null} onClick={() => openSourceEditor("split")}>◫ <span>分割</span></button>
+                <button className={mode === "source" ? "active" : ""} aria-pressed={mode === "source"} disabled={activePlaceholderId !== null} onClick={() => openSourceEditor("source")}>‹› <span>HTML編集</span></button>
               </div>
             </div>
           </div>
@@ -4416,8 +4459,9 @@ export default function Home() {
                 </div>
               </section>
             ) : mode === "preview" ? (
-              <div ref={slideShellRef} className={`slide-shell ${previewHighlightSlideId === activeSlideId ? "agent-preview-highlight" : ""}`}>
+              <div ref={slideShellRef} className={`slide-shell ${activePlaceholderId !== null ? "proposal-placeholder-shell" : ""} ${previewHighlightSlideId === activeSlideId ? "agent-preview-highlight" : ""}`}>
                 <div className="proposal-preview-container" ref={setProposalPreviewContainer} />
+                {activePlaceholderId !== null && <div className="proposal-placeholder-blank">未採用の白紙スライド · 案を選んで採用してください</div>}
                 {/* The project stylesheet is the only thing styling the slide; the editor's
                     own chrome lives in globals.css and never overlaps these rules. */}
                 <style>{deckCss}</style>
@@ -4726,8 +4770,8 @@ export default function Home() {
           )}
           <section className="property-section">
             <div className="property-heading"><span>スライド</span><span>⌃</span></div>
-            <label><span>タイトル</span><input value={titleDraft ?? slides[activeSlide - 1]?.title ?? ""} onFocus={(event) => setTitleDraft(event.currentTarget.value)} onChange={(event) => { setTitleDraft(event.target.value); setSlideTitle(event.target.value); }} onBlur={() => setTitleDraft(null)} /></label>
-            <label><span>発表者ノート</span><textarea value={slides[activeSlide - 1]?.notes ?? ""} onChange={(event) => setSlideNotes(event.target.value)} /></label>
+            <label><span>タイトル</span><input disabled={activePlaceholderId !== null} value={titleDraft ?? slides[activeSlide - 1]?.title ?? ""} onFocus={(event) => setTitleDraft(event.currentTarget.value)} onChange={(event) => { setTitleDraft(event.target.value); setSlideTitle(event.target.value); }} onBlur={() => setTitleDraft(null)} /></label>
+            <label><span>発表者ノート</span><textarea disabled={activePlaceholderId !== null} value={slides[activeSlide - 1]?.notes ?? ""} onChange={(event) => setSlideNotes(event.target.value)} /></label>
           </section>
           <section className="property-section layout-section">
             <div className="property-heading"><span>スライドレイアウト</span><span>⌃</span></div>

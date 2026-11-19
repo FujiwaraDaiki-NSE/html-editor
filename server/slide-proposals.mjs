@@ -325,6 +325,8 @@ export class SlideProposals {
             : candidate.result ? candidate.result.deck : group.baseDeck;
         const baseSlideIds = new Set(group.baseDeck.slides.map((slide) => slide.id));
         return {
+          slideOrder: group.scope.kind === "deck" ? previewDeck.slides.map((slide) => slide.id) : [],
+          addedSlideIds: group.scope.kind === "deck" ? previewDeck.slides.filter((slide) => !current.slides.some((s) => s.id === slide.id)).map((slide) => slide.id) : [],
           addedSlideCount: group.scope.kind === "deck"
             ? previewDeck.slides.filter((slide) => !baseSlideIds.has(slide.id)).length
             : 0,
@@ -505,6 +507,10 @@ export class SlideProposals {
         current,
         scope: group.scope.kind,
       });
+      // Partial additions do not request a reorder of existing slides.
+      if (!all && group.scope.kind === "deck" && slideIds.every(id => !group.baseDeck.slides.some(slide => slide.id === id))) {
+        merged.conflicts = merged.conflicts.filter(conflict => conflict.path !== "deck.slides.$order");
+      }
       if (merged.conflicts.length)
         throw Object.assign(
           new Error(
@@ -512,6 +518,19 @@ export class SlideProposals {
           ),
           { code: "WEAVE_REVISION_CONFLICT", diagnostics: merged.conflicts },
         );
+      // Place newly adopted slides relative to the chosen candidate, preserving existing edits.
+      if (group.scope.kind === "deck") {
+        const existing = new Set(current.slides.map((slide) => slide.id));
+        for (const [index, slide] of resultDeck.slides.entries()) {
+          if (!selected.has(slide.id) || existing.has(slide.id)) continue;
+          const position = merged.deck.slides.findIndex((s) => s.id === slide.id);
+          if (position < 0) continue;
+          const [added] = merged.deck.slides.splice(position, 1);
+          const predecessor = resultDeck.slides.slice(0, index).reverse().find((s) => merged.deck.slides.some((item) => item.id === s.id));
+          const insertion = predecessor ? merged.deck.slides.findIndex((s) => s.id === predecessor.id) + 1 : 0;
+          merged.deck.slides.splice(insertion, 0, added);
+        }
+      }
       const assetRoot = join(this.workspace(group, candidate), "assets");
       const neededAssets = new Set(
         merged.deck.slides
