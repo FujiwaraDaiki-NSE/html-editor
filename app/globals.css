@@ -1871,3 +1871,6 @@ button.project-card { cursor: pointer; }
 .proposal-workspace[data-open="true"] .proposal-toolbar { height: auto; }
 .canvas-workspace > .proposal-workspace[data-open="false"] { position: absolute; inset: 0 0 auto; height: 56px; max-height: 56px; padding: 3px 8px 4px; overflow: hidden; }
 .proposal-workspace[data-open="false"] .proposal-toolbar { margin-bottom: 0; }
+
+.proposal-placeholder-shell > :not(.proposal-preview-container):not(.proposal-placeholder-blank):not(style) { display: none !important; }
+.proposal-placeholder-blank { width: 100%; aspect-ratio: 16 / 9; background: white; color: #777; display: grid; place-items: center; }

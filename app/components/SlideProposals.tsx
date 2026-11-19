@@ -21,6 +21,8 @@ export type ProposalCandidate = {
   status: string;
   previewRevision: string;
   addedSlideCount: number;
+  addedSlideIds: string[];
+  slideOrder: string[];
   activity: string | null;
   startedAt: number | null;
   stale: boolean;
@@ -194,7 +196,7 @@ export function SlideProposals({
   const [previews, setPreviews] = useState<Record<string, Preview>>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const relevant = groups.filter((g) => g.slideIds.includes(slideId));
+  const relevant = groups.filter((g) => (g.slideIds.includes(slideId) || (g.state === "open" && g.scope.kind === "deck" && g.candidates.some(c => c.slideOrder.includes(slideId)))));
   const visible = relevant.filter(
     (g) => history || (g.state === "open" && !g.selections[slideId]),
   );

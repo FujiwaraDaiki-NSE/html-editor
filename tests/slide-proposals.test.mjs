@@ -493,6 +493,8 @@ test("working previews use stable snapshots and remain unadoptable until reviewe
   assert.equal(candidate.available.adopt, false);
   assert.equal(candidate.previewRevision, preview.previewRevision);
   assert.equal(candidate.addedSlideCount, 2);
+  assert.deepEqual(candidate.addedSlideIds, ["pptx-02", "pptx-03"]);
+  assert.deepEqual(candidate.slideOrder, changed.slides.map(slide => slide.id));
   // Replacing a base slide must count the new ID, rather than the net deck growth.
   live = { ...live, deck: { ...changed, slides: changed.slides.filter((s) => s.id !== "second") } };
   assert.equal((await reader.snapshot(root, tasks))[0].candidates[0].addedSlideCount, 2);
@@ -644,4 +646,26 @@ test("deck proposals share the displayed slide ID across candidates and comparis
     /slideNavigation\(/.test(comparison),
     "比較画面は表示中のスライドを各案で表示し、スライド移動を提供する",
   );
+});
+
+
+test("new deck slides are adopted between existing slides in candidate order", async (t) => {
+  const { store, root, group, deck } = await setup(t);
+  const task = { id: `${group.id}-insert`, status: "completed", version: 1, approvedVersion: 1, review: "確認済み", error: null };
+  tasks.push(task);
+  await store.attach(root, group.id, "a", task.id);
+  const work = store.workspace(group, group.candidates[0]);
+  const proposal = structuredClone(deck);
+  proposal.slides.splice(1, 0, { ...deck.slides[0], id: "pptx-02" }, { ...deck.slides[0], id: "pptx-03" });
+  await project.writeProject(proposal, null, work);
+  await store.finish(root, group.id, "a", task);
+  const snapshot = (await store.snapshot(root, tasks))[0];
+  assert.deepEqual(snapshot.candidates[0].addedSlideIds, ["pptx-02", "pptx-03"]);
+  assert.deepEqual(snapshot.candidates[0].slideOrder, proposal.slides.map(s => s.id));
+  assert.deepEqual((await project.readProject(root)).slides.map(s => s.id), deck.slides.map(s => s.id));
+  for (const id of ["pptx-03", "pptx-02"]) {
+    await store.adopt(root, { groupId: group.id, candidateId: "a", version: 1, slideIds: [id], expectedRevision: project.getRevision(root) }, tasks);
+  }
+  assert.deepEqual((await project.readProject(root)).slides.map(s => s.id), proposal.slides.map(s => s.id));
+  assert.deepEqual((await store.snapshot(root, tasks))[0].candidates[0].addedSlideIds, []);
 });
