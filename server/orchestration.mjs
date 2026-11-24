@@ -23,12 +23,18 @@ export class Orchestration {
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
   pendingExecutionModes() { return [...this.conversations.values()].filter(context => context.executionModePending === true).map(({ threadId, root }) => ({ threadId, root })); }
-  snapshot(root) { return { tasks: this.tasks.filter(t => t.root === root), messages: this.messages.filter(m => m.root === root), executionModeChoices: this.pendingExecutionModes().filter(choice => choice.root === root) }; }
+  savedExecutionModes() {
+    return [...this.conversations.values()].flatMap(({ threadId, contextEnvelope }) => {
+      const executionMode = contextEnvelope?.executionMode;
+      return executionMode === 'apply' || executionMode === 'compare' ? [{ threadId, executionMode }] : [];
+    });
+  }
+  snapshot(root) { return { tasks: this.tasks.filter(t => t.root === root), messages: this.messages.filter(m => m.root === root), executionModeChoices: this.pendingExecutionModes().filter(choice => choice.root === root), executionModes: this.savedExecutionModes() }; }
   async save() {
     const data = JSON.stringify({ tasks: this.tasks, messages: this.messages, conversations: [...this.conversations] });
     const write = this.saves.then(async () => { await mkdir(dirname(this.path), { recursive: true }); const temp = `${this.path}.${randomUUID()}.tmp`; await writeFile(temp, data, { mode: 0o600 }); await rename(temp, this.path); });
     this.saves = write.catch(() => {}); await write;
-    this.events.publish('weave/orchestration', { tasks: this.tasks, messages: this.messages, executionModeChoices: this.pendingExecutionModes() });
+    this.events.publish('weave/orchestration', { tasks: this.tasks, messages: this.messages, executionModeChoices: this.pendingExecutionModes(), executionModes: this.savedExecutionModes() });
   }
   context(threadId) { const c = this.conversations.get(threadId); if (!c) throw new Error('Conversation context is unavailable. Send a message first.'); return c; }
   async selectExecutionMode(threadId, executionMode, session) {

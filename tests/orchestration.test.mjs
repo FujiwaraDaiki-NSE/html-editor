@@ -323,6 +323,31 @@ test('execution selection updates the current turn before delegation, persists, 
   assert.doesNotMatch(api, /payload\.(?:human|executionModeSelected)\b/);
 });
 
+test('saved execution modes are available by conversation after reload and in orchestration events', async t => {
+  const { manager, params, events } = await setup(t);
+  await manager.receive(input('initial', 'compare'));
+  await manager.confirmExecutionMode('parent', 'apply', { activeThreadId: 'parent' });
+  await manager.receive({ ...input('another', 'compare'), threadId: 'another' });
+  await manager.receive({ ...input('elsewhere', 'compare'), threadId: 'elsewhere', root: '/elsewhere' });
+  await manager.confirmExecutionMode('unsent', 'apply', { activeThreadId: 'unsent' });
+
+  const modes = [
+    { threadId: 'parent', executionMode: 'apply' },
+    { threadId: 'another', executionMode: 'compare' },
+    { threadId: 'elsewhere', executionMode: 'compare' },
+  ];
+  const restored = new Orchestration(params);
+  await restored.load();
+  assert.deepEqual(restored.snapshot('/project').executionModes, modes);
+  assert.deepEqual(events.at(-1).value.executionModes, modes);
+
+  const { executionMode } = restored.snapshot('/project').executionModes[0];
+  await restored.receive(input('after-reload', executionMode));
+  const { contextEnvelope } = restored.context('parent');
+  assert.equal(contextEnvelope.executionMode, 'apply');
+  assert.equal(contextEnvelope.executionModeSelected, true);
+});
+
 
 test('delegated tasks retain the originating chat turn in storage and snapshots', async t => {
   const { manager, params, events } = await setup(t);
