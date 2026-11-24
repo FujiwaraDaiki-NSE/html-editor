@@ -38,6 +38,55 @@ const targetSlideIds = (group) =>
         group.scope.kind === "deck" || group.scope.slideIds.includes(slide.id),
     )
     .map((slide) => slide.id);
+
+function alignAddedSlideIds(group, deck, register, selectedCandidateId) {
+  if (group.scope.kind !== "deck" || !Object.hasOwn(group, "addedSlideIdsByPosition")) return deck;
+  const idsByPosition = group.addedSlideIdsByPosition;
+  const baseIds = new Set(group.baseDeck.slides.map((slide) => slide.id));
+  const registeredIds = new Set(Object.values(idsByPosition));
+  // Reserve original IDs up front so a later exact match can keep its ID.
+  const usedIds = new Set(deck.slides.map((slide) => slide.id));
+  let anchor = null;
+  let ordinal = 0;
+  const slides = deck.slides.map((slide) => {
+    const { id } = slide;
+    if (baseIds.has(id)) {
+      anchor = id;
+      ordinal = 0;
+      return slide;
+    }
+    const key = JSON.stringify([anchor, ++ordinal]);
+    const hasPosition = Object.hasOwn(idsByPosition, key);
+    if (selectedCandidateId !== null) {
+      if (!hasPosition && group.selections[id] === selectedCandidateId) idsByPosition[key] = id;
+      return slide;
+    }
+    if (registeredIds.has(id)) return slide;
+    if (!hasPosition) {
+      if (register) {
+        idsByPosition[key] = id;
+        registeredIds.add(id);
+      }
+      return slide;
+    }
+    const registeredId = idsByPosition[key];
+    if (usedIds.has(registeredId)) return slide;
+    usedIds.add(registeredId);
+    return { ...slide, id: registeredId };
+  });
+  return slides.every((slide, index) => slide === deck.slides[index]) ? deck : { ...deck, slides };
+}
+
+function previewRevision(group, candidate, live) {
+  const version = `${candidate.version}:${candidate.taskId}:${live === null ? "baseline" : live.revision}:${candidate.ready ? "reviewed" : "draft"}`;
+  // Another candidate can register IDs without changing this draft's live revision.
+  if (!candidate.ready && live !== null && Object.hasOwn(group, "addedSlideIdsByPosition")) {
+    const positions = Object.keys(group.addedSlideIdsByPosition).length;
+    if (positions > 0) return `${version}:${positions}`;
+  }
+  return version;
+}
+
 export function validateDirections(directions) {
   if (
     !Array.isArray(directions) ||
@@ -66,12 +115,38 @@ export class SlideProposals {
     this.livePreview = livePreview;
   }
   async read(root) {
+    return await this.#read(root, false);
+  }
+  async #read(root, locked) {
+    let groups;
     try {
-      return JSON.parse(await readFile(file(root), "utf8"));
+      groups = JSON.parse(await readFile(file(root), "utf8"));
     } catch (error) {
       if (error.code === "ENOENT") return [];
       throw error;
     }
+    const legacy = groups.filter((group) => group.state === "open" &&
+      group.scope.kind === "deck" && !Object.hasOwn(group, "addedSlideIdsByPosition"));
+    if (!legacy.length) return groups;
+    if (!locked) return await runProjectExclusive(() => this.#read(root, true), root);
+    for (const group of legacy) {
+      group.addedSlideIdsByPosition = {};
+      // Adopted IDs already exist in the editable deck and in selections.
+      for (const candidate of group.candidates) {
+        if (candidate.result)
+          alignAddedSlideIds(group, candidate.result.deck, false, candidate.id);
+      }
+      for (const candidate of group.candidates) {
+        if (candidate.ready && candidate.result)
+          candidate.result.deck = alignAddedSlideIds(group, candidate.result.deck, true, null);
+      }
+      for (const candidate of group.candidates) {
+        if (!candidate.ready && candidate.result)
+          candidate.result.deck = alignAddedSlideIds(group, candidate.result.deck, false, null);
+      }
+    }
+    await this.save(root, groups);
+    return groups;
   }
   async save(root, groups) {
     await mkdir(join(root, ".weave"), { recursive: true });
@@ -146,7 +221,7 @@ export class SlideProposals {
       const obsoleteTasks = tasks.filter(task => task.root === root && task.proposal && obsoleteIds.has(task.proposal.groupId));
       await cancelAndWait(obsoleteTasks);
       return await runProjectExclusive(async () => {
-        const saved = await this.read(root);
+        const saved = await this.#read(root, true);
         const removed = saved.filter(group => obsoleteIds.has(group.id) && group.state === "open");
         if (removed.some(group => hasRunningCandidate(group, tasks)))
           throw new Error("古い比較案の担当がまだ終了していません。");
@@ -171,6 +246,7 @@ export class SlideProposals {
           prepared: false,
           preparationError: null,
           selections: {},
+          ...(scope.kind === "deck" ? { addedSlideIdsByPosition: {} } : {}),
           candidates: directions.map((direction, index) => ({
             id: String.fromCharCode(97 + index),
             title: direction.title,
@@ -226,7 +302,7 @@ export class SlideProposals {
     { revise = false, expectedVersion = null } = {},
   ) {
     return await runProjectExclusive(async () => {
-      const groups = await this.read(root);
+      const groups = await this.#read(root, true);
       const group = this.group(groups, groupId);
       const candidate = this.candidate(group, candidateId);
       if (revise) {
@@ -247,7 +323,7 @@ export class SlideProposals {
   }
   async finish(root, groupId, candidateId, task) {
     return await runProjectExclusive(async () => {
-      const groups = await this.read(root);
+      const groups = await this.#read(root, true);
       const group = groups.find(group => group.id === groupId);
       if (!group) return;
       const candidate = this.candidate(group, candidateId);
@@ -256,8 +332,9 @@ export class SlideProposals {
       candidate.error = task.error;
       if (candidate.ready) {
         const workspace = this.workspace(group, candidate);
+        const deck = await readProject(workspace);
         candidate.result = {
-          deck: await readProject(workspace),
+          deck: alignAddedSlideIds(group, deck, true, null),
           css: await readDeckCss(workspace),
           templates: await readTemplates(workspace),
           review: task.review,
@@ -280,7 +357,7 @@ export class SlideProposals {
   }
   async recover(root) {
     await runProjectExclusive(async () => {
-      const groups = await this.read(root);
+      const groups = await this.#read(root, true);
       let changed = false;
       for (const group of groups)
         if (group.prepared === false && !group.preparationError) {
@@ -321,7 +398,7 @@ export class SlideProposals {
         const previewDeck = candidate.ready && candidate.result
           ? candidate.result.deck
           : live !== null
-            ? live.deck
+            ? alignAddedSlideIds(group, live.deck, false, null)
             : candidate.result ? candidate.result.deck : group.baseDeck;
         const baseSlideIds = new Set(group.baseDeck.slides.map((slide) => slide.id));
         return {
@@ -349,7 +426,7 @@ export class SlideProposals {
           version: candidate.version,
           taskId: candidate.taskId,
           status,
-          previewRevision: `${candidate.version}:${candidate.taskId}:${live === null ? "baseline" : live.revision}:${candidate.ready ? "reviewed" : "draft"}`,
+          previewRevision: previewRevision(group, candidate, live),
           activity: task ? task.activity : null,
           startedAt: task?.startedAt === undefined ? null : task.startedAt,
           workerStartedAt:
@@ -376,13 +453,12 @@ export class SlideProposals {
     if (group.prepared === false || candidate.version !== version)
       throw new Error("表示できる最新の案を選んでください。");
     const live = this.livePreview(candidate.taskId);
-    const previewRevision = `${candidate.version}:${candidate.taskId}:${live === null ? "baseline" : live.revision}:${candidate.ready ? "reviewed" : "draft"}`;
     const identity = {
       groupId,
       candidateId,
       version,
       baseDeck: group.baseDeck,
-      previewRevision,
+      previewRevision: previewRevision(group, candidate, live),
     };
     if (candidate.ready && candidate.result)
       return {
@@ -393,7 +469,7 @@ export class SlideProposals {
       };
     if (live !== null)
       return {
-        deck: live.deck,
+        deck: alignAddedSlideIds(group, live.deck, false, null),
         css: live.css,
         templates: live.templates,
         review: null,
@@ -444,7 +520,7 @@ export class SlideProposals {
           ),
           { code: "WEAVE_REVISION_CONFLICT" },
         );
-      const groups = await this.read(root);
+      const groups = await this.#read(root, true);
       const group = this.group(groups, groupId);
       const candidate = this.candidate(group, candidateId);
       if (
@@ -572,7 +648,7 @@ export class SlideProposals {
   }
   async dismiss(root, groupId, tasks) {
     return await runProjectExclusive(async () => {
-      const groups = await this.read(root);
+      const groups = await this.#read(root, true);
       const group = this.group(groups, groupId);
       if (hasRunningCandidate(group, tasks))
         throw new Error("生成中の担当を停止してから提案を終了してください。");

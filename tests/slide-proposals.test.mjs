@@ -30,19 +30,21 @@ const directions = [
 const { Orchestration } = await import("../server/orchestration.mjs");
 const tasks = [];
 const noTasksRunning = async (tasks) => { assert.ok(tasks.every(task => ["completed", "failed", "cancelled"].includes(task.status))); };
-async function setup(t) {
+async function setup(t, coverOnly) {
   const slug = await project.createProject({
     title: "Original",
     templateId: "grid",
   });
   const root = join(project.workspacesRoot, slug);
   const deck = await project.readProject(root);
-  deck.slides.push({
-    ...deck.slides[0],
-    id: "second",
-    title: "Second",
-    html: deck.slides[0].html.replace("Original", "Second"),
-  });
+  if (coverOnly !== true) {
+    deck.slides.push({
+      ...deck.slides[0],
+      id: "second",
+      title: "Second",
+      html: deck.slides[0].html.replace("Original", "Second"),
+    });
+  }
   await project.writeProject(deck, null, root);
   const store = new SlideProposals({
     workspaceRoot: project.workspacesRoot,
@@ -668,4 +670,110 @@ test("new deck slides are adopted between existing slides in candidate order", a
   }
   assert.deepEqual((await project.readProject(root)).slides.map(s => s.id), proposal.slides.map(s => s.id));
   assert.deepEqual((await store.snapshot(root, tasks))[0].candidates[0].addedSlideIds, []);
+});
+
+test("deck candidates share added IDs across live previews, completion, revision and mixed adoption", async (t) => {
+  const { store, root, group, deck } = await setup(t, true);
+  const [cover] = deck.slides;
+  const candidates = [];
+  for (const candidate of group.candidates) {
+    const { id } = candidate;
+    const task = { id: `${group.id}-${id}`, status: "completed", version: 1, approvedVersion: 1, review: "確認済み", error: null };
+    const work = store.workspace(group, candidate);
+    const [intro, detail, summary] = ["intro", "detail", "summary"].map(role => ({
+      ...cover, id: `${id}-${role}`, notes: id,
+    }));
+    const proposal = await project.writeProject({ ...deck, slides: [intro, cover, detail, summary] }, null, work);
+    await store.attach(root, group.id, id, task.id);
+    candidates.push({ id, task, work, proposal });
+  }
+  const [a, b, c] = candidates;
+  store.livePreview = taskId => taskId === a.task.id
+    ? { deck: a.proposal, css: "", templates: [], revision: "unchanged" }
+    : null;
+  const before = await store.preview(root, group.id, "a", 1);
+  assert.deepEqual(before.deck.slides.map(s => s.id), ["a-intro", "cover", "a-detail", "a-summary"]);
+  await store.finish(root, group.id, "b", b.task);
+  const order = ["b-intro", "cover", "b-detail", "b-summary"];
+  const live = await store.preview(root, group.id, "a", 1);
+  const liveCandidate = (await store.snapshot(root, [a.task, b.task, c.task]))[0].candidates[0];
+  assert.deepEqual(live.deck.slides.map(s => s.id), order);
+  assert.deepEqual(liveCandidate.slideOrder, order);
+  assert.equal(liveCandidate.previewRevision, live.previewRevision);
+  assert.notEqual(live.previewRevision, before.previewRevision);
+  await store.finish(root, group.id, "a", a.task);
+  await store.finish(root, group.id, "c", c.task);
+  const reviewedTasks = [a.task, b.task, c.task];
+  assert.deepEqual((await store.snapshot(root, reviewedTasks))[0].candidates.map(candidate => candidate.slideOrder), [order, order, order]);
+  assert.deepEqual(await project.readProject(c.work), c.proposal);
+
+  const revision = { ...c.task, id: `${c.task.id}-revise`, version: 2, approvedVersion: 2 };
+  await store.attach(root, group.id, "c", revision.id, { revise: true, expectedVersion: 1 });
+  const summary = { ...c.proposal.slides.at(-1), id: "b-summary" };
+  const extra = { ...cover, id: "c-extra" };
+  const longer = await project.writeProject({
+    ...c.proposal, slides: [...c.proposal.slides.slice(0, -1), extra, summary],
+  }, null, c.work);
+  store.livePreview = taskId => taskId === revision.id
+    ? { deck: longer, css: "", templates: [], revision: "longer" }
+    : null;
+  const longerOrder = ["b-intro", "cover", "b-detail", "c-extra", "b-summary"];
+  const drafting = (await store.snapshot(root, reviewedTasks))[0];
+  assert.deepEqual(drafting.candidates.map(candidate => candidate.slideOrder), [order, order, longerOrder]);
+  assert.deepEqual((await store.preview(root, group.id, "c", 2)).deck.slides.map(s => s.id), longerOrder);
+  await store.finish(root, group.id, "c", revision);
+  reviewedTasks.push(revision);
+  const reviewed = (await store.snapshot(root, reviewedTasks))[0];
+  assert.equal(reviewed.candidates[2].status, "ready");
+  assert.deepEqual(reviewed.candidates.map(candidate => candidate.slideOrder), [order, order, longerOrder]);
+  assert.equal(Object.keys((await store.read(root))[0].addedSlideIdsByPosition).length, 3);
+  for (const [candidateId, version, id] of [["a", 1, "b-intro"], ["b", 1, "b-detail"], ["c", 2, "b-summary"]]) {
+    await store.adopt(root, { groupId: group.id, candidateId, version, slideIds: [id], expectedRevision: project.getRevision(root) }, reviewedTasks);
+  }
+  const adopted = await project.readProject(root);
+  assert.deepEqual(adopted.slides.map(s => s.id), order);
+  assert.deepEqual(adopted.slides.map(s => s.notes), ["a", cover.notes, "b", "c"]);
+});
+
+test("loading legacy deck proposals aligns ready results and preserves previous adoptions", async (t) => {
+  const { store, root, group, deck } = await setup(t, true);
+  const [cover] = deck.slides;
+  const prefix = ["cover", "background", "signal-design"];
+  const order = [...prefix, "command-and-state", "state-and-il", "log-saving", "image-judgment", "signal-checklist"];
+  const orders = [
+    order,
+    [...prefix, "robot-state", "command-permission", "log-saving", "image-inspection", "signal-questions"],
+    [...prefix, "robot-state", "state-vs-permission", "log-save", "image-result", "signal-checklist"],
+  ];
+  const reviewedTasks = group.candidates.map((candidate, index) => {
+    const task = { id: `${group.id}-${candidate.id}`, status: "completed", version: 1, approvedVersion: 1 };
+    candidate.taskId = task.id;
+    candidate.ready = true;
+    candidate.result = {
+      deck: { ...deck, slides: orders[index].map(id => id === "cover" ? cover : { ...cover, id, notes: candidate.id }) },
+      css: "",
+      templates: [],
+      review: "確認済み",
+    };
+    return task;
+  });
+  group.selections = { background: "a", "signal-design": "b" };
+  await project.writeProject({
+    ...deck, slides: [cover, group.candidates[0].result.deck.slides[1], group.candidates[1].result.deck.slides[2]],
+  }, null, root);
+  delete group.addedSlideIdsByPosition;
+  const savedFile = join(root, ".weave", "slide-proposals.json");
+  await writeFile(savedFile, JSON.stringify([group]));
+  const [snapshot] = await store.snapshot(root, reviewedTasks);
+  assert.deepEqual(snapshot.candidates.map(candidate => candidate.slideOrder), [order, order, order]);
+  assert.deepEqual(snapshot.selections, group.selections);
+  const [saved] = JSON.parse(await readFile(savedFile, "utf8"));
+  assert.equal(Object.keys(saved.addedSlideIdsByPosition).length, 7);
+  assert.deepEqual(saved.candidates[1].result.deck.slides.map(s => s.id), order);
+  for (const [candidateId, id] of [["a", "command-and-state"], ["b", "state-and-il"], ["c", "log-saving"], ["a", "image-judgment"], ["b", "signal-checklist"]]) {
+    await store.adopt(root, { groupId: group.id, candidateId, version: 1, slideIds: [id], expectedRevision: project.getRevision(root) }, reviewedTasks);
+  }
+  const adopted = await project.readProject(root);
+  assert.deepEqual(adopted.slides.map(s => s.id), order);
+  assert.deepEqual(adopted.slides.slice(1).map(s => s.notes), ["a", "b", "a", "b", "c", "a", "b"]);
 });
