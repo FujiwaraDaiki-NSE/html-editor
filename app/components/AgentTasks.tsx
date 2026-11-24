@@ -9,7 +9,12 @@ export type AgentTask = {
   report: null | { workerOutput: string; sources: Array<{ slideId: string; before: string | null; after: string | null }> };
 };
 export type MessageReceipt = { id: string; threadId: string; root: string; text: string; automatic: boolean; status: string; error: string | null };
-export type OrchestrationSnapshot = { tasks: AgentTask[]; messages: MessageReceipt[]; executionModeChoices: Array<{ threadId: string; root: string }> };
+export type OrchestrationSnapshot = {
+  tasks: AgentTask[];
+  messages: MessageReceipt[];
+  executionModeChoices: Array<{ threadId: string; root: string }>;
+  executionModes: Array<{ threadId: string; executionMode: 'apply' | 'compare' }>;
+};
 const labels: Record<string, string> = { preparing: '準備中', queued: '開始待ち', awaiting_approval: '編集前の確認待ち', running: 'Codexが作業中', reviewing: 'オーケストレータがレビュー中', applying: 'レビュー合格・反映中', cancelling: '停止処理中', completed: '反映済み', cancelled: '中止', failed: '失敗' };
 const finished = new Set(['completed', 'cancelled', 'failed']);
 export function OrchestratorReceipts({ snapshot, threadId }: { snapshot: OrchestrationSnapshot; threadId: string | null }) {

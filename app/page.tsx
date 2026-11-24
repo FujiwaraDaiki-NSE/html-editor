@@ -562,11 +562,12 @@ export default function Home() {
   const [changeScope, setChangeScope] = useState<ChangeScope>("deck");
   const [proposalGroups, setProposalGroups] = useState<ProposalGroup[]>([]);
   const [proposalTarget, setProposalTarget] = useState<ProposalTarget | null>(null);
-  const [orchestration, setOrchestration] = useState<OrchestrationSnapshot>({ tasks: [], messages: [], executionModeChoices: [] });
+  const [orchestration, setOrchestration] = useState<OrchestrationSnapshot>({ tasks: [], messages: [], executionModeChoices: [], executionModes: [] });
   const workerModel = useSyncExternalStore(workerModelStore.subscribe, workerModelStore.read, workerModelStore.serverRead);
   const [workerEffort, setWorkerEffort] = useState("medium");
   const activeProjectRootRef = useRef<string | null>(null);
   const [executionMode, setExecutionMode] = useState<ExecutionMode>("compare");
+  const [executionModeRestoredThread, setExecutionModeRestoredThread] = useState<string | null>(null);
   const [executionModeBusy, setExecutionModeBusy] = useState(false);
   const executionModeBusyRef = useRef(false);
   const executionModeSelectedBeforeThreadRef = useRef(false);
@@ -651,6 +652,13 @@ export default function Home() {
   const selectedProvider = selectedModel.startsWith("claude:") ? "claude" : "codex";
   const providerState = codexState.catalog.providers?.[selectedProvider];
   const claudeSelected = selectedProvider === "claude";
+  // Restore before rendering the composer for a different conversation.
+  const executionModeThread = project === null ? null : codexState.activeThreadId;
+  if (!executionModeBusy && executionModeRestoredThread !== executionModeThread) {
+    setExecutionModeRestoredThread(executionModeThread);
+    const savedMode = orchestration.executionModes.find(mode => mode.threadId === executionModeThread);
+    if (savedMode) setExecutionMode(savedMode.executionMode);
+  }
   const claudeThread = codexState.activeThreadId?.startsWith("claude:") === true;
   const threadProviderMatches = !codexState.activeThreadId || (claudeThread ? "claude" : "codex") === selectedProvider;
   const modelAvailable = codexState.catalog.models.some((model: any) => model.id === selectedModel && model.available === true);
@@ -1579,10 +1587,17 @@ export default function Home() {
               setProposalGroups(current => current.map(group => group.id === preview.groupId ? { ...group, candidates: group.candidates.map(candidate => candidate.id === preview.candidateId && candidate.taskId === preview.taskId && candidate.status !== "ready" ? { ...candidate, previewRevision: `${candidate.version}:${candidate.taskId}:${preview.revision}:draft` } : candidate) } : group));
             }
             if (envelope.type === "weave/orchestration") {
-              const tasks = envelope.payload.tasks.filter((task: AgentTask) => task.root === activeProjectRootRef.current);
-              setOrchestration({ tasks, messages: envelope.payload.messages.filter((message: { root: string }) => message.root === activeProjectRootRef.current), executionModeChoices: envelope.payload.executionModeChoices.filter((choice: { root: string }) => choice.root === activeProjectRootRef.current) });
+              const snapshot: OrchestrationSnapshot = envelope.payload;
+              const root = activeProjectRootRef.current;
+              const tasks = snapshot.tasks.filter(task => task.root === root);
+              setOrchestration({
+                tasks,
+                messages: snapshot.messages.filter(message => message.root === root),
+                executionModeChoices: snapshot.executionModeChoices.filter(choice => choice.root === root),
+                executionModes: snapshot.executionModes,
+              });
               setProposalGroups(current => current.map(group => ({ ...group, candidates: group.candidates.map(candidate => {
-                const task = tasks.find((task: AgentTask) => task.id === candidate.taskId);
+                const task = tasks.find(task => task.id === candidate.taskId);
                 return task && candidate.status !== "ready" ? { ...candidate, status: task.status, error: task.error, activity: task.activity, startedAt: task.startedAt === undefined ? null : task.startedAt } : candidate;
               }) })));
             }
